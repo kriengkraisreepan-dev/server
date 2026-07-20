@@ -88,10 +88,13 @@ function renderTables() {
 
             <p><strong>ยอดเงิน :</strong> ${table.currentPrice.toFixed(2)} บาท</p>
 
-            <button onclick="toggleTable(${table.id})">
+            <button class="table-btn">
                 ${table.status === "ว่าง" ? "เปิดโต๊ะ" : "ปิดโต๊ะ"}
             </button>
         `;
+
+        const btn=card.querySelector(".table-btn");
+        btn.addEventListener("click",()=>toggleTable(table.id));
 
         container.appendChild(card);
 
@@ -200,25 +203,7 @@ function toggleTable(id) {
 
 }
 
-// ตัวจับเวลา
-setInterval(() => {
-
-    tables.forEach(table => {
-
-        if (table.status === "กำลังเล่น") {
-
-            table.elapsedSeconds++;
-
-            table.currentPrice =
-                calculatePrice(table.elapsedSeconds);
-
-        }
-
-    });
-
-    renderTables();
-
-}, 1000);
-
 // เริ่มต้นโปรแกรม
 renderTables();
+
+startTimer();
