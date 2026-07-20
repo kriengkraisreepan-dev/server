@@ -1,14 +1,12 @@
-// =============================
-// Lucky Snooker Manager
-// settings.js
-// =============================
-
 const settings = {
-    shopName: "Lucky Snooker Manager",
+    shopName: "88 Snooker Club Manager",
 
+    // ราคาต่อชั่วโมง
     hourlyRate: 100,
 
+    // ค่าบริการขั้นต่ำ
     minimumCharge: 50,
 
-    tableCount: 4
+    // จำนวนโต๊ะ
+    tableCount: 3
 };

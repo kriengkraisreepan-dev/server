@@ -7,18 +7,31 @@
 // รายได้วันนี้
 let todayIncome = 0;
 
-// สร้างโต๊ะ 4 โต๊ะ
+// สร้างโต๊ะตามจำนวนที่ตั้งไว้
 const tables = [];
 
-for (let i = 1; i <= 4; i++) {
+for (let i = 1; i <= settings.tableCount; i++) {
     tables.push({
-        id: i,
-        name: `โต๊ะ ${i}`,
-        status: "ว่าง",
-        startTime: null,
-        elapsedSeconds: 0,
-        currentPrice: 0
-    });
+
+    id: i,
+
+    code: `T${String(i).padStart(2, "0")}`,
+
+    name: `โต๊ะ ${i}`,
+
+    relay: i,
+
+    status: "ว่าง",
+
+    customer: null,
+
+    startTime: null,
+
+    elapsedSeconds: 0,
+
+    currentPrice: 0
+
+});
 }
 
 // แปลงวินาทีเป็น HH:MM:SS
