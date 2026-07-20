@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lucky Snooker Manager</title>
+
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header class="topbar">
+    <h1>🎱 Lucky Snooker Manager</h1>
+
+    <button id="settingButton">
+        ⚙️ ตั้งค่า
+    </button>
+</header>
+
+<section class="summary">
+    <div class="card">
+        <h3>💰 รายได้วันนี้</h3>
+        <h2 id="income">0.00 บาท</h2>
+    </div>
+
+    <div class="card">
+        <h3>⚙ อัตราค่าบริการ</h3>
+        <h2>100 บาท/ชั่วโมง</h2>
+        <small>ขั้นต่ำ 50 บาท</small>
+    </div>
+</section>
+
+<h2>โต๊ะสนุกเกอร์</h2>
+
+<div id="tables"></div>
+
+<div id="settingsModal" class="modal">
+
+    <div class="modal-content">
+
+        <h2>⚙️ ตั้งค่าร้าน</h2>
+
+        <label>ราคาต่อชั่วโมง</label>
+        <input type="number" id="hourlyRateInput">
+
+        <label>ค่าบริการขั้นต่ำ</label>
+        <input type="number" id="minimumChargeInput">
+
+        <br><br>
+
+        <button id="saveSettings">💾 บันทึก</button>
+
+        <button id="closeSettings">❌ ปิด</button>
+
+    </div>
+
+</div>
+<script src="js/settings.js"></script>
+<script src="js/app.js"></script>
+
+</body>
+</html>
