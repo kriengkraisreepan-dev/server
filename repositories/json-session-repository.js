@@ -1,10 +1,21 @@
-const { isOpenState } = require("../domain/session-state");
+const { isOpenState, STATES } = require("../domain/session-state");
 class JsonSessionRepository {
-  constructor(state) { this.state = state; if (!Array.isArray(this.state.sessions)) this.state.sessions = []; }
-  findTable(tableId) { return this.state.tables.find(table => String(table.id) === String(tableId)) || null; }
-  findSession(sessionId) { return this.state.sessions.find(session => session.id === sessionId) || null; }
-  findOpenSessionByTable(tableId) { return this.state.sessions.find(session => String(session.tableId) === String(tableId) && isOpenState(session.state)) || null; }
-  createSession(session) { if (this.findSession(session.id)) throw new Error("Duplicate session ID"); this.state.sessions.push(session); return session; }
-  saveSession(session) { const index = this.state.sessions.findIndex(item => item.id === session.id); if (index < 0) throw new Error("Session not found"); this.state.sessions[index] = session; return session; }
+  constructor({ getStore, save }) { this.getStore = getStore; this.save = save; }
+  sessions(create = false) { const store = this.getStore(); if (!Array.isArray(store.tableSessions) && create) store.tableSessions = []; return store.tableSessions || []; }
+  findTable(tableId) { return this.getStore().tables.find(table => String(table.id) === String(tableId)) || null; }
+  findSession(sessionId) { return this.sessions().find(session => session.id === sessionId) || null; }
+  findSessionByTable(tableId) { const table = this.findTable(tableId); return table?.runtimeSessionId ? this.findSession(table.runtimeSessionId) : this.sessions().find(session => String(session.tableId) === String(tableId) && isOpenState(session.state)) || null; }
+  findOpenSessionByTable(tableId) { return this.sessions().find(session => String(session.tableId) === String(tableId) && isOpenState(session.state)) || null; }
+  syncTable(session) {
+    const table = this.findTable(session.tableId); if (!table) throw new Error("Table not found");
+    table.runtimeSessionId = session.id;
+    if (session.state === STATES.ACTIVE) Object.assign(table, { status: "playing", memberId: session.memberId, startTime: session.openedAt });
+    if (session.state === STATES.PAUSED) Object.assign(table, { status: "paused", memberId: session.memberId, startTime: session.openedAt });
+    if (session.state === STATES.AWAITING_PAYMENT || session.state === STATES.CLOSED) table.status = "awaiting_payment";
+    if (session.state === STATES.CANCELLED) this.releaseTable(session.tableId, false);
+  }
+  createSession(session) { if (this.findSession(session.id)) throw new Error("Duplicate session ID"); const table = this.findTable(session.tableId); if (!table) throw new Error("Table not found"); table.items = []; this.sessions(true).push(session); this.syncTable(session); this.save(); return session; }
+  saveSession(session) { const items = this.sessions(true), index = items.findIndex(item => item.id === session.id); if (index < 0) throw new Error("Session not found"); items[index] = session; this.syncTable(session); this.save(); return session; }
+  releaseTable(tableId, persist = true) { const table = this.findTable(tableId); if (!table) throw new Error("Table not found"); Object.assign(table, { status: "free", memberId: null, startTime: null, items: [], runtimeSessionId: null }); if (persist) this.save(); return table; }
 }
 module.exports = { JsonSessionRepository };

@@ -23,3 +23,11 @@ All endpoints are implemented in `index.js`. They currently use the JSON store, 
 | GET | `/api/reports/analytics` | optional `type`, `period` | revenue/time/product aggregates | period syntax is not validated |
 
 `express.static(public)` additionally exposes the SPA assets. No CORS middleware was found; Express therefore does not add permissive CORS headers by default. Local-network exposure must nevertheless be treated as unauthenticated access.
+# Sprint 3 additions and behavior
+
+| Method | Path | Behavior |
+|---|---|---|
+| POST | `/api/tables/:id/checkout` | Creates bill draft and pending cash/transfer payment; does not release table yet. |
+| POST | `/api/payments/:id/confirm` | Confirms a pending payment, closes the session, releases the table. |
+| POST | `/api/payments/:id/cancel` | Cancels a pending payment; bill remains awaiting payment. |
+| DELETE | `/api/bills/:id` | Compatibility path retained; now voids and audits rather than physically deleting. |

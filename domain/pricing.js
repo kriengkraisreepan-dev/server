@@ -16,5 +16,10 @@ function calculateSessionCharge(pricingSnapshot, billableSeconds) {
   const rawSatang = Math.ceil((profile.rateSatang * billableSeconds) / denominator);
   return applyRounding(Math.max(profile.minimumChargeSatang, rawSatang), profile.roundingRule);
 }
+function calculateSessionPreview(pricingSnapshot, billableSeconds) {
+  const profile = normalizePricingProfile(pricingSnapshot); if (!Number.isSafeInteger(billableSeconds) || billableSeconds < 0) throw new Error("billableSeconds must be a non-negative integer");
+  const denominator = profile.unit === "HOUR" ? 3600 : 60;
+  return Math.max(profile.minimumChargeSatang, Math.ceil((profile.rateSatang * billableSeconds) / denominator));
+}
 function snapshotPricing(profile) { return { ...normalizePricingProfile(profile) }; }
-module.exports = { normalizePricingProfile, calculateSessionCharge, snapshotPricing, applyRounding };
+module.exports = { normalizePricingProfile, calculateSessionCharge, calculateSessionPreview, snapshotPricing, applyRounding };

@@ -1,0 +1,27 @@
+const crypto = require("crypto");
+const { bahtToSatang, satangToBaht, requireNonNegativeSatang } = require("../domain/money");
+
+const apiBaht = satang => Number(satangToBaht(satang));
+class BillingService {
+  constructor(repository, clock = () => new Date()) { this.repository = repository; this.clock = clock; }
+  now() { return this.clock().toISOString(); }
+  audit(event, details = {}) { return this.repository.appendAudit({ id: crypto.randomUUID(), occurredAt: this.now(), event, tableId: details.tableId || null, sessionId: details.sessionId || null, billId: details.billId || null, paymentId: details.paymentId || null, userId: details.userId || null, details: details.data || {} }); }
+  createBillDraft({ table, session, memberName = "ลูกค้าทั่วไป" }) {
+    if (!session?.finalChargeSatang && session?.finalChargeSatang !== 0) throw new Error("Session has no final charge");
+    const items = (table.items || []).map(item => {
+      const priceSatang = bahtToSatang(item.price); const quantity = Number(item.quantity);
+      if (!Number.isInteger(quantity) || quantity <= 0) throw new Error("Invalid bill item quantity");
+      return { ...item, quantity, price: apiBaht(priceSatang), total: apiBaht(priceSatang * quantity), priceSatang, totalSatang: priceSatang * quantity };
+    });
+    const playAmountSatang = requireNonNegativeSatang(session.finalChargeSatang, "play amount");
+    const foodAmountSatang = items.reduce((sum, item) => sum + item.totalSatang, 0);
+    const totalSatang = Math.ceil((playAmountSatang + foodAmountSatang) / 100) * 100;
+    const createdAt = session.closedAt || this.now();
+    const receiptNumber = this.repository.nextReceiptNumber(createdAt);
+    const bill = { id: crypto.randomUUID(), number: receiptNumber, receiptNumber, createdAt, tableId: table.id, tableName: table.name, memberId: table.memberId || null, memberName, playStartedAt: session.openedAt, playEndedAt: session.closedAt, playDurationSeconds: session.billableSeconds, playAmount: apiBaht(playAmountSatang), foodAmount: apiBaht(foodAmountSatang), total: apiBaht(totalSatang), playAmountSatang, foodAmountSatang, totalSatang, pricingSnapshot: session.pricingSnapshot || null, paymentMethod: null, status: "awaiting_payment", items };
+    this.repository.saveBill(bill); this.audit("BILL_DRAFT_CREATED", { tableId: table.id, sessionId: session.id, billId: bill.id, data: { receiptNumber, totalSatang } }); return bill;
+  }
+  markPaid(bill) { if (!["awaiting_payment", "pending"].includes(bill.status)) throw new Error("Bill is not awaiting payment"); bill.status = "paid"; bill.paidAt = this.now(); this.repository.saveBill(bill); return bill; }
+  voidBill(bill, reason = "") { if (!bill || bill.status === "void") throw new Error("Bill cannot be voided"); bill.status = "void"; bill.voidedAt = this.now(); bill.voidReason = String(reason || "").trim(); this.repository.saveBill(bill); this.audit("BILL_VOIDED", { tableId: bill.tableId, billId: bill.id, data: { reason: bill.voidReason } }); return bill; }
+}
+module.exports = { BillingService };

@@ -22,7 +22,7 @@ const updated = settings.updateSettings({ hourlyRate: "125.50", minimumCharge: "
 assert.strictEqual(updated.hourlyRateSatang, 12550); assert.strictEqual(updated.minimumChargeSatang, 6000); assert.strictEqual(updated.hourlyRate, 125.5); assert.strictEqual(updated.pricingProfiles.find(profile => profile.id === updated.defaultPricingProfileId).rateSatang, 12550); assert.strictEqual(saved, 1);
 assert.throws(() => settings.updateSettings({ timeZone: "UTC" }));
 
-const repository = new JsonSessionRepository(state), sessions = new TableSessionService(repository, clock);
+const repository = new JsonSessionRepository({ getStore: () => state, save: () => {} }), sessions = new TableSessionService(repository, clock);
 const profile = { id: "weekday", unit: "HOUR", rateSatang: 10000, minimumChargeSatang: 5000, roundingRule: "NONE" };
 const active = sessions.openSession({ tableId: 1, pricingProfile: profile });
 profile.rateSatang = 1;

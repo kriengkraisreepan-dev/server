@@ -49,3 +49,6 @@ LuckySnookerManager/
 4. Migrations are append-only, transactional, backed up, and versioned.
 5. Electron main/preload/renderer run with least privilege.
 6. The License Manager and Updater are separate executables and signing domains.
+# Sprint 3 runtime extension
+
+The JSON runtime now applies `Route → TableSessionService / BillingService / PaymentService → JsonSessionRepository / JsonBillingRepository → store.json`. Financial and audit writes are isolated from Express routes; SQLite remains a future migration target only.

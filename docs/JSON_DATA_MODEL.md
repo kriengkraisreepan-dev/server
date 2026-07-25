@@ -31,3 +31,6 @@ Primary keys today are application-managed IDs; no database enforces them. The i
 - Current tables carry session state and nested items. SQLite separates an open `table_session` and `session_items`.
 - Current bills have no discount field; target schema reserves `discount_amount` as zero for imported rows.
 - A legacy JSON backup has no schema/version marker, so import validation is mandatory.
+# Sprint 3 additive runtime fields
+
+The JSON production store now may contain `auditLogs` (array). New bills add `receiptNumber`, `*Satang` amounts, pricing snapshot, `awaiting_payment`/`paid`/`void` status, and void metadata. New payments add `method`, `amountSatang`, `pending`/`paid`/`cancelled` status, and timestamps. Older bill/payment shapes remain readable.

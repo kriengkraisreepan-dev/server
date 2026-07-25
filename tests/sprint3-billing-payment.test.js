@@ -1,0 +1,28 @@
+const assert = require("assert");
+const { JsonBillingRepository } = require("../repositories/json-billing-repository");
+const { BillingService } = require("../services/billing-service");
+const { PaymentService } = require("../services/payment-service");
+
+let now = new Date("2026-07-26T04:00:00.000Z");
+const store = { bills: [], payments: [], auditLogs: [] };
+const repository = new JsonBillingRepository({ getStore: () => store, save: () => {} });
+const clock = () => now;
+const billing = new BillingService(repository, clock);
+const payments = new PaymentService(repository, billing, clock);
+const table = { id: 1, name: "Table 1", memberId: null, items: [{ productId: "water", name: "Water", price: 15, quantity: 2 }] };
+const session = { id: "session-1", openedAt: "2026-07-26T03:00:00.000Z", closedAt: now.toISOString(), billableSeconds: 3600, finalChargeSatang: 10000, pricingSnapshot: { rateSatang: 10000 } };
+const bill = billing.createBillDraft({ table, session });
+assert.strictEqual(bill.receiptNumber, "20260726-000001"); assert.strictEqual(bill.totalSatang, 13000); assert.strictEqual(bill.status, "awaiting_payment");
+assert.throws(() => payments.createPayment({ billId: bill.id, method: "cash", amountSatang: 12999 }), /less than/);
+const { payment } = payments.createPayment({ billId: bill.id, method: "cash", amountSatang: 13000 });
+assert.throws(() => payments.createPayment({ billId: bill.id, method: "cash", amountSatang: 13000 }), /already has/);
+const confirmed = payments.confirmPayment(payment.id); assert.strictEqual(confirmed.bill.status, "paid"); assert.strictEqual(confirmed.payment.status, "paid");
+assert.throws(() => payments.confirmPayment(payment.id), /not pending/); assert.throws(() => payments.cancelPayment(payment.id), /Only pending/);
+now = new Date("2026-07-26T05:00:00.000Z");
+const bill2 = billing.createBillDraft({ table: { ...table, items: [] }, session: { ...session, id: "session-2", closedAt: now.toISOString() } });
+assert.strictEqual(bill2.receiptNumber, "20260726-000002");
+const pending = payments.createPayment({ billId: bill2.id, method: "transfer", amountSatang: bill2.totalSatang }).payment;
+payments.cancelPayment(pending.id); assert.strictEqual(pending.status, "cancelled"); assert.strictEqual(bill2.status, "awaiting_payment");
+billing.voidBill(bill2, "operator error"); assert.strictEqual(bill2.status, "void");
+assert.ok(store.auditLogs.some(item => item.event === "BILL_DRAFT_CREATED")); assert.ok(store.auditLogs.some(item => item.event === "PAYMENT_CONFIRMED")); assert.ok(store.auditLogs.some(item => item.event === "BILL_VOIDED"));
+console.log("Sprint 3 billing and payment tests passed");
