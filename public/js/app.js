@@ -1,209 +1,49 @@
-// =============================
-// Lucky Snooker Manager v0.3
-// =============================
-
-// ตั้งค่าระบบ
-
-// รายได้วันนี้
-let todayIncome = 0;
-
-// สร้างโต๊ะตามจำนวนที่ตั้งไว้
-const tables = [];
-
-for (let i = 1; i <= settings.tableCount; i++) {
-    tables.push({
-
-    id: i,
-
-    code: `T${String(i).padStart(2, "0")}`,
-
-    name: `โต๊ะ ${i}`,
-
-    relay: i,
-
-    status: "ว่าง",
-
-    customer: null,
-
-    startTime: null,
-
-    elapsedSeconds: 0,
-
-    currentPrice: 0
-
-});
+let state, page = "dashboard", analytics = null, reportType = "month", reportPeriod = new Date().toISOString().slice(0, 7), backups = null;
+const $ = s => document.querySelector(s);
+const money = n => new Intl.NumberFormat("th-TH", { style:"currency", currency:"THB" }).format(n || 0);
+const time = s => new Date(s).toLocaleTimeString("th-TH", { hour:"2-digit", minute:"2-digit" });
+const duration = n => `${String(Math.floor(n / 3600)).padStart(2,"0")}:${String(Math.floor(n % 3600 / 60)).padStart(2,"0")}:${String(n % 60).padStart(2,"0")}`;
+async function api(url, options = {}) { const r = await fetch(url, { headers:{ "Content-Type":"application/json" }, ...options }); const data = await r.json(); if (!r.ok) throw Error(data.error || "เกิดข้อผิดพลาด"); return data; }
+async function refresh() { state = await api("/api/state"); render(); }
+function notify(text, bad = false) { const t = $("#toast"); t.textContent = text; t.style.background = bad ? "#991b1b" : "#166534"; t.style.opacity = 1; setTimeout(() => t.style.opacity = 0, 2600); }
+function nav() { document.querySelectorAll("aside button[data-page]").forEach(b => b.onclick = async () => { page = b.dataset.page; if (page === "reports") await loadAnalytics(); if (page === "settings") await loadBackups(); render(); }); $("#refresh").onclick = refresh; }
+async function loadBackups() { try { backups = await api("/api/backups"); } catch (e) { notify(e.message, true); } }
+function render() { if (!state) return; const names={dashboard:"ภาพรวม",tables:"โต๊ะสนุกเกอร์",pos:"POS อาหาร/เครื่องดื่ม",members:"สมาชิก",bills:"ประวัติบิล",reports:"รายงานและสถิติ",settings:"ตั้งค่าร้าน"}; $("#title").textContent=names[page]; $("#clock").textContent=new Date().toLocaleString("th-TH"); const pages={dashboard,tables,pos,members,bills,reports,settings}; $("#app").innerHTML=pages[page](); bind(); }
+function dashboard(){ const paid=state.bills.filter(b=>b.status==="paid"&&b.createdAt.slice(0,10)===new Date().toISOString().slice(0,10)); const total=paid.reduce((s,b)=>s+b.total,0); return `<div class="grid"><div class="card"><div class="muted">รายได้วันนี้</div><div class="stat">${money(total)}</div></div><div class="card"><div class="muted">โต๊ะกำลังเล่น</div><div class="stat">${state.tables.filter(t=>t.status==="playing").length}/${state.tables.length}</div></div><div class="card"><div class="muted">สมาชิก</div><div class="stat">${state.members.length}</div></div><div class="card"><div class="muted">บิลวันนี้</div><div class="stat">${paid.length}</div></div></div><h3 style="margin-top:25px">สถานะโต๊ะ</h3><div class="grid">${state.tables.map(tableCard).join("")}</div>`; }
+function tableCard(t){ const items=t.items.reduce((s,i)=>s+i.price*i.quantity,0); return `<div class="card table ${t.status}"><h3>${t.name}<span class="badge ${t.status}">${t.status==="playing"?"กำลังเล่น":"ว่าง"}</span></h3>${t.status==="playing"?`<div class="muted">${t.member?`สมาชิก: ${t.member.name}`:"ลูกค้าทั่วไป"}</div><p>เริ่ม ${time(t.startTime)} · ${duration(t.elapsedSeconds)}</p><div class="total">${money(t.currentPrice+items)}</div><small>ค่าโต๊ะ ${money(t.currentPrice)} · POS ${money(items)}</small>`:`<p class="muted">พร้อมใช้งาน</p>`}<div class="actions">${t.status==="free"?`<button data-start="${t.id}">เปิดโต๊ะ</button>`:`<button data-order="${t.id}">เพิ่มรายการ</button><button class="success" data-checkout="${t.id}">คิดเงิน</button>`}<button class="outline" data-relay="${t.id}">${t.relayState==="on"?"ปิด Relay":"เปิด Relay"}</button></div></div>`; }
+function tables(){ return `<div class="grid">${state.tables.map(tableCard).join("")}</div>`; }
+function pos(){ const open=state.tables.filter(t=>t.status==="playing"); return `<div class="card"><h3>เลือกโต๊ะเพื่อเพิ่มรายการ</h3>${open.length?`<select id="posTable">${open.map(t=>`<option value="${t.id}">${t.name} — ${t.member?.name||"ลูกค้าทั่วไป"}</option>`).join("")}</select><div class="grid">${state.products.filter(p=>p.active).map(p=>`<div class="card"><b>${p.name}</b><p class="muted">${p.category}</p><div class="total">${money(p.price)}</div><button data-product="${p.id}">+ เพิ่มรายการ</button></div>`).join("")}</div>`:`<p class="muted">ยังไม่มีโต๊ะที่เปิดใช้งาน</p>`}</div><div class="card" style="margin-top:18px"><h3>เพิ่มสินค้า</h3><form id="productForm" class="two"><input name="name" placeholder="ชื่อสินค้า" required><input name="price" type="number" min="0" placeholder="ราคา" required><input name="category" placeholder="หมวดหมู่ เช่น เครื่องดื่ม"><button>บันทึกสินค้า</button></form></div>`; }
+function members(){ return `<div class="grid"><div class="card form"><h3>เพิ่มสมาชิก</h3><form id="memberForm"><label>ชื่อ</label><input name="name" required><label>โทรศัพท์</label><input name="phone"><label>แต้มเริ่มต้น</label><input name="points" type="number" value="0"><label>หมายเหตุ</label><input name="note"><button>บันทึกสมาชิก</button></form></div><div class="card"><h3>รายชื่อสมาชิก (${state.members.length})</h3>${state.members.length?`<table><tr><th>รหัส</th><th>ชื่อ</th><th>โทรศัพท์</th><th>แต้ม</th></tr>${state.members.map(m=>`<tr><td>${m.code}</td><td>${m.name}</td><td>${m.phone||"-"}</td><td>${m.points}</td></tr>`).join("")}</table>`:`<p class="muted">ยังไม่มีข้อมูลสมาชิก</p>`}</div></div>`; }
+function bills(){ return `<div class="card"><h3>ประวัติบิล</h3><p class="muted">ใช้การลบเฉพาะกรณีบันทึกผิด เพราะบิลและข้อมูลการชำระเงินที่เกี่ยวข้องจะถูกลบออกจากฐานข้อมูล</p><table><tr><th>เลขบิล</th><th>เวลา</th><th>โต๊ะ / ลูกค้า</th><th>ยอด</th><th>การชำระ</th><th>สถานะ</th><th></th></tr>${state.bills.map(b=>`<tr><td>${b.number}</td><td>${new Date(b.createdAt).toLocaleString("th-TH")}</td><td>${b.tableName}<br><small>${b.memberName}</small></td><td>${money(b.total)}</td><td>${b.paymentMethod==="qr"?"QR Payment":"เงินสด"}</td><td><span class="badge ${b.status}">${b.status==="paid"?"ชำระแล้ว":"รอชำระ"}</span></td><td><div class="actions"><button class="outline" data-print-bill="${b.id}">พิมพ์</button><button class="danger" data-delete-bill="${b.id}">ลบบิล</button></div></td></tr>`).join("")||`<tr><td colspan="7" class="muted">ยังไม่มีบิล</td></tr>`}</table></div>`; }
+function reports(){ const a=analytics; const periodInput=reportType==="year"?`<input name="period" type="number" min="2020" max="2100" value="${reportPeriod}" required>`:`<input name="period" type="month" value="${reportPeriod}" required>`; if(!a)return `<div class="card">กำลังโหลดรายงาน…</div>`; const hour=a.peakHour.bills?`${String(a.peakHour.hour).padStart(2,"0")}:00–${String(a.peakHour.hour).padStart(2,"0")}:59`:"ยังไม่มีข้อมูล"; const weekday=a.peakWeekday.bills?a.peakWeekday.name:"ยังไม่มีข้อมูล"; const max=Math.max(...a.daily.map(x=>x.revenue),1); return `<div class="card"><form id="reportFilter" class="two"><select name="type" id="reportType"><option value="month" ${reportType==="month"?"selected":""}>รายเดือน</option><option value="year" ${reportType==="year"?"selected":""}>รายปี</option></select>${periodInput}<button>แสดงรายงาน</button></form></div><div class="grid" style="margin-top:18px"><div class="card"><div class="muted">รายได้รวม</div><div class="stat">${money(a.revenue)}</div></div><div class="card"><div class="muted">ค่าโต๊ะ / POS</div><div class="stat">${money(a.tableRevenue)} / ${money(a.posRevenue)}</div></div><div class="card"><div class="muted">จำนวนบิล / ยอดเฉลี่ย</div><div class="stat">${a.billCount} / ${money(a.averageBill)}</div></div><div class="card"><div class="muted">ช่วงเวลาลูกค้าเยอะที่สุด</div><div class="stat">${hour}</div><small>${a.peakHour.bills} บิล · ${money(a.peakHour.revenue)}</small></div></div><div class="grid" style="margin-top:18px"><div class="card"><h3>ข้อมูลเชิงวิเคราะห์</h3><p>วันที่ลูกค้าใช้บริการมากที่สุด: <b>${weekday}</b> (${a.peakWeekday.bills} บิล)</p><p>หลักฐานอ้างอิงจากเวลาที่ออกบิลและบิลที่ชำระสำเร็จ</p></div><div class="card"><h3>สินค้า POS ยอดนิยม</h3>${a.topProducts.length?a.topProducts.map(p=>`<div class="item"><span>${p.name} × ${p.quantity}</span><b>${money(p.revenue)}</b></div>`).join(""):`<p class="muted">ยังไม่มีการขาย POS</p>`}</div></div><div class="card" style="margin-top:18px"><h3>แนวโน้มรายได้ตามวัน</h3>${a.daily.length?a.daily.map(d=>`<div class="item"><span>${d.date}</span><span style="width:45%;height:10px;background:#0b1120;border-radius:8px;overflow:hidden"><i style="display:block;height:100%;width:${Math.max(3,d.revenue/max*100)}%;background:#f8bb31"></i></span><b>${money(d.revenue)}</b></div>`).join(""):`<p class="muted">ไม่มีบิลที่ชำระแล้วในช่วงที่เลือก</p>`}</div>`; }
+function settings(){ const s=state.settings; return `<div class="card form"><h3>ตั้งค่าร้าน</h3><form id="settingsForm"><label>ชื่อร้าน</label><input name="shopName" value="${s.shopName}"><label>อัตราค่าโต๊ะต่อชั่วโมง</label><input name="hourlyRate" type="number" min="0" value="${s.hourlyRate}"><label>ค่าบริการขั้นต่ำ</label><input name="minimumCharge" type="number" min="0" value="${s.minimumCharge}"><label>PromptPay ID (สำหรับแสดงในขั้นต่อไป)</label><input name="promptPayId" value="${s.promptPayId||""}"><button>บันทึก</button></form><p class="muted">การเชื่อม ESP32: ตั้งค่า environment <code>ESP32_BASE_URL</code> แล้วระบบจะเรียก <code>/relay/{channel}?state=on|off</code></p></div>${backupSection()}`; }
+function backupSection(){ const list=backups||[]; return `<div class="card" style="margin-top:18px"><h3>สำรองข้อมูล (Backup)</h3><p class="muted">ระบบสำรองข้อมูลอัตโนมัติทุก 24 ชั่วโมง เก็บล่าสุด ${MAX_BACKUPS_LABEL} ชุด และสำรองให้เองก่อนกู้คืนทุกครั้ง</p><button id="backupNow">สำรองข้อมูลตอนนี้</button><table style="margin-top:14px"><tr><th>วันที่สำรอง</th><th>ขนาดไฟล์</th><th></th></tr>${list.length?list.map(b=>`<tr><td>${new Date(b.createdAt).toLocaleString("th-TH")}</td><td>${(b.size/1024).toFixed(1)} KB</td><td><div class="actions"><button class="outline" data-backup-download="${b.file}">ดาวน์โหลด</button><button data-backup-restore="${b.file}">กู้คืน</button><button class="danger" data-backup-delete="${b.file}">ลบ</button></div></td></tr>`).join(""):`<tr><td colspan="3" class="muted">ยังไม่มีข้อมูลสำรอง</td></tr>`}</table></div>`; }
+const MAX_BACKUPS_LABEL = 30;
+function openModal(html){ $("#modalBody").innerHTML=html; $("#modal").classList.remove("hidden"); } function closeModal(){ $("#modal").classList.add("hidden"); } $("#closeModal").onclick=closeModal;
+function bind(){ document.querySelectorAll("[data-start]").forEach(b=>b.onclick=()=>startDialog(b.dataset.start)); document.querySelectorAll("[data-order]").forEach(b=>b.onclick=()=>orderDialog(b.dataset.order)); document.querySelectorAll("[data-checkout]").forEach(b=>b.onclick=()=>checkoutDialog(b.dataset.checkout)); document.querySelectorAll("[data-relay]").forEach(b=>b.onclick=()=>relay(b.dataset.relay)); document.querySelectorAll("[data-product]").forEach(b=>b.onclick=()=>addProduct(b.dataset.product)); document.querySelectorAll("[data-print-bill]").forEach(b=>b.onclick=()=>printBill(b.dataset.printBill)); document.querySelectorAll("[data-delete-bill]").forEach(b=>b.onclick=()=>deleteBill(b.dataset.deleteBill)); $("#memberForm") && ($("#memberForm").onsubmit=submitMember); $("#productForm") && ($("#productForm").onsubmit=submitProduct); $("#settingsForm") && ($("#settingsForm").onsubmit=submitSettings); $("#reportFilter") && ($("#reportFilter").onsubmit=applyReportFilter); $("#reportType") && ($("#reportType").onchange=e=>{ reportType=e.target.value; reportPeriod=reportType==="year"?String(new Date().getFullYear()):new Date().toISOString().slice(0,7); render(); }); $("#backupNow") && ($("#backupNow").onclick=createBackup); document.querySelectorAll("[data-backup-download]").forEach(b=>b.onclick=()=>{ window.open(`/api/backups/${encodeURIComponent(b.dataset.backupDownload)}/download`, "_blank"); }); document.querySelectorAll("[data-backup-restore]").forEach(b=>b.onclick=()=>restoreBackup(b.dataset.backupRestore)); document.querySelectorAll("[data-backup-delete]").forEach(b=>b.onclick=()=>deleteBackup(b.dataset.backupDelete)); }
+async function createBackup(){ try{ await api("/api/backups",{method:"POST"}); await loadBackups(); render(); notify("สำรองข้อมูลสำเร็จ"); }catch(e){ notify(e.message,true); } }
+async function restoreBackup(file){ if(!confirm(`ยืนยันกู้คืนข้อมูลจากไฟล์นี้?\nข้อมูลปัจจุบันจะถูกแทนที่ (ระบบจะสำรองข้อมูลปัจจุบันไว้ให้ก่อน)`)) return; try{ const result=await api(`/api/backups/${encodeURIComponent(file)}/restore`,{method:"POST"}); await refresh(); await loadBackups(); analytics=null; render(); notify(result.message); }catch(e){ notify(e.message,true); } }
+async function deleteBackup(file){ if(!confirm(`ยืนยันลบไฟล์สำรองข้อมูลนี้?`)) return; try{ const result=await api(`/api/backups/${encodeURIComponent(file)}`,{method:"DELETE"}); await loadBackups(); render(); notify(result.message); }catch(e){ notify(e.message,true); } }
+async function loadAnalytics(){ try { analytics=await api(`/api/reports/analytics?type=${encodeURIComponent(reportType)}&period=${encodeURIComponent(reportPeriod)}`); } catch(e) { notify(e.message,true); } }
+async function applyReportFilter(e){ e.preventDefault(); const d=Object.fromEntries(new FormData(e.target)); reportType=d.type; reportPeriod=d.period; analytics=null; render(); await loadAnalytics(); render(); }
+function startDialog(id){ openModal(`<h3>เปิด ${state.tables.find(t=>t.id==id).name}</h3><label>ผูกสมาชิก (ไม่บังคับ)</label><select id="memberChoice"><option value="">ลูกค้าทั่วไป</option>${state.members.map(m=>`<option value="${m.id}">${m.code} — ${m.name}</option>`).join("")}</select><button id="confirmStart">เริ่มจับเวลาและเปิด Relay</button>`); $("#confirmStart").onclick=async()=>{try{const data=await api(`/api/tables/${id}/start`,{method:"POST",body:JSON.stringify({memberId:$("#memberChoice").value||null})});closeModal();await refresh();notify(data.warning||"เปิดโต๊ะและสั่งเปิด Relay แล้ว",!!data.warning);}catch(e){notify(e.message,true)}}; }
+function orderDialog(id){ const t=state.tables.find(t=>t.id==id); openModal(`<h3>${t.name}: รายการปัจจุบัน</h3>${t.items.map(i=>`<div class="item"><span>${i.name} × ${i.quantity}</span><b>${money(i.price*i.quantity)}</b></div>`).join("")||"<p class=muted>ยังไม่มีรายการ</p>"}<p class="muted">ใช้ปุ่ม “เพิ่มรายการ” หรือเมนู POS เพื่อเพิ่มสินค้า</p>`); }
+function checkoutDialog(id){ const t=state.tables.find(t=>t.id==id), food=t.items.reduce((s,i)=>s+i.price*i.quantity,0); openModal(`<h3>คิดเงิน ${t.name}</h3><p>ค่าโต๊ะ: ${money(t.currentPrice)}<br>อาหาร/เครื่องดื่ม: ${money(food)}</p><div class="total">รวมโดยประมาณ ${money(t.currentPrice+food)}</div><div class="actions"><button id="cash">รับเงินสด</button><button id="qr">QR Payment</button></div>`); $("#cash").onclick=()=>checkout(id,"cash"); $("#qr").onclick=()=>checkout(id,"qr"); }
+async function checkout(id,method){ try{const data=await api(`/api/tables/${id}/checkout`,{method:"POST",body:JSON.stringify({paymentMethod:method})}); if(method==="qr"){openModal(`<h3>QR Payment</h3><p>เลขอ้างอิง: <b>${data.payment.reference}</b></p><div class="qr">PROMPTPAY / AMOUNT ${data.payment.amount.toFixed(2)}<br>REFERENCE: ${data.payment.reference}<br><br>เชื่อมผู้ให้บริการ QR เพื่อสร้างภาพ QR จริง</div><p class="muted">หลังตรวจยอดแล้ว กดปุ่มยืนยัน</p><button id="confirmPay">ยืนยันรับชำระ ${money(data.payment.amount)}</button>`);$("#confirmPay").onclick=async()=>{const confirmed=await api(`/api/payments/${data.payment.id}/confirm`,{method:"POST"});closeModal();await refresh();notify(confirmed.warning||"ชำระเงินแล้วและปิด Relay",!!confirmed.warning);offerPrint(data.bill.id);};}else{closeModal();await refresh();notify(data.warning||`ปิดบิล ${data.bill.number} และปิด Relay แล้ว`,!!data.warning);offerPrint(data.bill.id);}}catch(e){notify(e.message,true)} }
+async function deleteBill(id){ const bill=state.bills.find(b=>b.id===id); if(!bill || !confirm(`ยืนยันลบบิล ${bill.number}?\nข้อมูลบิลและรายการชำระเงินที่เกี่ยวข้องจะถูกลบถาวร`)) return; try { const result=await api(`/api/bills/${id}`,{method:"DELETE"}); analytics=null; await refresh(); notify(result.message); } catch(e) { notify(e.message,true); } }
+function escapeHtml(value){ return String(value??"").replace(/[&<>'"]/g,char=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;","\"":"&quot;"})[char]); }
+function offerPrint(billId){ const bill=state.bills.find(b=>b.id===billId); if(!bill) return; openModal(`<h3>ชำระเงินสำเร็จ</h3><p>บิล <b>${bill.number}</b> ยอด ${money(bill.total)}</p><p>ต้องการพิมพ์ใบเสร็จให้ลูกค้าหรือไม่?</p><div class="actions"><button id="printNow">พิมพ์ใบเสร็จ</button><button class="outline" id="skipPrint">ไม่พิมพ์ตอนนี้</button></div>`); $("#printNow").onclick=()=>{closeModal();printBill(billId);}; $("#skipPrint").onclick=closeModal; }
+function printBill(id){ const bill=state.bills.find(b=>b.id===id); if(!bill) return; const popup=window.open("","receipt","width=420,height=700"); if(!popup){ notify("เบราว์เซอร์บล็อกหน้าต่างพิมพ์ กรุณาอนุญาตป๊อปอัป",true); return; } const items=(bill.items||[]).map(i=>`<tr><td>${escapeHtml(i.name)} × ${i.quantity}</td><td class="right">${money(i.total)}</td></tr>`).join("")||"<tr><td colspan=\"2\" class=\"small\">ไม่มีรายการอาหาร/เครื่องดื่ม</td></tr>"; const payment=bill.paymentMethod==="qr"?"QR Payment":"เงินสด"; const start=bill.playStartedAt?new Date(bill.playStartedAt).toLocaleTimeString("th-TH",{hour:"2-digit",minute:"2-digit",second:"2-digit"}):"-"; const end=bill.playEndedAt?new Date(bill.playEndedAt).toLocaleTimeString("th-TH",{hour:"2-digit",minute:"2-digit",second:"2-digit"}):"-"; const played=Number.isFinite(bill.playDurationSeconds)?duration(bill.playDurationSeconds):"-"; popup.document.write(`<!doctype html><html lang="th"><head><meta charset="utf-8"><title>ใบเสร็จ ${escapeHtml(bill.number)}</title><style>@page{size:80mm auto;margin:4mm}*{box-sizing:border-box}body{width:72mm;margin:0;font-family:Arial,"Tahoma",sans-serif;color:#000;font-size:12px}.center{text-align:center}.right{text-align:right}h2{font-size:17px;margin:0 0 4px}.line{border-top:1px dashed #000;margin:9px 0}table{width:100%;border-collapse:collapse}td{padding:3px 0}.total{font-weight:bold;font-size:15px}.small{font-size:10px}@media print{body{width:72mm}}</style></head><body><div class="center"><h2>${escapeHtml(state.settings.shopName)}</h2><div>ใบเสร็จรับเงิน</div><div class="small">เลขที่ ${escapeHtml(bill.number)}</div></div><div class="line"></div><table><tr><td>วันที่</td><td class="right">${new Date(bill.createdAt).toLocaleString("th-TH")}</td></tr><tr><td>โต๊ะ</td><td class="right">${escapeHtml(bill.tableName)}</td></tr><tr><td>ลูกค้า</td><td class="right">${escapeHtml(bill.memberName)}</td></tr><tr><td>เริ่มเล่น</td><td class="right">${start}</td></tr><tr><td>หยุดเล่น</td><td class="right">${end}</td></tr><tr><td>เวลาเล่นรวม</td><td class="right">${played}</td></tr></table><div class="line"></div><table>${items}<tr><td>ค่าเวลาโต๊ะ</td><td class="right">${money(bill.playAmount)}</td></tr><tr><td>อาหาร/เครื่องดื่ม</td><td class="right">${money(bill.foodAmount)}</td></tr></table><div class="line"></div><table class="total"><tr><td>รวมทั้งสิ้น</td><td class="right">${money(bill.total)}</td></tr><tr class="small"><td>ชำระโดย</td><td class="right">${payment}</td></tr></table><div class="line"></div><div class="center small">ขอบคุณที่ใช้บริการ</div><script>window.onload=()=>{window.focus();window.print();};<\/script></body></html>`); popup.document.close(); }
+async function relay(id){const t=state.tables.find(t=>t.id==id);try{const r=await api(`/api/relay/${id}`,{method:"POST",body:JSON.stringify({state:t.relayState==="on"?"off":"on"})});await refresh();notify(r.warning||r.message);}catch(e){notify(e.message,true)}}
+async function addProduct(productId){const tableId=$("#posTable")?.value;if(!tableId)return;try{await api(`/api/tables/${tableId}/items`,{method:"POST",body:JSON.stringify({productId})});await refresh();notify("เพิ่มรายการแล้ว");}catch(e){notify(e.message,true)}}
+async function submitMember(e){e.preventDefault();const d=Object.fromEntries(new FormData(e.target));try{await api("/api/members",{method:"POST",body:JSON.stringify(d)});e.target.reset();await refresh();notify("เพิ่มสมาชิกแล้ว");}catch(x){notify(x.message,true)}} async function submitProduct(e){e.preventDefault();const d=Object.fromEntries(new FormData(e.target));try{await api("/api/products",{method:"POST",body:JSON.stringify(d)});await refresh();notify("เพิ่มสินค้าแล้ว");}catch(x){notify(x.message,true)}} async function submitSettings(e){e.preventDefault();const d=Object.fromEntries(new FormData(e.target));d.hourlyRate=Number(d.hourlyRate);d.minimumCharge=Number(d.minimumCharge);try{await api("/api/settings",{method:"PUT",body:JSON.stringify(d)});await refresh();notify("บันทึกการตั้งค่าแล้ว");}catch(x){notify(x.message,true)}}
+function tickPlayingTables(){
+  if(!state || !state.tables.some(t=>t.status==="playing")) return;
+  state.tables.forEach(t=>{
+    if(t.status!=="playing") return;
+    t.elapsedSeconds++;
+    t.currentPrice=Math.max(state.settings.minimumCharge,(t.elapsedSeconds/3600)*state.settings.hourlyRate);
+  });
+  if(page==="dashboard" || page==="tables") render();
 }
-
-// แปลงวินาทีเป็น HH:MM:SS
-function formatTime(seconds) {
-    const h = String(Math.floor(seconds / 3600)).padStart(2, "0");
-    const m = String(Math.floor((seconds % 3600) / 60)).padStart(2, "0");
-    const s = String(seconds % 60).padStart(2, "0");
-
-    return `${h}:${m}:${s}`;
-}
-
-// แสดงโต๊ะทั้งหมด
-function renderTables() {
-
-    const container = document.getElementById("tables");
-
-    container.innerHTML = "";
-
-    tables.forEach(table => {
-
-        const card = document.createElement("div");
-        card.className =
-    table.status === "กำลังเล่น"
-        ? "table playing"
-        : "table free";
-
-        let startText = "-";
-
-        if (table.startTime) {
-            startText = table.startTime.toLocaleTimeString();
-        }
-
-        card.innerHTML = `
-            <h2>🎱 ${table.name}</h2>
-
-            <p>
-    <strong>สถานะ :</strong>
-    <span class="status ${
-        table.status === "กำลังเล่น"
-            ? "playing"
-            : "free"
-    }">
-        ${
-            table.status === "กำลังเล่น"
-                ? "🟢 กำลังเล่น"
-                : "🔴 ว่าง"
-        }
-    </span>
-</p>
-
-            <p><strong>เริ่มเล่น :</strong> ${startText}</p>
-
-            <p><strong>เวลา :</strong> ${formatTime(table.elapsedSeconds)}</p>
-
-            <p><strong>ยอดเงิน :</strong> ${table.currentPrice.toFixed(2)} บาท</p>
-
-            <button class="table-btn">
-                ${table.status === "ว่าง" ? "เปิดโต๊ะ" : "ปิดโต๊ะ"}
-            </button>
-        `;
-
-        const btn=card.querySelector(".table-btn");
-        btn.addEventListener("click",()=>toggleTable(table.id));
-
-        container.appendChild(card);
-
-    });
-
-    document.getElementById("income").textContent =
-    todayIncome.toFixed(2) + " บาท";
-
-// Dashboard
-document.getElementById("totalTables").textContent =
-    tables.length;
-
-document.getElementById("playingTables").textContent =
-    tables.filter(t => t.status === "กำลังเล่น").length;
-
-document.getElementById("freeTables").textContent =
-    tables.filter(t => t.status === "ว่าง").length;
-}
-// =============================
-// ระบบหน้าต่างตั้งค่า
-// =============================
-
-const settingsModal = document.getElementById("settingsModal");
-
-const settingButton = document.getElementById("settingButton");
-
-const closeSettings = document.getElementById("closeSettings");
-
-const saveSettings = document.getElementById("saveSettings");
-
-settingButton.addEventListener("click", () => {
-
-    document.getElementById("hourlyRateInput").value =
-        settings.hourlyRate;
-
-    document.getElementById("minimumChargeInput").value =
-        settings.minimumCharge;
-
-    settingsModal.style.display = "flex";
-
-});
-
-closeSettings.addEventListener("click", () => {
-
-    settingsModal.style.display = "none";
-
-});
-
-saveSettings.addEventListener("click", () => {
-
-    settings.hourlyRate =
-        Number(document.getElementById("hourlyRateInput").value);
-
-    settings.minimumCharge =
-        Number(document.getElementById("minimumChargeInput").value);
-
-    // อัปเดตกล่อง "อัตราค่าบริการ"
-    document.querySelector(".summary .card:nth-child(2) h2").textContent =
-        settings.hourlyRate + " บาท/ชั่วโมง";
-
-    document.querySelector(".summary .card:nth-child(2) small").textContent =
-        "ขั้นต่ำ " + settings.minimumCharge + " บาท";
-
-    // คำนวณราคาใหม่ของโต๊ะที่กำลังเล่น
-    tables.forEach(table => {
-
-        if (table.status === "กำลังเล่น") {
-
-            table.currentPrice =
-                calculatePrice(table.elapsedSeconds);
-
-        }
-
-    });
-
-    renderTables();
-
-    settingsModal.style.display = "none";
-
-});
-
-// เปิด/ปิดโต๊ะ
-function toggleTable(id) {
-
-    const table = tables.find(t => t.id === id);
-
-    if (table.status === "ว่าง") {
-
-        table.status = "กำลังเล่น";
-        table.startTime = new Date();
-        table.elapsedSeconds = 0;
-        table.currentPrice = settings.minimumCharge;
-
-    } else {
-
-        todayIncome += table.currentPrice;
-
-        table.status = "ว่าง";
-        table.startTime = null;
-        table.elapsedSeconds = 0;
-        table.currentPrice = 0;
-
-    }
-
-    renderTables();
-
-}
-
-// เริ่มต้นโปรแกรม
-renderTables();
-
-startTimer();
+nav(); refresh().catch(e=>notify(e.message,true)); setInterval(tickPlayingTables,1000); setInterval(()=>{ if(state && state.tables.some(t=>t.status==="playing")) refresh(); },15000);

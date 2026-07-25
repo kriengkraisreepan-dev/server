@@ -1,0 +1,10 @@
+# Installed packages and per-machine runtime data must not enter source control.
+node_modules/
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.pem
+*.key
+.env
+.env.*
