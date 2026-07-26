@@ -38,3 +38,5 @@ The JSON production store now may contain `auditLogs` (array). New bills add `re
 Sprint 4 adds `voidReason`, `voidedAt`, `voidedBy`, and `originalReceiptNumber` to a voided bill. Audit entries add `actorId` (currently `SYSTEM` by default, or `UNKNOWN` when blank) while retaining the older `userId` compatibility field.
 
 Sprint 5 adds `users[]`: `userId`, `username`, `passwordHash` (`scrypt$salt$hash`), `displayName`, `role`, `status`, `createdAt`, `updatedAt`, and optional `mustChangePassword`. Server sessions are memory-only and deliberately are not stored in backups.
+
+Sprint 6 adds `failedLoginCount`, `lockedUntil`, `passwordChangedAt`, and `lastLoginAt`. These are additive and retained by JSON backup/restore.

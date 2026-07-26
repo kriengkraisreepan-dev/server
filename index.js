@@ -38,7 +38,7 @@ const billingService = new BillingService(billingRepository);
 const paymentService = new PaymentService(billingRepository, billingService);
 const billHistoryService = new BillHistoryService(billingRepository);
 const userRepository = new JsonUserRepository({ getStore: () => store, save });
-const authService = new AuthService(userRepository);
+const authService = new AuthService(userRepository, () => new Date(), (event, actorId, targetUserId, details = {}) => billingService.audit(event, { actorId, data: { targetUserId, ...details } }));
 authService.bootstrap();
 function tokenFromRequest(req) { return (req.headers.cookie || "").split(";").map(item => item.trim()).find(item => item.startsWith("lucky_session="))?.slice("lucky_session=".length) || req.get("x-session-token") || ""; }
 function actorId(req) { return req.user?.userId || "SYSTEM"; }
@@ -81,6 +81,11 @@ app.post("/api/auth/logout", (req, res) => { authService.logout(tokenFromRequest
 app.get("/api/auth/me", requireAuth, (req, res) => res.json({ user: req.user }));
 app.get("/api/state", requireAuth, (req, res) => res.json({ settings: settingsService.getSettings(), tables: store.tables.map(enrichTable), members: store.members, products: store.products, bills: store.bills, payments: store.payments, auditLogs: store.auditLogs || [], user: req.user }));
 app.use("/api", (req, res, next) => { if (req.path.startsWith("/auth/")) return next(); return requireAuth(req, res, next); });
+app.get("/api/users", requirePermission(PERMISSIONS.USER_MANAGE), (req,res)=>res.json({ users:userRepository.users().map(user=>authService.publicUser(user)) }));
+app.post("/api/users", requirePermission(PERMISSIONS.USER_MANAGE), (req,res)=>{try{res.status(201).json(authService.createUser(req.body,actorId(req)));}catch(error){res.status(400).json({error:error.message});}});
+app.patch("/api/users/:id", requirePermission(PERMISSIONS.USER_MANAGE), (req,res)=>{try{res.json(authService.updateUser(req.params.id,req.body,actorId(req)));}catch(error){res.status(400).json({error:error.message});}});
+app.patch("/api/users/:id/status", requirePermission(PERMISSIONS.USER_MANAGE), (req,res)=>{try{res.json(authService.setStatus(req.params.id,req.body.status,actorId(req)));}catch(error){res.status(400).json({error:error.message});}});
+app.patch("/api/users/:id/password", requireAuth, (req,res)=>{try{const own=req.user.userId===req.params.id; if(!own&&!hasPermission(req.user.role,PERMISSIONS.USER_MANAGE)) return res.status(403).json({error:"คุณไม่มีสิทธิ์รีเซ็ตรหัสผ่าน"}); if(own&&!req.body.currentPassword) return res.status(400).json({error:"กรุณาระบุรหัสผ่านเดิม"}); if(own&&!require("./services/auth-service").verifyPassword(req.body.currentPassword,userRepository.findById(req.params.id).passwordHash)) return res.status(400).json({error:"รหัสผ่านเดิมไม่ถูกต้อง"}); res.json(authService.changePassword(req.params.id,req.body.password,actorId(req),!own));}catch(error){res.status(400).json({error:error.message});}});
 app.get("/api/bills", (req, res) => { try { res.json(billHistoryService.search(req.query)); } catch (error) { res.status(400).json({ error: error.message }); } });
 app.get("/api/bills/:id", (req, res) => { try { res.json(billHistoryService.details(req.params.id)); } catch (error) { res.status(error.message === "Bill not found" ? 404 : 400).json({ error: error.message }); } });
 app.put("/api/settings", requirePermission(PERMISSIONS.SETTINGS_MANAGE), (req, res) => { try { res.json(settingsService.updateSettings(req.body)); } catch (error) { res.status(400).json({ error: error.message }); } });
