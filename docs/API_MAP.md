@@ -31,3 +31,9 @@ All endpoints are implemented in `index.js`. They currently use the JSON store, 
 | POST | `/api/payments/:id/confirm` | Confirms a pending payment, closes the session, releases the table. |
 | POST | `/api/payments/:id/cancel` | Cancels a pending payment; bill remains awaiting payment. |
 | DELETE | `/api/bills/:id` | Compatibility path retained; now voids and audits rather than physically deleting. |
+| GET | `/api/bills` | Searches bills by receipt, table, date range, status; returns newest-first paginated results. |
+| GET | `/api/bills/:id` | Returns bill, linked payments, and related audit events. |
+
+## Sprint 4 Void requirement
+
+`DELETE /api/bills/:id` now requires a non-empty JSON `reason`. It may include `actorId` (or use the `x-actor-id` header); otherwise the audit event is attributed to `SYSTEM`.

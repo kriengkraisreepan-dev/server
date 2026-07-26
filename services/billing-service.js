@@ -5,7 +5,7 @@ const apiBaht = satang => Number(satangToBaht(satang));
 class BillingService {
   constructor(repository, clock = () => new Date()) { this.repository = repository; this.clock = clock; }
   now() { return this.clock().toISOString(); }
-  audit(event, details = {}) { return this.repository.appendAudit({ id: crypto.randomUUID(), occurredAt: this.now(), event, tableId: details.tableId || null, sessionId: details.sessionId || null, billId: details.billId || null, paymentId: details.paymentId || null, userId: details.userId || null, details: details.data || {} }); }
+  audit(event, details = {}) { const actorId = String(details.actorId || details.userId || "SYSTEM").trim() || "UNKNOWN"; return this.repository.appendAudit({ id: crypto.randomUUID(), occurredAt: this.now(), event, tableId: details.tableId || null, sessionId: details.sessionId || null, billId: details.billId || null, paymentId: details.paymentId || null, actorId, userId: actorId, details: details.data || {} }); }
   createBillDraft({ table, session, memberName = "ลูกค้าทั่วไป" }) {
     if (!session?.finalChargeSatang && session?.finalChargeSatang !== 0) throw new Error("Session has no final charge");
     const items = (table.items || []).map(item => {
@@ -22,6 +22,6 @@ class BillingService {
     this.repository.saveBill(bill); this.audit("BILL_DRAFT_CREATED", { tableId: table.id, sessionId: session.id, billId: bill.id, data: { receiptNumber, totalSatang } }); return bill;
   }
   markPaid(bill) { if (!["awaiting_payment", "pending"].includes(bill.status)) throw new Error("Bill is not awaiting payment"); bill.status = "paid"; bill.paidAt = this.now(); this.repository.saveBill(bill); return bill; }
-  voidBill(bill, reason = "") { if (!bill || bill.status === "void") throw new Error("Bill cannot be voided"); bill.status = "void"; bill.voidedAt = this.now(); bill.voidReason = String(reason || "").trim(); this.repository.saveBill(bill); this.audit("BILL_VOIDED", { tableId: bill.tableId, billId: bill.id, data: { reason: bill.voidReason } }); return bill; }
+  voidBill(bill, reason = "", actorId = "SYSTEM") { if (!bill || bill.status === "void") throw new Error("Bill cannot be voided"); const voidReason = String(reason || "").trim(); if (!voidReason) throw new Error("Void reason is required"); bill.status = "void"; bill.voidedAt = this.now(); bill.voidReason = voidReason; bill.voidedBy = String(actorId || "UNKNOWN").trim() || "UNKNOWN"; bill.originalReceiptNumber = bill.receiptNumber || bill.number; this.repository.saveBill(bill); this.audit("BILL_VOIDED", { tableId: bill.tableId, billId: bill.id, actorId: bill.voidedBy, data: { reason: bill.voidReason, receiptNumber: bill.originalReceiptNumber } }); return bill; }
 }
 module.exports = { BillingService };
