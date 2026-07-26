@@ -37,3 +37,13 @@ All endpoints are implemented in `index.js`. They currently use the JSON store, 
 ## Sprint 4 Void requirement
 
 `DELETE /api/bills/:id` now requires a non-empty JSON `reason`. It may include `actorId` (or use the `x-actor-id` header); otherwise the audit event is attributed to `SYSTEM`.
+
+## Sprint 5 authentication
+
+| Method | Path | Access |
+|---|---|---|
+| POST | `/api/auth/login` | Username/password; sets session cookie. |
+| POST | `/api/auth/logout` | Authenticated session; removes session. |
+| GET | `/api/auth/me` | Authenticated session; returns safe user profile. |
+
+All non-auth API routes now require a valid session. Authorization middleware returns `403` for a logged-in user without the required permission.

@@ -36,3 +36,5 @@ Primary keys today are application-managed IDs; no database enforces them. The i
 The JSON production store now may contain `auditLogs` (array). New bills add `receiptNumber`, `*Satang` amounts, pricing snapshot, `awaiting_payment`/`paid`/`void` status, and void metadata. New payments add `method`, `amountSatang`, `pending`/`paid`/`cancelled` status, and timestamps. Older bill/payment shapes remain readable.
 
 Sprint 4 adds `voidReason`, `voidedAt`, `voidedBy`, and `originalReceiptNumber` to a voided bill. Audit entries add `actorId` (currently `SYSTEM` by default, or `UNKNOWN` when blank) while retaining the older `userId` compatibility field.
+
+Sprint 5 adds `users[]`: `userId`, `username`, `passwordHash` (`scrypt$salt$hash`), `displayName`, `role`, `status`, `createdAt`, `updatedAt`, and optional `mustChangePassword`. Server sessions are memory-only and deliberately are not stored in backups.
