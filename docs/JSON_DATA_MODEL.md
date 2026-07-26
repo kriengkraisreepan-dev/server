@@ -44,3 +44,9 @@ Sprint 6 adds `failedLoginCount`, `lockedUntil`, `passwordChangedAt`, and `lastL
 Sprint 7 adds `settings.security`: `timeoutMinutes`, `warningMinutes`, `maxLoginAttempts`, and `lockDurationMinutes`. Legacy stores receive safe defaults during settings normalization.
 
 Sprint 7D changes only validation for future passwords: minimum 8 characters, no complexity requirement. Existing `crypto.scrypt` hashes remain compatible; existing users are never reset automatically.
+
+## Sprint 8A additive product and inventory fields
+
+`products[]` remains backwards compatible with the original `name`, `price`, `category`, and `active` fields. The runtime adds `sku`, `categoryId`, `categoryName`, `cost`, `trackStock`, `stockQuantity`, `lowStockThreshold`, `status`, `createdAt`, `updatedAt`, `createdBy`, and `updatedBy`. Existing products receive `trackStock=false`, so they remain sellable without an invented stock balance.
+
+`productCategories[]` and `stockMovements[]` are new additive arrays. A movement contains `id`, `productId`, `type`, `quantityBefore`, `quantityChange`, `quantityAfter`, `reason`, optional reference fields, `createdAt`, and `createdBy`. JSON backup/restore copies these arrays as part of the store without changing bills, payments, tables, or user records.

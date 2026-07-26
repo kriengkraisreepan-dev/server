@@ -51,3 +51,21 @@ All non-auth API routes now require a valid session. Authorization middleware re
 ## Sprint 7 session and security APIs
 
 `GET /api/session/status`, `PATCH /api/session/refresh`, `GET /api/sessions`, `DELETE /api/sessions/:id`, `DELETE /api/sessions`, `GET /api/settings/session`, and `PATCH /api/settings/session` are authenticated. Session list is OWNER/MANAGER; revoke and settings are OWNER-only.
+
+## Sprint 8A product and inventory APIs
+
+All endpoints below require authentication. `product.view` is granted to every role; `product.manage` and `inventory.manage` are OWNER/MANAGER only.
+
+| Method | Path | Request / behavior | Failure cases |
+|---|---|---|---|
+| GET | `/api/products` | Filters: `search`, `category`, `status`, `lowStock`, `page`, `pageSize`; response includes `items` and `pagination` | 403 without view permission |
+| GET | `/api/products/:id` | Returns one visible product | 404 unknown/hidden product |
+| POST | `/api/products` | Creates normalized product; accepts initial stock | 400 invalid fields, 409 duplicate SKU |
+| PATCH | `/api/products/:id` | Updates metadata only | 400 validation, 404 unknown category/product |
+| PATCH | `/api/products/:id/status` | `ACTIVE` or `DISABLED` | 400 invalid status |
+| POST | `/api/products/:id/stock/receive` | Positive `quantity`, optional reason/reference | 400 untracked/invalid quantity |
+| POST | `/api/products/:id/stock/adjust` | Non-zero `quantityChange`, required reason | 400 invalid/negative resulting stock |
+| GET | `/api/products/:id/stock-movements` | Paginated immutable history | 404 unknown product |
+| GET | `/api/product-categories` | Lists visible categories | 403 without view permission |
+| POST/PATCH | `/api/product-categories` | Create/update name/sort order | 400 invalid, 409 duplicate name |
+| PATCH | `/api/product-categories/:id/status` | `ACTIVE` or `DISABLED` | 400/404 |

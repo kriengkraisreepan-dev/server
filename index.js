@@ -12,12 +12,14 @@ const { PaymentService } = require("./services/payment-service");
 const { BillHistoryService } = require("./services/bill-history-service");
 const { JsonUserRepository } = require("./repositories/json-user-repository");
 const { AuthService } = require("./services/auth-service");
+const { JsonInventoryRepository } = require("./repositories/json-inventory-repository");
+const { InventoryService } = require("./services/inventory-service");
 const { PERMISSIONS, hasPermission } = require("./domain/permissions");
 const { bahtToSatang, satangToBaht } = require("./domain/money");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const dataDir = path.join(__dirname, "data");
+const dataDir = process.env.LUCKY_DATA_DIR ? path.resolve(process.env.LUCKY_DATA_DIR) : path.join(__dirname, "data");
 const dataFile = path.join(dataDir, "store.json");
 const backupsDir = path.join(dataDir, "backups");
 const MAX_BACKUPS = 30;
@@ -39,7 +41,14 @@ const paymentService = new PaymentService(billingRepository, billingService);
 const billHistoryService = new BillHistoryService(billingRepository);
 const userRepository = new JsonUserRepository({ getStore: () => store, save });
 const authService = new AuthService(userRepository, () => new Date(), (event, actorId, targetUserId, details = {}) => billingService.audit(event, { actorId, data: { targetUserId, ...details } }), () => settingsService.getSettings().security);
-authService.bootstrap();
+const inventoryRepository = new JsonInventoryRepository({ getStore: () => store, save });
+const inventoryService = new InventoryService(inventoryRepository, { audit: (event, actorId, data) => billingService.audit(event, { actorId, data }) });
+inventoryService.normalizeLegacyProducts();
+inventoryService.ensureDefaultCategories();
+const emergencyResetRequested = process.env.LUCKY_EMERGENCY_RESET === "1";
+if (!emergencyResetRequested) authService.bootstrap();
+if (emergencyResetRequested) { const reset = authService.emergencyResetAdmin(); console.log(reset ? "Emergency password reset completed for admin.\nLogin:\nUsername: admin\nPassword: 123456789\n\nYou must change password after login." : "Admin account not found.\nEmergency reset skipped."); delete process.env.LUCKY_EMERGENCY_RESET; }
+if (process.env.LUCKY_EMERGENCY_ENABLE_OWNER === "1") { const result=authService.emergencyReactivateOwner(); if(result.status==="reactivated") console.log("Emergency OWNER reactivation completed.\nUsername: admin\nStatus: ACTIVE"); else if(result.status==="not_found") console.log("OWNER account admin not found.\nEmergency reactivation skipped."); else console.error("Emergency reactivation stopped: admin is not an OWNER account."); delete process.env.LUCKY_EMERGENCY_ENABLE_OWNER; }
 function tokenFromRequest(req) { return (req.headers.cookie || "").split(";").map(item => item.trim()).find(item => item.startsWith("lucky_session="))?.slice("lucky_session=".length) || req.get("x-session-token") || ""; }
 function actorId(req) { return req.user?.userId || "SYSTEM"; }
 function requireAuth(req, res, next) { const user = authService.current(tokenFromRequest(req)); if (!user) return res.status(401).json({ error: "กรุณาเข้าสู่ระบบ" }); req.user = user; next(); }
@@ -75,13 +84,12 @@ function createBill(table, closedSession, loggedInActorId = "SYSTEM") { return b
 async function setRelayState(table, state) { table.relayState = state; const base = process.env.ESP32_BASE_URL; if (!base) return { connected: false }; try { await fetch(`${base.replace(/\/$/, "")}/relay/${table.relay}?state=${state}`, { signal: AbortSignal.timeout(3000) }); return { connected: true }; } catch { return { connected: false, failed: true }; } }
 
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
 app.post("/api/auth/login", (req, res) => { try { const result = authService.login(req.body?.username, req.body?.password); res.setHeader("Set-Cookie", `lucky_session=${result.token}; HttpOnly; SameSite=Strict; Path=/`); res.json({ user: result.user }); } catch (error) { res.status(401).json({ error: error.message }); } });
 app.post("/api/auth/logout", (req, res) => { authService.logout(tokenFromRequest(req)); res.setHeader("Set-Cookie", "lucky_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"); res.json({ message: "ออกจากระบบแล้ว" }); });
 app.get("/api/auth/me", requireAuth, (req, res) => res.json({ user: req.user }));
 app.get("/api/session/status", requireAuth, (req,res)=>res.json(authService.sessionStatus(tokenFromRequest(req))));
 app.patch("/api/session/refresh", requireAuth, (req,res)=>{try{res.json(authService.refreshSession(tokenFromRequest(req),actorId(req)));}catch(error){res.status(401).json({error:error.message});}});
-app.get("/api/state", requireAuth, (req, res) => res.json({ settings: settingsService.getSettings(), tables: store.tables.map(enrichTable), members: store.members, products: store.products, bills: store.bills, payments: store.payments, auditLogs: store.auditLogs || [], user: req.user }));
+app.get("/api/state", requireAuth, (req, res) => res.json({ settings: settingsService.getSettings(), tables: store.tables.map(enrichTable), members: store.members, products: inventoryService.listProducts({ pageSize: 1000 }, req.user.role).items, bills: store.bills, payments: store.payments, auditLogs: store.auditLogs || [], user: req.user }));
 app.use("/api", (req, res, next) => { if (req.path.startsWith("/auth/")) return next(); return requireAuth(req, res, next); });
 app.get("/api/users", requirePermission(PERMISSIONS.USER_MANAGE), (req,res)=>res.json({ users:userRepository.users().map(user=>authService.publicUser(user)) }));
 app.get("/api/sessions", requireAuth, (req,res)=>{ if(!["OWNER","MANAGER"].includes(req.user.role)) return res.status(403).json({error:"คุณไม่มีสิทธิ์ดู Session"}); res.json({sessions:authService.listSessions().map(session=>{const user=userRepository.findById(session.userId);return {...session,username:user?.username||session.userId,displayName:user?.displayName||session.userId,role:user?.role||"-",current:session.id===authService.sessionStatus(tokenFromRequest(req))?.sessionId,remainingMs:Math.max(0,settingsService.getSettings().security.timeoutMinutes*60000-(Date.now()-new Date(session.lastActivity).getTime()))};})}); });
@@ -102,7 +110,18 @@ app.get("/api/backups/:file/download", (req, res) => { const file = safeBackupNa
 app.post("/api/backups/:file/restore", (req, res) => { const file = safeBackupName(req.params.file); if (!file) return res.status(400).json({ error: "ชื่อไฟล์ไม่ถูกต้อง" }); const full = path.join(backupsDir, file); if (!fs.existsSync(full)) return res.status(404).json({ error: "ไม่พบไฟล์สำรองข้อมูล" }); let restored; try { restored = JSON.parse(fs.readFileSync(full, "utf8")); } catch { return res.status(400).json({ error: "ไฟล์สำรองข้อมูลเสียหาย" }); } backupNow(); store = restored; save(); res.json({ message: `กู้คืนข้อมูลจาก ${file} แล้ว (ระบบสำรองข้อมูลก่อนกู้คืนไว้ให้อัตโนมัติ)` }); });
 app.delete("/api/backups/:file", (req, res) => { const file = safeBackupName(req.params.file); if (!file) return res.status(400).json({ error: "ชื่อไฟล์ไม่ถูกต้อง" }); const full = path.join(backupsDir, file); if (!fs.existsSync(full)) return res.status(404).json({ error: "ไม่พบไฟล์สำรองข้อมูล" }); fs.unlinkSync(full); res.json({ message: `ลบไฟล์สำรองข้อมูล ${file} แล้ว` }); });
 app.post("/api/members", (req, res) => { const { name, phone = "", points = 0, note = "" } = req.body; if (!name?.trim()) return res.status(400).json({ error: "กรุณาระบุชื่อสมาชิก" }); const member = { id: id("MEM"), code: `M${String(store.members.length + 1).padStart(4, "0")}`, name: name.trim(), phone, points: Number(points) || 0, note, createdAt: new Date().toISOString() }; store.members.unshift(member); save(); res.status(201).json(member); });
-app.post("/api/products", (req, res) => { const { name, price, category = "อื่น ๆ" } = req.body; if (!name?.trim() || Number(price) < 0) return res.status(400).json({ error: "ข้อมูลสินค้าไม่ถูกต้อง" }); const product = { id: id("P"), name: name.trim(), price: Number(price), category, active: true }; store.products.push(product); save(); res.status(201).json(product); });
+app.get("/api/products", requirePermission(PERMISSIONS.PRODUCT_VIEW), (req, res) => { try { res.json(inventoryService.listProducts(req.query, req.user.role)); } catch (error) { res.status(400).json({ error: error.message }); } });
+app.get("/api/products/:id", requirePermission(PERMISSIONS.PRODUCT_VIEW), (req, res) => { const product = inventoryService.getProduct(req.params.id, req.user.role); if (!product) return res.status(404).json({ error: "ไม่พบสินค้า" }); res.json(product); });
+app.post("/api/products", requirePermission(PERMISSIONS.PRODUCT_MANAGE), (req, res) => { try { res.status(201).json(inventoryService.createProduct(req.body || {}, actorId(req))); } catch (error) { res.status(error.message.includes("already exists") ? 409 : 400).json({ error: error.message }); } });
+app.patch("/api/products/:id", requirePermission(PERMISSIONS.PRODUCT_MANAGE), (req, res) => { try { res.json(inventoryService.updateProduct(req.params.id, req.body || {}, actorId(req))); } catch (error) { res.status(error.message === "Product not found" || error.message === "Category not found" ? 404 : error.message.includes("already exists") ? 409 : 400).json({ error: error.message }); } });
+app.patch("/api/products/:id/status", requirePermission(PERMISSIONS.PRODUCT_MANAGE), (req, res) => { try { res.json(inventoryService.changeProductStatus(req.params.id, req.body?.status, actorId(req))); } catch (error) { res.status(error.message === "Product not found" ? 404 : 400).json({ error: error.message }); } });
+app.post("/api/products/:id/stock/receive", requirePermission(PERMISSIONS.INVENTORY_MANAGE), (req, res) => { try { res.json(inventoryService.receiveStock(req.params.id, req.body || {}, actorId(req))); } catch (error) { res.status(error.message === "Product not found" ? 404 : 400).json({ error: error.message }); } });
+app.post("/api/products/:id/stock/adjust", requirePermission(PERMISSIONS.INVENTORY_MANAGE), (req, res) => { try { res.json(inventoryService.adjustStock(req.params.id, req.body || {}, actorId(req))); } catch (error) { res.status(error.message === "Product not found" ? 404 : 400).json({ error: error.message }); } });
+app.get("/api/products/:id/stock-movements", requirePermission(PERMISSIONS.PRODUCT_VIEW), (req, res) => { try { res.json(inventoryService.getStockMovements(req.params.id, req.query)); } catch (error) { res.status(error.message === "Product not found" ? 404 : 400).json({ error: error.message }); } });
+app.get("/api/product-categories", requirePermission(PERMISSIONS.PRODUCT_VIEW), (req, res) => res.json({ items: inventoryService.listCategories(req.user.role) }));
+app.post("/api/product-categories", requirePermission(PERMISSIONS.PRODUCT_MANAGE), (req, res) => { try { res.status(201).json(inventoryService.createCategory(req.body || {}, actorId(req))); } catch (error) { res.status(error.message.includes("already exists") ? 409 : 400).json({ error: error.message }); } });
+app.patch("/api/product-categories/:id", requirePermission(PERMISSIONS.PRODUCT_MANAGE), (req, res) => { try { res.json(inventoryService.updateCategory(req.params.id, req.body || {}, actorId(req))); } catch (error) { res.status(error.message === "Category not found" ? 404 : error.message.includes("already exists") ? 409 : 400).json({ error: error.message }); } });
+app.patch("/api/product-categories/:id/status", requirePermission(PERMISSIONS.PRODUCT_MANAGE), (req, res) => { try { res.json(inventoryService.changeCategoryStatus(req.params.id, req.body?.status, actorId(req))); } catch (error) { res.status(error.message === "Category not found" ? 404 : 400).json({ error: error.message }); } });
 app.post("/api/tables/:id/start", requirePermission(PERMISSIONS.TABLE_OPEN), async (req, res) => { try { const table = tableById(req.params.id); if (!table) return res.status(404).json({ error: "ไม่พบโต๊ะ" }); if (req.body.memberId && !memberById(req.body.memberId)) return res.status(400).json({ error: "ไม่พบสมาชิก" }); const settings = settingsService.getSettings(); const profile = settings.pricingProfiles.find(item => item.id === settings.defaultPricingProfileId); const session = sessionService.openSession({ tableId: table.id, memberId: req.body.memberId || null, pricingProfile: profile }); billingService.audit("TABLE_OPENED", { tableId: table.id, sessionId: session.id, actorId: actorId(req) }); const relay = await setRelayState(table, "on"); save(); res.json({ ...enrichTable(table), warning: relay.failed ? "เปิดโต๊ะแล้ว แต่ติดต่อ ESP32 เพื่อเปิด Relay ไม่สำเร็จ" : undefined }); } catch (error) { res.status(409).json({ error: error.message }); } });
 app.post("/api/tables/:id/pause", requirePermission(PERMISSIONS.TABLE_PAUSE), (req, res) => { try { const session = sessionRepository.findOpenSessionByTable(req.params.id); if (!session) return res.status(409).json({ error: "โต๊ะยังไม่ได้เปิดใช้งาน" }); sessionService.pauseSession(session.id); billingService.audit("TABLE_PAUSED", { tableId: Number(req.params.id), sessionId: session.id, actorId: actorId(req) }); res.json(enrichTable(tableById(req.params.id))); } catch (error) { res.status(409).json({ error: error.message }); } });
 app.post("/api/tables/:id/resume", requirePermission(PERMISSIONS.TABLE_RESUME), (req, res) => { try { const session = sessionRepository.findOpenSessionByTable(req.params.id); if (!session) return res.status(409).json({ error: "โต๊ะยังไม่ได้เปิดใช้งาน" }); sessionService.resumeSession(session.id); billingService.audit("TABLE_RESUMED", { tableId: Number(req.params.id), sessionId: session.id, actorId: actorId(req) }); res.json(enrichTable(tableById(req.params.id))); } catch (error) { res.status(409).json({ error: error.message }); } });
@@ -131,4 +150,7 @@ app.get("/api/reports/analytics", (req, res) => {
   const top = list => list.reduce((best, item) => item.bills > best.bills || (item.bills === best.bills && item.revenue > best.revenue) ? item : best, { bills: 0, revenue: 0 });
   res.json({ type, period, billCount: bills.length, revenue: sum("total"), tableRevenue: sum("playAmount"), posRevenue: sum("foodAmount"), averageBill: bills.length ? Number((sum("total") / bills.length).toFixed(2)) : 0, peakHour: top(hours), peakWeekday: top(weekdays), hours, weekdays, daily: Object.entries(daily).sort(([a], [b]) => a.localeCompare(b)).map(([date, revenue]) => ({ date, revenue })), topProducts: Object.values(products).sort((a, b) => b.revenue - a.revenue).slice(0, 10) });
 });
+app.use("/api", (req, res) => res.status(404).json({ error: "API route not found", path: req.originalUrl }));
+app.use(express.static(path.join(__dirname, "public")));
+
 app.listen(PORT, () => console.log(`88 Snooker Club running at http://localhost:${PORT}`));
