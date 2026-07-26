@@ -1,11 +1,11 @@
 const { bahtToSatang, satangToBaht, requireNonNegativeSatang } = require("../domain/money");
 const { normalizePricingProfile } = require("../domain/pricing");
-const DEFAULTS = Object.freeze({ timeZone: "Asia/Bangkok", currency: "THB", dateTimeFormat: "th-TH", roundingRule: "UP_TO_BAHT", backupIntervalHours: 24, esp32: { enabled: false, baseUrl: "" }, defaultPricingProfileId: "default" });
+const DEFAULTS = Object.freeze({ timeZone: "Asia/Bangkok", currency: "THB", dateTimeFormat: "th-TH", roundingRule: "UP_TO_BAHT", backupIntervalHours: 24, esp32: { enabled: false, baseUrl: "" }, security: { timeoutMinutes:480, warningMinutes:5, maxLoginAttempts:5, lockDurationMinutes:15 }, defaultPricingProfileId: "default" });
 function normalizeSettings(current) {
   const hourlyRateSatang = current.hourlyRateSatang ?? bahtToSatang(current.hourlyRate ?? 0);
   const minimumChargeSatang = current.minimumChargeSatang ?? bahtToSatang(current.minimumCharge ?? 0);
   const pricingProfiles = current.pricingProfiles?.length ? current.pricingProfiles.map(normalizePricingProfile) : [normalizePricingProfile({ id: "default", name: "Default", unit: "HOUR", rateSatang: hourlyRateSatang, minimumChargeSatang, roundingRule: current.roundingRule || DEFAULTS.roundingRule })];
-  return { ...DEFAULTS, ...current, roundingRule: "UP_TO_BAHT", hourlyRateSatang, minimumChargeSatang, hourlyRate: Number(satangToBaht(hourlyRateSatang)), minimumCharge: Number(satangToBaht(minimumChargeSatang)), pricingProfiles: pricingProfiles.map(profile => ({ ...profile, roundingRule: "UP_TO_BAHT" })), esp32: { ...DEFAULTS.esp32, ...(current.esp32 || {}) } };
+  return { ...DEFAULTS, ...current, roundingRule: "UP_TO_BAHT", hourlyRateSatang, minimumChargeSatang, hourlyRate: Number(satangToBaht(hourlyRateSatang)), minimumCharge: Number(satangToBaht(minimumChargeSatang)), pricingProfiles: pricingProfiles.map(profile => ({ ...profile, roundingRule: "UP_TO_BAHT" })), esp32: { ...DEFAULTS.esp32, ...(current.esp32 || {}) }, security: { ...DEFAULTS.security, ...(current.security || {}) } };
 }
 class SettingsService {
   constructor(repository) { this.repository = repository; }

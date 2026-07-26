@@ -47,3 +47,7 @@ All endpoints are implemented in `index.js`. They currently use the JSON store, 
 | GET | `/api/auth/me` | Authenticated session; returns safe user profile. |
 
 All non-auth API routes now require a valid session. Authorization middleware returns `403` for a logged-in user without the required permission.
+
+## Sprint 7 session and security APIs
+
+`GET /api/session/status`, `PATCH /api/session/refresh`, `GET /api/sessions`, `DELETE /api/sessions/:id`, `DELETE /api/sessions`, `GET /api/settings/session`, and `PATCH /api/settings/session` are authenticated. Session list is OWNER/MANAGER; revoke and settings are OWNER-only.

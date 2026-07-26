@@ -40,3 +40,7 @@ Sprint 4 adds `voidReason`, `voidedAt`, `voidedBy`, and `originalReceiptNumber` 
 Sprint 5 adds `users[]`: `userId`, `username`, `passwordHash` (`scrypt$salt$hash`), `displayName`, `role`, `status`, `createdAt`, `updatedAt`, and optional `mustChangePassword`. Server sessions are memory-only and deliberately are not stored in backups.
 
 Sprint 6 adds `failedLoginCount`, `lockedUntil`, `passwordChangedAt`, and `lastLoginAt`. These are additive and retained by JSON backup/restore.
+
+Sprint 7 adds `settings.security`: `timeoutMinutes`, `warningMinutes`, `maxLoginAttempts`, and `lockDurationMinutes`. Legacy stores receive safe defaults during settings normalization.
+
+Sprint 7D changes only validation for future passwords: minimum 8 characters, no complexity requirement. Existing `crypto.scrypt` hashes remain compatible; existing users are never reset automatically.

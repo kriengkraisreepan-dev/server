@@ -38,7 +38,7 @@ const billingService = new BillingService(billingRepository);
 const paymentService = new PaymentService(billingRepository, billingService);
 const billHistoryService = new BillHistoryService(billingRepository);
 const userRepository = new JsonUserRepository({ getStore: () => store, save });
-const authService = new AuthService(userRepository, () => new Date(), (event, actorId, targetUserId, details = {}) => billingService.audit(event, { actorId, data: { targetUserId, ...details } }));
+const authService = new AuthService(userRepository, () => new Date(), (event, actorId, targetUserId, details = {}) => billingService.audit(event, { actorId, data: { targetUserId, ...details } }), () => settingsService.getSettings().security);
 authService.bootstrap();
 function tokenFromRequest(req) { return (req.headers.cookie || "").split(";").map(item => item.trim()).find(item => item.startsWith("lucky_session="))?.slice("lucky_session=".length) || req.get("x-session-token") || ""; }
 function actorId(req) { return req.user?.userId || "SYSTEM"; }
@@ -79,9 +79,16 @@ app.use(express.static(path.join(__dirname, "public")));
 app.post("/api/auth/login", (req, res) => { try { const result = authService.login(req.body?.username, req.body?.password); res.setHeader("Set-Cookie", `lucky_session=${result.token}; HttpOnly; SameSite=Strict; Path=/`); res.json({ user: result.user }); } catch (error) { res.status(401).json({ error: error.message }); } });
 app.post("/api/auth/logout", (req, res) => { authService.logout(tokenFromRequest(req)); res.setHeader("Set-Cookie", "lucky_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"); res.json({ message: "ออกจากระบบแล้ว" }); });
 app.get("/api/auth/me", requireAuth, (req, res) => res.json({ user: req.user }));
+app.get("/api/session/status", requireAuth, (req,res)=>res.json(authService.sessionStatus(tokenFromRequest(req))));
+app.patch("/api/session/refresh", requireAuth, (req,res)=>{try{res.json(authService.refreshSession(tokenFromRequest(req),actorId(req)));}catch(error){res.status(401).json({error:error.message});}});
 app.get("/api/state", requireAuth, (req, res) => res.json({ settings: settingsService.getSettings(), tables: store.tables.map(enrichTable), members: store.members, products: store.products, bills: store.bills, payments: store.payments, auditLogs: store.auditLogs || [], user: req.user }));
 app.use("/api", (req, res, next) => { if (req.path.startsWith("/auth/")) return next(); return requireAuth(req, res, next); });
 app.get("/api/users", requirePermission(PERMISSIONS.USER_MANAGE), (req,res)=>res.json({ users:userRepository.users().map(user=>authService.publicUser(user)) }));
+app.get("/api/sessions", requireAuth, (req,res)=>{ if(!["OWNER","MANAGER"].includes(req.user.role)) return res.status(403).json({error:"คุณไม่มีสิทธิ์ดู Session"}); res.json({sessions:authService.listSessions().map(session=>{const user=userRepository.findById(session.userId);return {...session,username:user?.username||session.userId,displayName:user?.displayName||session.userId,role:user?.role||"-",current:session.id===authService.sessionStatus(tokenFromRequest(req))?.sessionId,remainingMs:Math.max(0,settingsService.getSettings().security.timeoutMinutes*60000-(Date.now()-new Date(session.lastActivity).getTime()))};})}); });
+app.delete("/api/sessions/:id", requirePermission(PERMISSIONS.USER_MANAGE), (req,res)=>res.json({revoked:authService.revokeSession(req.params.id,actorId(req),tokenFromRequest(req))}));
+app.delete("/api/sessions", requirePermission(PERMISSIONS.USER_MANAGE), (req,res)=>{let count=0; for(const session of authService.listSessions()) if(authService.revokeSession(session.id,actorId(req),tokenFromRequest(req))) count++; res.json({revoked:count});});
+app.get("/api/settings/session", requireAuth,(req,res)=>res.json(settingsService.getSettings().security));
+app.patch("/api/settings/session", requirePermission(PERMISSIONS.SETTINGS_MANAGE),(req,res)=>{try{const security={...settingsService.getSettings().security,...req.body}; for(const key of ["timeoutMinutes","maxLoginAttempts","lockDurationMinutes"])if(!Number.isInteger(security[key])||security[key]<1)throw new Error("Invalid security setting"); if(!Number.isInteger(security.warningMinutes)||security.warningMinutes<0||security.warningMinutes>=security.timeoutMinutes)throw new Error("Warning minutes must be less than timeout"); res.json(settingsService.updateSettings({security}).security);}catch(error){res.status(400).json({error:error.message});}});
 app.post("/api/users", requirePermission(PERMISSIONS.USER_MANAGE), (req,res)=>{try{res.status(201).json(authService.createUser(req.body,actorId(req)));}catch(error){res.status(400).json({error:error.message});}});
 app.patch("/api/users/:id", requirePermission(PERMISSIONS.USER_MANAGE), (req,res)=>{try{res.json(authService.updateUser(req.params.id,req.body,actorId(req)));}catch(error){res.status(400).json({error:error.message});}});
 app.patch("/api/users/:id/status", requirePermission(PERMISSIONS.USER_MANAGE), (req,res)=>{try{res.json(authService.setStatus(req.params.id,req.body.status,actorId(req)));}catch(error){res.status(400).json({error:error.message});}});
