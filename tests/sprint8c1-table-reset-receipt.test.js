@@ -1,0 +1,12 @@
+const assert = require("assert");
+const fs = require("fs"), path = require("path");
+const source = fs.readFileSync(path.resolve(__dirname, "../public/js/app.js"), "utf8");
+const combined = fs.readFileSync(path.resolve(__dirname, "../services/combined-billing-service.js"), "utf8");
+assert.match(source, /billingStatus==="UNBILLED"/);
+assert.match(source, /order\.tableSessionId===table\.runtimeSessionId/);
+assert.match(source, /walkInCheckout/);
+assert.match(source, /result\.order\.orderType==="WALK_IN"\)await walkInCheckout\(result\.order\.id\)/);
+assert.match(source, /offerPrint\(bill\.id\)/);
+assert.match(combined, /saleSource: "WALK_IN"/);
+assert.match(combined, /ORDER_ALREADY_BILLED/);
+console.log("Sprint 8C.1 table reset and receipt wiring tests passed");

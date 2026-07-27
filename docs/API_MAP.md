@@ -69,3 +69,36 @@ All endpoints below require authentication. `product.view` is granted to every r
 | GET | `/api/product-categories` | Lists visible categories | 403 without view permission |
 | POST/PATCH | `/api/product-categories` | Create/update name/sort order | 400 invalid, 409 duplicate name |
 | PATCH | `/api/product-categories/:id/status` | `ACTIVE` or `DISABLED` | 400/404 |
+
+## Sprint 8B POS order APIs
+
+All POS APIs are authenticated JSON endpoints. See `SPRINT_8B_POS_ORDERING.md` for ownership rules.
+
+| Method | Path | Permission |
+|---|---|---|
+| POST / GET | `/api/pos-orders` | create / view |
+| GET / PATCH | `/api/pos-orders/:id` | view / edit draft |
+| POST | `/api/pos-orders/:id/items` | edit draft |
+| PATCH / DELETE | `/api/pos-orders/:id/items/:itemId` | edit draft |
+| POST | `/api/pos-orders/:id/confirm` | confirm |
+| POST | `/api/pos-orders/:id/cancel` | cancel draft; confirmed cancellation requires OWNER/MANAGER |
+
+## Sprint 8B.1 security summary
+
+| Method | Path | Access | Response |
+|---|---|---|---|
+| GET | `/api/security/summary` | OWNER, MANAGER | `activeSessions`, `onlineUsers`, `lockedAccounts`, `disabledUsers` |
+
+## Sprint 8C combined billing
+
+| Method | Path | Access | Description |
+|---|---|---|---|
+| GET | `/api/table-sessions/:id/billing-preview` | OWNER, MANAGER, CASHIER | Read-only table/POS combined preview |
+| POST | `/api/table-sessions/:id/create-bill` | OWNER, MANAGER, CASHIER | Creates combined bill and existing pending payment |
+
+## Sprint 8C.1 walk-in billing
+
+| Method | Path | Access | Description |
+|---|---|---|---|
+| GET | `/api/pos-orders/:id/billing-preview` | OWNER, MANAGER, CASHIER | Read-only preview for a confirmed unbilled walk-in order |
+| POST | `/api/pos-orders/:id/create-bill` | OWNER, MANAGER, CASHIER | Creates a `WALK_IN` bill and the existing pending payment |

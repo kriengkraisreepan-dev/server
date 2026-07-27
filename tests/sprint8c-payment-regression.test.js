@@ -1,0 +1,16 @@
+const assert = require("assert");
+const { JsonBillingRepository } = require("../repositories/json-billing-repository");
+const { BillingService } = require("../services/billing-service");
+const { PaymentService } = require("../services/payment-service");
+const store = { bills: [], payments: [], auditLogs: [] };
+const repository = new JsonBillingRepository({ getStore: () => store, save: () => {} });
+const billing = new BillingService(repository, () => new Date("2026-07-27T12:00:00.000Z"));
+const paymentService = new PaymentService(repository, billing, () => new Date("2026-07-27T12:01:00.000Z"));
+const bill = billing.createBillDraft({ table: { id: 1, name: "Table 1", items: [] }, session: { id: "session-1", openedAt: "2026-07-27T11:00:00.000Z", closedAt: "2026-07-27T12:00:00.000Z", billableSeconds: 3600, finalChargeSatang: 10000 }, extraItems: [{ id: "i-1", name: "Water", quantity: 2, price: 20, total: 40 }], tableSessionId: "session-1", posOrderIds: ["pos-1"], breakdown: { tableCharge: 100, products: 40, total: 140 } });
+assert.strictEqual(bill.totalSatang, 14000);
+const pending = paymentService.createPayment({ billId: bill.id, method: "qr", amountSatang: bill.totalSatang, actorId: "cashier" }).payment;
+const confirmed = paymentService.confirmPayment(pending.id, "cashier");
+assert.strictEqual(confirmed.bill.status, "paid");
+assert.strictEqual(confirmed.payment.status, "paid");
+assert.deepStrictEqual(confirmed.bill.posOrderIds, ["pos-1"]);
+console.log("Sprint 8C payment regression tests passed");

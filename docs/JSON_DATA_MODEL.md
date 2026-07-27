@@ -50,3 +50,11 @@ Sprint 7D changes only validation for future passwords: minimum 8 characters, no
 `products[]` remains backwards compatible with the original `name`, `price`, `category`, and `active` fields. The runtime adds `sku`, `categoryId`, `categoryName`, `cost`, `trackStock`, `stockQuantity`, `lowStockThreshold`, `status`, `createdAt`, `updatedAt`, `createdBy`, and `updatedBy`. Existing products receive `trackStock=false`, so they remain sellable without an invented stock balance.
 
 `productCategories[]` and `stockMovements[]` are new additive arrays. A movement contains `id`, `productId`, `type`, `quantityBefore`, `quantityChange`, `quantityAfter`, `reason`, optional reference fields, `createdAt`, and `createdBy`. JSON backup/restore copies these arrays as part of the store without changing bills, payments, tables, or user records.
+
+## Sprint 8B POS orders
+
+`posOrders[]` is an additive collection. An order includes an immutable order number, `WALK_IN` or `TABLE` reference, `DRAFT`/`CONFIRMED`/`CANCELLED` status, item snapshots, totals, actor/timestamp fields, cancellation metadata, and a version. Its `items[]` preserve product SKU/name/category, selling price/cost, quantity, and stock-tracking state at the time they are added. Product changes do not rewrite these snapshots.
+
+Sprint 8C adds `billingStatus` (`UNBILLED`, `BILLED`, `VOIDED`) and optional bill-link fields to confirmed POS orders. Combined bills add `tableSessionId`, `posOrderIds[]`, `breakdown`, and POS item snapshots. These fields are additive and therefore preserved by the existing JSON backup/restore process.
+
+Sprint 8C.1 adds `saleSource` to new bills (`TABLE` or `WALK_IN`; old records remain legacy-compatible) and snapshots `tableSessionId` on new table POS orders. This prevents an already billed or earlier-session order being displayed as a current table balance.
