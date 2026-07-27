@@ -113,3 +113,12 @@ All POS APIs are authenticated JSON endpoints. See `SPRINT_8B_POS_ORDERING.md` f
 | PATCH | `/api/members/:id/status` | OWNER, MANAGER | Enable or disable without deleting history |
 
 Walk-in `POST /api/pos-orders` accepts an optional active `memberId`; the server snapshots member code/name. Draft-only `PATCH /api/pos-orders/:id` can change that walk-in member.
+
+## Sprint 9B rewards
+
+| Method | Path | Access | Description |
+|---|---|---|---|
+| POST | `/api/rewards/preview` | OWNER, MANAGER, CASHIER | Read-only maximum-redeem, discount, and net-total calculation |
+| POST | existing table/walk-in create-bill APIs | OWNER, MANAGER, CASHIER | Optional `redeemedPoints`; validation occurs before creating the bill |
+
+Points are deducted only by payment confirmation, not by preview or bill creation.

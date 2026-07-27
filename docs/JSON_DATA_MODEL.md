@@ -62,3 +62,7 @@ Sprint 8C.1 adds `saleSource` to new bills (`TABLE` or `WALK_IN`; old records re
 Sprint 9A adds additive member identity, status/tier, loyalty balances and `memberPointTransactions[]`. Paid bills can retain `pointsEarned`, `pointsBalance`, and idempotency flags; legacy bills remain readable.
 
 Sprint 9A.1 additionally snapshots `memberCode` and `memberName` on new walk-in POS orders and bills. This avoids changing historical receipts if a member profile is edited later. A point ledger entry includes the bill reference, signed point change, balance before/after, actor, and timestamp.
+
+Sprint 9B adds reward settings under `settings.rewards` and additive bill fields `redeemedPoints`, `redeemValue`, `redeemValueSatang`, `rewardPolicySnapshot`, `memberBalanceBeforeRedeem`, and `memberBalanceAfterRedeem`. Point transactions additionally use `REDEEM` and `REDEEM_ROLLBACK`; all values are retained by the existing JSON backup/restore flow.
+
+The Sprint 9B table-time loyalty hotfix adds `settings.loyalty` and bill snapshots `tablePointsEarned`, `tablePlaySecondsSnapshot`, `tablePlayHoursSnapshot`, and `loyaltyPolicySnapshot`. New EARN/VOID ledger rows use reason `TABLE_TIME`. Walk-in bills neither earn nor redeem points.

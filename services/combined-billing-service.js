@@ -62,6 +62,8 @@ class CombinedBillingService {
       tableSessionId: session.id,
       tableId: table.id,
       tableName: table.name,
+      memberId: table.memberId || null,
+      playDurationSeconds: this.sessionService.billableSeconds(session),
       posOrders: orders.map(order => ({ id: order.id, orderNumber: order.orderNumber, total: order.total })),
       items,
       breakdown: {
@@ -118,7 +120,7 @@ class CombinedBillingService {
     const order = this.requireWalkInOrder(orderId);
     const items = this.itemSnapshot([order]);
     const totalSatang = items.reduce((sum, item) => sum + item.totalSatang, 0);
-    return { orderId: order.id, orderNumber: order.orderNumber, saleSource: "WALK_IN", items, subtotal: asBaht(totalSatang), discountAmount: 0, total: asBaht(totalSatang), subtotalSatang: totalSatang, totalSatang, paymentRequired: true };
+    return { orderId: order.id, orderNumber: order.orderNumber, memberId: order.memberId || null, saleSource: "WALK_IN", items, subtotal: asBaht(totalSatang), discountAmount: 0, total: asBaht(totalSatang), subtotalSatang: totalSatang, totalSatang, paymentRequired: true };
   }
 
   createWalkInBill(orderId, actorId = "SYSTEM") {

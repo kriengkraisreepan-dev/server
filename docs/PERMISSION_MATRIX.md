@@ -18,3 +18,4 @@
 | View/search members | Yes | Yes | Yes | ACTIVE only |
 | Create/edit/enable/disable members | Yes | Yes | No | No |
 | View member point history | Yes | Yes | Yes | ACTIVE members only |
+| Preview/use member reward points | Yes | Yes | Yes | No |

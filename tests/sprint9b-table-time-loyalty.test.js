@@ -1,0 +1,14 @@
+const assert=require("assert");
+const {JsonMemberRepository}=require("../repositories/json-member-repository");
+const {MemberService}=require("../services/member-service");
+const store={members:[],memberPointTransactions:[]};
+const service=new MemberService(new JsonMemberRepository({getStore:()=>store,save:()=>{}}));
+const member=service.create({memberCode:"TIME1",displayName:"Table Member"},"owner");
+const settings={loyalty:{tablePointsPerHour:5,tablePointIntervalMinutes:60,tablePointRounding:"FLOOR"}};
+for(const [seconds,points] of [[1800,0],[3600,5],[7140,5],[7200,10]])assert.strictEqual(service.calculateTablePoints(seconds,settings).points,points);
+const tableBill={id:"table-120",memberId:member.id,saleSource:"TABLE",playDurationSeconds:7200,total:999};
+service.earn(tableBill,"cashier",settings);assert.strictEqual(tableBill.tablePointsEarned,10);assert.strictEqual(member.points,10);assert.strictEqual(tableBill.loyaltyPolicySnapshot.mode,"TABLE_TIME");
+const walkIn={id:"walkin",memberId:member.id,saleSource:"WALK_IN",playDurationSeconds:7200,total:999};
+assert.strictEqual(service.earn(walkIn,"cashier",settings),null);assert.strictEqual(member.points,10,"walk-in never earns points");
+service.void(tableBill,"owner");service.void(tableBill,"owner");assert.strictEqual(member.points,0,"void returns table points once");
+console.log("Sprint 9B table-time loyalty tests passed");
