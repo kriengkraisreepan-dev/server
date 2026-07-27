@@ -15,3 +15,6 @@
 | Confirm POS order | Yes | Yes | Yes | No |
 | Create table or walk-in bill / receive payment | Yes | Yes | Yes | No |
 | Cancel confirmed POS order / restore stock | Yes | Yes | No | No |
+| View/search members | Yes | Yes | Yes | ACTIVE only |
+| Create/edit/enable/disable members | Yes | Yes | No | No |
+| View member point history | Yes | Yes | Yes | ACTIVE members only |

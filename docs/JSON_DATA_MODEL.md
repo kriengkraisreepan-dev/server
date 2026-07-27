@@ -58,3 +58,7 @@ Sprint 7D changes only validation for future passwords: minimum 8 characters, no
 Sprint 8C adds `billingStatus` (`UNBILLED`, `BILLED`, `VOIDED`) and optional bill-link fields to confirmed POS orders. Combined bills add `tableSessionId`, `posOrderIds[]`, `breakdown`, and POS item snapshots. These fields are additive and therefore preserved by the existing JSON backup/restore process.
 
 Sprint 8C.1 adds `saleSource` to new bills (`TABLE` or `WALK_IN`; old records remain legacy-compatible) and snapshots `tableSessionId` on new table POS orders. This prevents an already billed or earlier-session order being displayed as a current table balance.
+
+Sprint 9A adds additive member identity, status/tier, loyalty balances and `memberPointTransactions[]`. Paid bills can retain `pointsEarned`, `pointsBalance`, and idempotency flags; legacy bills remain readable.
+
+Sprint 9A.1 additionally snapshots `memberCode` and `memberName` on new walk-in POS orders and bills. This avoids changing historical receipts if a member profile is edited later. A point ledger entry includes the bill reference, signed point change, balance before/after, actor, and timestamp.

@@ -4,13 +4,14 @@ const asBaht = satang => Number(satangToBaht(satang));
 const isDrink = item => /drink|beverage|เครื่องดื่ม/i.test(String(item.categoryName || item.category || item.categoryId || ""));
 
 class CombinedBillingService {
-  constructor({ sessionRepository, sessionService, posOrderRepository, billingRepository, billingService, inventoryService, getMemberName = () => "ลูกค้าทั่วไป", save }) {
+  constructor({ sessionRepository, sessionService, posOrderRepository, billingRepository, billingService, inventoryService, getMember = () => null, getMemberName = () => "ลูกค้าทั่วไป", save }) {
     this.sessionRepository = sessionRepository;
     this.sessionService = sessionService;
     this.posOrderRepository = posOrderRepository;
     this.billingRepository = billingRepository;
     this.billingService = billingService;
     this.inventoryService = inventoryService;
+    this.getMember = getMember;
     this.getMemberName = getMemberName;
     this.save = save;
   }
@@ -82,7 +83,7 @@ class CombinedBillingService {
       const bill = this.billingService.createBillDraft({
         table,
         session: closedSession,
-        memberName: this.getMemberName(table.memberId),
+        memberName: this.getMemberName(table.memberId), memberCode: this.getMember(table.memberId)?.memberCode || this.getMember(table.memberId)?.code || null,
         actorId,
         extraItems: preview.items,
         tableSessionId: closedSession.id,
@@ -124,9 +125,9 @@ class CombinedBillingService {
     const preview = this.previewWalkInBilling(orderId), order = this.posOrderRepository.findById(orderId);
     const now = new Date().toISOString();
     const bill = this.billingService.createBillDraft({
-      table: { id: null, name: "ขายหน้าร้าน", memberId: null, items: [] },
+      table: { id: null, name: "ขายหน้าร้าน", memberId: order.memberId || null, items: [] },
       session: { id: null, openedAt: null, closedAt: now, billableSeconds: 0, finalChargeSatang: 0, pricingSnapshot: null },
-      memberName: "ลูกค้าทั่วไป", actorId, extraItems: preview.items, tableSessionId: null, posOrderIds: [order.id], saleSource: "WALK_IN",
+      memberName: order.memberName || "ลูกค้าทั่วไป", memberCode: order.memberCode || null, actorId, extraItems: preview.items, tableSessionId: null, posOrderIds: [order.id], saleSource: "WALK_IN",
       breakdown: { tableCharge: 0, food: preview.total, drink: 0, products: preview.total, discount: 0, total: preview.total, tableChargeSatang: 0, foodSatang: preview.totalSatang, drinkSatang: 0, productSatang: preview.totalSatang, totalSatang: preview.totalSatang }
     });
     Object.assign(order, { billingStatus: "BILLED", billedBillId: bill.id, billedAt: bill.createdAt, billedBy: actorId });

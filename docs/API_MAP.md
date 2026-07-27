@@ -102,3 +102,14 @@ All POS APIs are authenticated JSON endpoints. See `SPRINT_8B_POS_ORDERING.md` f
 |---|---|---|---|
 | GET | `/api/pos-orders/:id/billing-preview` | OWNER, MANAGER, CASHIER | Read-only preview for a confirmed unbilled walk-in order |
 | POST | `/api/pos-orders/:id/create-bill` | OWNER, MANAGER, CASHIER | Creates a `WALK_IN` bill and the existing pending payment |
+
+## Sprint 9A members and loyalty
+
+| Method | Path | Access | Description |
+|---|---|---|---|
+| GET | `/api/members`, `/api/members/search` | Authenticated; STAFF receives ACTIVE only | Search by code, display name, phone, or email; optional status/tier filters |
+| GET | `/api/members/:id`, `/api/members/:id/points` | Authenticated | Member profile and immutable loyalty ledger |
+| POST / PATCH | `/api/members`, `/api/members/:id` | OWNER, MANAGER | Create or update member identity/tier fields |
+| PATCH | `/api/members/:id/status` | OWNER, MANAGER | Enable or disable without deleting history |
+
+Walk-in `POST /api/pos-orders` accepts an optional active `memberId`; the server snapshots member code/name. Draft-only `PATCH /api/pos-orders/:id` can change that walk-in member.
