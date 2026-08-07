@@ -74,6 +74,33 @@ test("driver translates boolean state to firmware ON/OFF and sends API key", asy
   assert.throws(() => driver.setRelayState(device, 3, true), { code: "INVALID_RELAY_CHANNEL" });
 });
 
+test("relayState flags credentialStatus for reauthentication when the physical device rejects the API key", async t => {
+  const x = fixture(); t.after(() => fs.rmSync(x.directory, { recursive: true, force: true }));
+  const device = await x.service.create({ deviceName: "Main", ipAddress: "192.168.1.20", port: 80, apiKey: "stale-secret" }, "owner");
+  x.service.driver.setRelayState = async () => { const error = Error("API Key ของอุปกรณ์ไม่ถูกต้อง"); error.code = "DEVICE_AUTH_FAILED"; error.status = 401; throw error; };
+  await assert.rejects(() => x.service.relayState(device.id, 1, true), { code: "DEVICE_AUTH_FAILED" });
+  const updated = x.repository.findById(device.id);
+  assert.equal(updated.credentialStatus, "REAUTHENTICATION_REQUIRED");
+  assert.equal(updated.status, "OFFLINE");
+});
+
+test("setTableRelay flags credentialStatus on auth failure but keeps the existing OFFLINE-only behaviour for other errors", async t => {
+  const x = fixture(); t.after(() => fs.rmSync(x.directory, { recursive: true, force: true }));
+  const device = await x.service.create({ deviceName: "Main", ipAddress: "192.168.1.20", port: 80, apiKey: "stale-secret" }, "owner");
+  x.service.mapTable(1, device.id, 1, "owner");
+  x.service.driver.setRelayState = async () => { const error = Error("API Key ของอุปกรณ์ไม่ถูกต้อง"); error.code = "DEVICE_AUTH_FAILED"; error.status = 401; throw error; };
+  await assert.rejects(() => x.service.setTableRelay(x.tables[0], "on"), { code: "DEVICE_AUTH_FAILED" });
+  assert.equal(x.repository.findById(device.id).credentialStatus, "REAUTHENTICATION_REQUIRED");
+
+  const second = await x.service.create({ deviceName: "Second", ipAddress: "192.168.1.21", port: 80, apiKey: "secret" }, "owner");
+  x.service.mapTable(2, second.id, 1, "owner");
+  x.service.driver.setRelayState = async () => { const error = Error("หมดเวลาติดต่อกล่องควบคุม"); error.code = "DEVICE_TIMEOUT"; error.status = 503; throw error; };
+  await assert.rejects(() => x.service.setTableRelay(x.tables[1], "on"), { code: "DEVICE_TIMEOUT" });
+  const updatedSecond = x.repository.findById(second.id);
+  assert.equal(updatedSecond.status, "OFFLINE");
+  assert.notEqual(updatedSecond.credentialStatus, "REAUTHENTICATION_REQUIRED");
+});
+
 test("driver verifies fresh nonce and HMAC proof from device without Relay mutation", async () => {
   const requests = [], key = "unique-device-secret";
   const driver = new RelayControllerDriver({ fetcher: async (url, options) => {
