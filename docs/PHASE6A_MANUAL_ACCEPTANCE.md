@@ -1,7 +1,22 @@
 # Phase 6A — Manual Windows Acceptance
 
-สถานะ: **PENDING** — automated tests ไม่ถือเป็น Windows/Electron acceptance
+สถานะ: **ตรวจครบทุกข้อแล้ว** ผ่านจริงบนเครื่อง Windows นี้พร้อมฮาร์ดแวร์จริง 1 กล่อง — รอ merge PR ที่เกี่ยวข้องก่อนถือว่าปิดงานอย่างเป็นทางการ (ดูรายการ PR ด้านล่าง)
 
 ใช้ Windows 11 test machine/VM และ isolated data เท่านั้น ตรวจ: หน้าต่างเปิดหลัง Backend พร้อม, process เดียว, instance ที่สอง focus ของเดิม, Login/Theme/UI scale, POS/Reservation, Hardware Manager โดยไม่ส่ง Relay command, graceful close, Backend crash/restart ceiling, port conflict, valid/corrupt/power-loss migration, source ไม่ถูกลบ, Customer Data อยู่ `%LOCALAPPDATA%`, Program directory ไม่มี transaction data, receipt/Wiring Sheet และจอ 1366×768/1920×1080
 
 บันทึกผล หลักฐาน และ failure code ทุกข้อ ห้ามใช้ร้านจริงหรือ hardware ที่ต่อโหลดไฟบ้าน
+
+## ผลการตรวจ (ครบทุกข้อ)
+
+ทุกข้อผ่านจริงระหว่างตรวจซ้ำบนเครื่องนี้ พร้อมกล่อง ESP32 จริง 1 ตัว ("Lucky Relay 01") เจอและแก้บั๊ก 2 รอบระหว่างทาง:
+
+- [PHASE6A_MANUAL_DEFECT_01](PHASE6A_MANUAL_DEFECT_01_HARDWARE_SECRET_VAULT_MIGRATION.md) — Backend ล้มทุกครั้งหลัง Legacy Data Handoff สำหรับร้านที่มีฮาร์ดแวร์ (migration ไม่ย้าย DPAPI secret vault)
+- [PHASE6A_MANUAL_DEFECT_02](PHASE6A_MANUAL_DEFECT_02_ARCHIVED_DEVICES_AND_WIRING_PRINT.md) — กล่องที่ถูกเปลี่ยนแทนแล้วโผล่เป็นการ์ดซ้ำและถูกดึงกลับมา ONLINE โดย background poller, พิมพ์ Wiring Sheet ได้หน้าว่าง
+
+รายการ PR ที่ต้อง merge ก่อนถือว่าปิด Phase 6A อย่างเป็นทางการ:
+1. `fix/phase6a-migrate-hardware-secret-vault` — แก้ defect 01
+2. `fix/hardware-auth-failure-flags-reauthentication` — เชื่อมปุ่มยืนยันอุปกรณ์อีกครั้งที่มีอยู่แล้วให้ทำงานจริงเมื่อ API Key ไม่ตรง
+3. `feat/bill-history-reprint-receipt` — เพิ่มปุ่มพิมพ์ซ้ำใบเสร็จที่หายไปจาก Bill History
+4. `fix/hardware-manager-archived-devices-and-wiring-print` — แก้ defect 02
+
+เหลือทำนอกเหนือจาก Manual Windows Acceptance นี้: Hardware Acceptance ของกล่อง "Lucky Relay Test" (offline ตลอดเซสชัน ยังไม่ได้ตรวจ), Production Key Ceremony (ยังไม่เริ่ม)
