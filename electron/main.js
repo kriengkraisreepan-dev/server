@@ -34,7 +34,7 @@ let mainWindow = null;
 let supervisor = null;
 let quitting = false;
 let runtimeMarkerFile = null;
-const gotLock = app.requestSingleInstanceLock({ owner: "Lucky Snooker Manager", schemaVersion: 1 });
+const gotLock = app.requestSingleInstanceLock({ owner: "88 Snooker Manager", schemaVersion: 1 });
 if (!gotLock) app.quit();
 app.on("second-instance", () => { if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.show(); mainWindow.focus(); } });
 
@@ -63,7 +63,7 @@ function installSessionPolicy(origin) {
   });
 }
 function createWindow(layout, origin) {
-  mainWindow = new BrowserWindow({ ...safeBounds(layout), title: internalTestPackage ? "INTERNAL TEST — NOT FOR PRODUCTION" : "Lucky Snooker Manager", minWidth: 1100, minHeight: 700, show: false, backgroundColor: "#0b1120", webPreferences: { ...WINDOW_SECURITY, preload: path.resolve(__dirname, "preload.js"), devTools: development } });
+  mainWindow = new BrowserWindow({ ...safeBounds(layout), title: internalTestPackage ? "INTERNAL TEST — NOT FOR PRODUCTION" : "88 Snooker Manager", minWidth: 1100, minHeight: 700, show: false, backgroundColor: "#0b1120", webPreferences: { ...WINDOW_SECURITY, preload: path.resolve(__dirname, "preload.js"), devTools: development } });
   mainWindow.webContents.on("will-navigate", (event, url) => { if (!isAllowedNavigation(url, origin)) event.preventDefault(); });
   mainWindow.webContents.setWindowOpenHandler(({ url }) => url === "about:blank" ? { action: "allow", overrideBrowserWindowOptions: { webPreferences: { ...WINDOW_SECURITY, preload: undefined, devTools: false } } } : { action: "deny" });
   mainWindow.webContents.on("will-attach-webview", event => event.preventDefault());
@@ -79,7 +79,7 @@ async function resolveLayoutAndMigration() {
   const handoff = new LegacyDataHandoffService({ sourceRoot: path.join(programRoot, "data"), destinationRoot: canonical, applicationVersion: app.getVersion() });
   const state = handoff.detect();
   if (state.status === "LEGACY_DATA_AVAILABLE") {
-    const answer = await dialog.showMessageBox({ type: "question", buttons: ["คัดลอกข้อมูลเดิมอย่างปลอดภัย", "ยกเลิก"], defaultId: 1, cancelId: 1, title: "พบข้อมูล Lucky Snooker Manager เดิม", message: "พบข้อมูลเดิมใน Program directory", detail: "ระบบจะคัดลอกและตรวจสอบข้อมูล โดยไม่ลบต้นฉบับ" });
+    const answer = await dialog.showMessageBox({ type: "question", buttons: ["คัดลอกข้อมูลเดิมอย่างปลอดภัย", "ยกเลิก"], defaultId: 1, cancelId: 1, title: "พบข้อมูล 88 Snooker Manager เดิม", message: "พบข้อมูลเดิมใน Program directory", detail: "ระบบจะคัดลอกและตรวจสอบข้อมูล โดยไม่ลบต้นฉบับ" });
     if (answer.response !== 0) throw Object.assign(new Error("ผู้ใช้ยังไม่อนุมัติการส่งต่อข้อมูลเดิม"), { code: "LEGACY_HANDOFF_NOT_CONFIRMED" });
     handoff.migrate();
   } else if (["LEGACY_DATA_INVALID", "LEGACY_DATA_AMBIGUOUS"].includes(state.status)) {
@@ -107,7 +107,7 @@ async function boot() {
   supervisor.launch(); await supervisor.waitUntilReady(); createWindow(layout, origin);
   app.on("before-quit", event => { if (quitting) return; event.preventDefault(); quitting = true; saveBounds(layout); supervisor.stop(10000).finally(() => { removeRuntimeMarker(); app.quit(); }); });
 }
-if (gotLock) app.whenReady().then(boot).catch(error => { removeRuntimeMarker(); dialog.showErrorBox("เปิด Lucky Snooker Manager ไม่สำเร็จ", `${error.code || "STARTUP_FAILED"}\nกรุณาตรวจสอบ Customer Data และ logs`); app.quit(); });
+if (gotLock) app.whenReady().then(boot).catch(error => { removeRuntimeMarker(); dialog.showErrorBox("เปิด 88 Snooker Manager ไม่สำเร็จ", `${error.code || "STARTUP_FAILED"}\nกรุณาตรวจสอบ Customer Data และ logs`); app.quit(); });
 app.on("window-all-closed", () => app.quit());
 
 module.exports = { reserveLoopbackPort, safeBounds };
