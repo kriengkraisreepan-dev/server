@@ -1,14 +1,12 @@
-# Lucky Updater Architecture — Sprint -1
+# Lucky Updater Architecture
 
-## Current state
+## Phase 6A implemented boundary
 
-No Electron app, installer, updater, program/data separation, or update-signing implementation exists today. The current `data/` location is under the source/application directory and must not be retained as the future production data location.
-
-## Target Windows layout
+Phase 6A implements Electron process isolation and Program/Customer Data separation only. It prepares `%LOCALAPPDATA%\Lucky Snooker Manager\update-staging` but does not download, install or replace application code.
 
 ```text
-Program Files\Lucky Snooker Manager\     # signed application binaries/assets; updater may replace
-%LOCALAPPDATA%\Lucky Snooker Manager\    # Electron app.getPath('userData') equivalent
+Program Files\Lucky Snooker Manager\     # future signed application binaries/assets
+%LOCALAPPDATA%\Lucky Snooker Manager\
   database\
   backups\
   config\
@@ -16,21 +14,23 @@ Program Files\Lucky Snooker Manager\     # signed application binaries/assets; u
   logs\
   uploads\
   update-staging\
+  migration\
+  runtime\
 ```
 
-When Electron is introduced, its main process owns user-data path resolution via `app.getPath('userData')`; renderer code never receives arbitrary filesystem access. Installer/updater must not write customer SQLite database, license, config, backups, logs, or uploads.
+Electron Main owns data-root resolution. Renderer code has no filesystem access and cannot choose paths. Installer/updater work must never overwrite customer database, license, config, backups, logs, uploads or migration evidence.
 
-## Update transaction
+## Future Phase 6C design (not implemented)
 
-1. Verify manifest version, target platform, application-version eligibility, package hash, and a vendor signature.
-2. Create and verify a User Data backup; record installed version and update attempt in logs.
-3. Download or receive a signed package into staging; validate before extraction.
-4. Stop the main application gracefully, preserving DB integrity.
-5. Extract/replace only Program Files into a versioned staging/previous directory.
-6. Run database migrations against User Data using the migration runner.
-7. Perform a smoke check and start Lucky Snooker Manager.
-8. Mark success, then remove temporary staging only after success.
+1. Verify manifest version, platform, application eligibility, file hashes and vendor signature.
+2. Create and verify a Customer Data backup and record the attempt in redacted logs.
+3. Receive an approved signed package into `update-staging`; validate before extraction.
+4. Stop the application gracefully and preserve data integrity.
+5. Replace only Program Files through versioned staging/previous directories.
+6. Run separately approved data migrations against Customer Data.
+7. Perform a smoke check and start the program.
+8. Commit success; remove temporary staging only after verification.
 
-On any failure, restore the prior program directory and restore/repair the pre-migration database backup. The updater must be a small separate executable so it can replace the main app after it exits.
+On failure, restore the prior program version and use verified data recovery. A future updater should be a small separate executable and use an update-signing key distinct from license signing.
 
-Package manifests should include version, file list, cryptographic hashes, minimum supported data/schema version, migration identifiers, release notes, and an Ed25519 signature. Use a separate update-signing key from the license-signing key.
+No auto update, Internet update, OTA, rollback executable, installer, package distribution or signing key was created in Phase 6A.

@@ -1,0 +1,30 @@
+const assert = require("assert");
+const { ReservationService } = require("../services/reservation-service");
+const { ReservationDepositService } = require("../services/reservation-deposit-service");
+
+let now = new Date("2026-07-28T03:00:00.000Z");
+const rows = [], deposits = [];
+const repo = { list: () => rows, findById: id => rows.find(x => x.id === id), create: x => (rows.push(x), x), update: x => { const i=rows.findIndex(y=>y.id===x.id); rows[i]=x; return x; } };
+const depositRepo = { list: () => deposits, findById: id => deposits.find(x=>x.id===id), findByReservationId: id => deposits.find(x=>x.reservationId===id), create: x => (deposits.push(x),x), update: x => { const i=deposits.findIndex(y=>y.id===x.id); deposits[i]={...x,version:Number(x.version||1)+1}; return deposits[i]; } };
+const config = { reservation:{defaultDepositAmount:100,minimumDepositAmount:100,depositRequired:true,autoAssignTable:true,autoLightOn:true,allowLightBeforeCheckIn:true,checkInGraceMinutes:60,alertEnabled:true,alertRepeatMinutes:1,deferMinutes:20,deferredPriorityEnabled:true,autoForfeitNoShowDeposit:true} };
+const tables=[{id:1,name:"T1",status:"free"}]; let sessions=0, cancelled=0, relay=[];
+const depositService = new ReservationDepositService(depositRepo,{clock:()=>now});
+const service = new ReservationService(repo,depositService,{settings:()=>config,tables:()=>tables,clock:()=>now,relay:async(t,s)=>relay.push([t.id,s]),startSession:async()=>({id:`S${++sessions}`}),cancelSession:async()=>{cancelled++;}});
+const user={userId:"cashier",role:"CASHIER"};
+const created = service.create({customerName:"A",phone:"0800000000",reservationDate:"2026-07-28",reservationTime:"10:00",amountSatang:10000,paymentMethod:"cash",paymentConfirmed:true},user);
+repo.create({id:"legacy-ready",reservationNumber:"RSV-legacy",status:"READY",assignedTableId:1,tableSessionId:null,reservedAt:"2026-07-28T03:00:00.000Z",timeline:[],version:1});
+repo.create({id:"legacy-waiting",reservationNumber:"RSV-legacy-waiting",status:"WAITING_TABLE",assignedTableId:null,tableSessionId:null,reservedAt:"2026-07-28T03:00:00.000Z",timeline:[],version:1});
+service.normalizeLegacy(); assert.equal(repo.findById("legacy-ready").status,"AWAITING_DECISION","legacy READY must not auto-open a table");
+assert.equal(repo.findById("legacy-waiting").status,"AWAITING_DECISION","legacy automatic waiting state must return to employee decision");
+now = new Date(created.reservation.reservedAt);
+service.processDue().then(async()=>{
+  let r=repo.findById(created.reservation.id); assert.equal(r.status,"AWAITING_DECISION"); assert.equal(sessions,0,"due alert must not start a session");
+  const alerts=service.pendingAlerts(), alert=alerts.find(item=>item.reservationId===created.reservation.id); assert.ok(alert); assert.equal(alert.version,repo.findById(created.reservation.id).version,"alert must carry the latest version");
+  const opened=await service.openNow(r.id,user,r.version); r=opened.reservation; assert.equal(r.status,"OPENED_WAITING_CHECK_IN"); assert.equal(sessions,1); assert.deepEqual(relay[0],[1,"on"]);
+  const openedAt=r.openedAt; const checked=service.checkIn(r.id,user); assert.equal(checked.status,"CHECKED_IN"); assert.equal(checked.openedAt,openedAt,"check-in must not restart billing");
+  const deferred=service.create({customerName:"B",phone:"0810000000",reservationDate:"2026-07-28",reservationTime:"10:00",amountSatang:10000,paymentMethod:"cash",paymentConfirmed:true},user).reservation;
+  now=new Date(deferred.reservedAt); await service.processDue(); const due=repo.findById(deferred.id); const later=service.defer(due.id,user,due.version); assert.equal(later.status,"DEFERRED"); assert.equal(later.deferCount,1); assert.equal(new Date(later.effectiveReservationAt)-new Date(later.reservedAt),20*60000);
+  tables[0].status="free"; const noShow=service.create({customerName:"C",phone:"0820000000",reservationDate:"2026-07-28",reservationTime:"10:00",amountSatang:10000,paymentMethod:"cash",paymentConfirmed:true},user).reservation;
+  now=new Date(noShow.reservedAt); await service.processDue(); const openedNoShow=await service.openNow(noShow.id,user,repo.findById(noShow.id).version); now=new Date(openedNoShow.reservation.checkInDeadlineAt); await service.processDue(); const final=repo.findById(noShow.id), dep=depositRepo.findByReservationId(noShow.id); assert.equal(final.status,"NO_SHOW"); assert.equal(dep.status,"FORFEITED"); assert.equal(cancelled,1); assert.equal(sessions,2);
+  console.log("sprint10c reservation decision tests passed");
+}).catch(error=>{console.error(error);process.exitCode=1;});

@@ -1,0 +1,15 @@
+const assert = require("assert");
+const fs = require("fs");
+const source = fs.readFileSync(require.resolve("../public/js/app.js"), "utf8");
+assert.match(source, /api\/reservation-alerts\/pending/, "polling must request pending reservation alerts");
+assert.match(source, /Array\.isArray\(data\)/, "alert polling must accept the JSON array response");
+assert.match(source, /reservationOpenNow/, "decision modal must provide Open Now");
+assert.match(source, /reservationDefer/, "decision modal must provide Defer");
+assert.match(source, /reservationPollingPaused=true/, "opening the decision modal must pause reservation polling");
+assert.match(source, /reservationPollingPaused=false/, "closing the decision modal must resume reservation polling");
+assert.match(source, /error\.code!==["']VERSION_CONFLICT["']/, "a version conflict must trigger the retry path");
+assert.match(source, /latest=await api\(["']\/api\/reservations["']\)/, "the retry path must fetch the latest reservation");
+assert.match(source, /ข้อมูลการจองมีการเปลี่ยนแปลง/, "a failed retry must show a user-friendly Thai message");
+assert.match(source, /OPENED_WAITING_CHECK_IN/, "check-in action must use the revised state");
+assert.doesNotMatch(source, /นับถอยหลัง/, "reservation UI must not render a countdown");
+console.log("sprint10c decision modal UI tests passed");

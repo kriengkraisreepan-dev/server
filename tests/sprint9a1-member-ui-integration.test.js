@@ -22,8 +22,8 @@ assert.strictEqual(order.memberCode, "M0001");
 assert.strictEqual(order.memberName, "Member One");
 assert.throws(() => orders.createOrder({ orderType: "WALK_IN", memberId: "unknown" }, { userId: "cashier", role: "CASHIER" }), /Active member/);
 
-const bill = { id: "bill-1", memberId: member.id, total: 100 };
-members.earn(bill, "cashier");
+const bill = { id: "bill-1", memberId: member.id, saleSource: "TABLE", playDurationSeconds: 3600, total: 100 };
+members.earn(bill, "cashier", { loyalty: { tablePointsPerHour: 5, tablePointIntervalMinutes: 60 } });
 assert.strictEqual(bill.pointsEarned, 5);
 assert.strictEqual(bill.pointsBalance, 5);
 members.void(bill, "owner");

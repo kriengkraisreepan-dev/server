@@ -1,25 +1,32 @@
-# Security Risks — Sprint -1
+# Security Risks
 
-This is an audit of observed code, not a penetration test. No system-wide security refactor is performed in Sprint -1.
+This document began as the Sprint -1 code audit. Later controls are noted without erasing the original risk history.
 
-| Priority | Finding | Evidence / impact | Recommended sprint action |
-|---|---|---|---|
-| Critical | No current critical private-key leak found | No license key exists in the repository; no production private key was created | Preserve this property; add secret scanning before license work |
-| High | No authentication or authorization | Every state, backup, bill deletion, restore, and relay endpoint is callable by any client able to reach the process | Identity/roles and backend authorization before LAN/mobile/remote use |
-| High | Runtime data not previously ignored and co-located with program files | `data/store.json` and backups were untracked under repository/app path | `.gitignore` added; move to User Data with Electron/database work |
-| High | Destructive API actions lack audit/role/strong validation | Restore, delete backup, delete bill mutate or remove data | Add roles, audit log, confirmation policy, retention/void model |
-| High | JSON store has no atomic transaction/concurrency protection | Whole-file synchronous rewrites can lose/corrupt data on interruption/concurrent use | SQLite/WAL + transactions and backup recovery |
-| Medium | Input validation is partial | Settings is a free merge; quantities, payment method, dates/periods have weak validation | DTO/schema validation and allow-lists at API boundary |
-| Medium | Output encoding is inconsistent | Receipt helper encodes some output, while SPA template interpolation uses stored strings directly | Central output encoding/DOM APIs and Content Security Policy |
-| Medium | ESP32 command trust boundary is weak | Configured base URL and relay route accept calls without authorization; HTTP is used | backend permission guard, network isolation, device authentication/TLS where possible |
-| Medium | Backup restore accepts any parseable JSON | No schema/version/checksum validation before replacement | signed/hashed backup metadata, schema validation, staged restore |
-| Medium | Error handling/logging is minimal | No error middleware or structured redacted logging was found | safe error responses, owner-readable logs, no stack traces in production |
-| Low | SQL injection | No SQL is present, so none is currently observed | When SQLite is added, use prepared statements only; never compose SQL from input |
-| Low | Path traversal | Backup filename uses `basename` plus strict timestamp regex | Retain guard; validate canonical path remains under backup directory |
-| Low | CORS | No CORS middleware found; Express does not add broad CORS by default | Define an explicit policy when renderer/mobile origins are introduced |
-| Deferred | Electron hardening | Electron, preload, IPC, `nodeIntegration`, and `contextIsolation` do not exist yet | Require `nodeIntegration:false`, `contextIsolation:true`, narrow preload API, validated IPC from the first Electron sprint |
-| Deferred | Passwords/secrets | No password storage or app secrets were found | Use OS credential/key protection where required; never ship private signing keys |
+| Priority | Finding | Current status / remaining action |
+|---|---|---|
+| Critical | No current critical private-key leak found | Preserved; production private key has not been created and secret scans remain required |
+| High | No authentication or authorization | Addressed by later authentication/role phases; keep backend permission regression |
+| High | Runtime data co-located with program files | Phase 6A adds trusted `%LOCALAPPDATA%` separation and transactional legacy handoff; manual Windows acceptance remains pending |
+| High | Destructive actions lacked audit/role validation | Addressed incrementally by later governance phases; keep regression coverage |
+| High | JSON writes lacked interruption safety | Atomic JSON writes/recovery now exist; future database work remains a separate gate |
+| Medium | Input validation was partial | Improved incrementally; retain allowlists at API boundaries |
+| Medium | Output encoding/CSP | Output helpers exist; Phase 6A adds CSP, but legacy inline styles still require `style-src 'unsafe-inline'` |
+| Medium | ESP32 trust boundary | Device authentication and nonce/HMAC verification now exist; HTTP/network isolation remains relevant |
+| Medium | Backup validation | Verified backup/integrity work exists; preserve staged restore checks |
+| Medium | Error handling/logging | Structured redacted operational logging exists; never log credentials or stack/path details to Browser |
+| Low | SQL injection | No SQL is present; use prepared statements if introduced |
+| Low | Path traversal | Canonical path and allowlist controls exist; retain tests |
+| Low | CORS | No broad CORS is enabled; define policy before introducing additional origins |
 
-## Security gate for later distribution
+## Phase 6A residual risks
 
-Before Windows installer, LAN access, mobile ordering, or remote management: complete role-based backend authorization, SQLite integrity/backup work, Electron process isolation, signed licenses, signed updates, and dependency/security review. UI hiding alone must never enforce Standard/Pro rights.
+- CSP has no `unsafe-eval`, but still permits inline style for the existing UI. Move styles into self-hosted stylesheets before removing this exception in a separate hardening change.
+- Electron `43.2.0` is an internal development dependency. Product Authenticode/package signing is not part of Phase 6A.
+- Manual Windows/Electron acceptance is `PENDING`.
+- Customer Data uses filesystem permissions available to the Backend account; DPAPI/secret-store expansion is outside this task.
+- A short race exists between ephemeral port reservation and Backend bind; any conflict fails closed through readiness timeout.
+- Migration recovery copies contain customer data and require the same protection as the active database.
+
+Production distribution, signing key, installer and offline update remain blocked until their Phase 6B/6C gates are approved.
+
+Phase 5.5 Revision 2 adds sender-validated Backup Save As IPC and blocks browser-supplied Hardware credentials in production-like/Internal Test builds. Portable export rejects DPAPI references and credentials; ambiguous or missing vault sources fail closed to USB reauthentication. See `PHASE5_5_MANUAL_DEFECT_RESOLUTION.md`.

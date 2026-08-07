@@ -1,0 +1,21 @@
+{
+  "espIdf": {
+    "tag": "v4.4.7",
+    "commit": "38eeba213aa695aabfd6d89aa9f5078dbe5a94c3",
+    "sourceUrl": "https://github.com/espressif/esp-idf/tree/v4.4.7/components/nvs_flash/nvs_partition_generator",
+    "nvsGeneratorSha256": "c6979797dcf373b6e0f2700c6d7b54675f3f197619e61325acd8865ca72182b3",
+    "license": "Apache-2.0"
+  },
+  "python": "3.12.13",
+  "pyinstaller": "6.11.1",
+  "pyinstallerHooksContrib": "2026.6",
+  "cryptography": "49.0.0",
+  "generatorExeSha256": "cafa38b445b796390a6f332765d590be7702f1f04d8eb6e03afc02771de93fd6",
+  "esptool": {
+    "version": "4.11.0",
+    "releaseUrl": "https://github.com/espressif/esptool/releases/tag/v4.11.0",
+    "archiveSha256": "0edab659cca62df69c91a80cc685c1c3bbdefb7eff53abf43c2b902a735ad2f9",
+    "executableSha256": "71b8c5e129a44e26851bd8e59dc8d299a1eb07bbd445a8e0a49ed64a0444ed1a",
+    "license": "GPL-2.0-or-later"
+  }
+}

@@ -6,5 +6,20 @@ data/
 *.sqlite3
 *.pem
 *.key
+.phase51-build-tools/
+.phase51-downloads/
+.phase51-pyinstaller-work/
+.phase51-pyinstaller-spec/
+runtime/firmware-packages/
+runtime/electron-test-user-data/
+tools/phase5_1/dist/
+tools/phase5_1/test-keys/
+*.nvs.csv
+*.nvs.bin
 .env
 .env.*
+
+# Build/packaging output (large binaries, not source)
+output/
+tmp/
+.pio/

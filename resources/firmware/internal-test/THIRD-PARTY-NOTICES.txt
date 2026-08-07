@@ -1,0 +1,3 @@
+INTERNAL TEST ONLY — NOT FOR PRODUCTION
+Espressif esptool 4.11.0: GPL-2.0-or-later
+ESP-IDF NVS generator v4.4.7: Apache-2.0

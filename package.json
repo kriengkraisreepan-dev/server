@@ -2,10 +2,21 @@
   "name": "server",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "electron/main.js",
   "scripts": {
     "start": "node index.js",
-    "test": "node --check index.js"
+    "start:electron": "node scripts/start-electron-development.js",
+    "test:phase6a": "node --test tests/phase6a-*.test.js",
+    "inventory:phase6a": "node scripts/phase6a-dependency-inventory.js",
+    "build:phase5.5-portable": "node scripts/build-phase5_5-internal-portable.js",
+    "build:phase5.5-firmware": "node scripts/build-phase5_5-internal-firmware-package.js",
+    "test": "node --test tests/*.test.js",
+    "test:phase5.1": "node --test tests/phase5_1-release-pipeline.test.js tests/sprint13-usb-flasher.test.js",
+    "build:test-firmware-package": "node scripts/build-phase5_1-test-package.js",
+    "build:phase5.3-test": "node scripts/build-phase5_3-production-like-package.js",
+    "scan:phase5.3-secrets": "node scripts/phase5_3-secret-scan.js",
+    "test:sprint10d": "node --test tests/sprint10d-*.test.js",
+    "check": "node --check index.js && node --check public/js/app.js"
   },
   "keywords": [],
   "author": "",
@@ -13,5 +24,8 @@
   "type": "commonjs",
   "dependencies": {
     "express": "^5.2.1"
+  },
+  "devDependencies": {
+    "electron": "43.2.0"
   }
 }

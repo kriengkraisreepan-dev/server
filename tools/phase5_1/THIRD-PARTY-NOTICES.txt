@@ -1,0 +1,15 @@
+Lucky Relay Controller — Third-Party Notices
+
+Espressif ESP-IDF NVS generator v4.4.7 — Apache-2.0
+Source: https://github.com/espressif/esp-idf/tree/v4.4.7/components/nvs_flash/nvs_partition_generator
+The bundled generator is Lucky-built and is not an official Espressif binary.
+
+esptool 4.11.0 — GPL-2.0-or-later
+Source and corresponding source: https://github.com/espressif/esptool/tree/v4.11.0
+
+Python 3.12.13 — Python Software Foundation License
+PyInstaller 6.11.1 — GPL-2.0-or-later with bootloader exception
+cryptography 49.0.0 and bundled OpenSSL — Apache-2.0 OR BSD-3-Clause
+
+See LICENSES/ for the bundled license texts.
+PRODUCTION DISTRIBUTION NOT YET APPROVED until the Phase 5.3 acceptance gates are signed.
