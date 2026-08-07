@@ -85,6 +85,13 @@ test("stale status is derived after 90 seconds without altering identity", () =>
   const result = h.monitor.publicDevice(h.repo.devices[0]); assert.equal(result.status, "STALE"); assert.equal(result.deviceId, "LRC-A");
 });
 
+test("a REPLACED_ARCHIVED device is never re-probed, so background polling cannot resurrect it as ONLINE", async () => {
+  const h = harness([healthy()]); h.repo.devices[0].status = "REPLACED_ARCHIVED"; h.repo.devices[0].replacementDeviceId = "hw-2";
+  const result = await h.monitor.check("hw-1");
+  assert.equal(result.status, "REPLACED_ARCHIVED");
+  assert.equal(h.calls(), 0, "the driver should never be contacted for an archived device");
+});
+
 test("health monitoring has no Relay commands and logs contain no secrets", async () => {
   const h = harness([failure("DEVICE_TIMEOUT")]); await h.monitor.check("hw-1");
   const source = fs.readFileSync(path.join(__dirname, "../services/hardware-health-monitoring-service.js"), "utf8");

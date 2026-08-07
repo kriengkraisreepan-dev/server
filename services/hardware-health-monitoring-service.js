@@ -58,7 +58,7 @@ class HardwareHealthMonitoringService {
     if (!this.enabled) return this.publicDevice(this.repository.findById(id));
     const device = this.repository.findById(id);
     if (!device) this.raise("DEVICE_UNREACHABLE");
-    if (device.credentialStatus === "REAUTHENTICATION_REQUIRED" || !device.apiKey) return this.publicDevice(device);
+    if (device.status === "REPLACED_ARCHIVED" || device.credentialStatus === "REAUTHENTICATION_REQUIRED" || !device.apiKey) return this.publicDevice(device);
     if (manual) {
       const previous = this.manualChecks.get(id) || 0, nowMs = this.now().getTime();
       if (this.manualChecks.has(id) && nowMs - previous < this.manualCooldownMs) {

@@ -110,7 +110,7 @@ test("repository preserves profile on IP change and requires reverify for identi
 
 test("UI filters relay buttons by relayCount, print sheet excludes secrets, and routes retain OWNER/ADMIN guard", () => {
   const root = path.resolve(__dirname, ".."), ui = fs.readFileSync(path.join(root, "public/js/app.js"), "utf8"), index = fs.readFileSync(path.join(root, "index.js"), "utf8");
-  assert.match(ui, /Array\.from\(\{length:Number\(device\.relayCount\)\|\|0}/); assert.match(ui, /data-hw-wiring/); assert.match(ui, /window\.print\(\)/);
+  assert.match(ui, /Array\.from\(\{length:Number\(device\.relayCount\)\|\|0}/); assert.match(ui, /data-hw-wiring/); assert.match(ui, /popup\.print\(\)/);
   const sheet = ui.match(/function renderWiringSheet[\s\S]*?\nfunction bindHardware/)?.[0] || "";
   assert.doesNotMatch(sheet, /apiKey|setupCode|password|sessionToken|portal/i);
   for (const route of ["wiring/session", "wiring/test", "wiring/result", "wiring/complete", "wiring/cancel"]) assert.match(index, new RegExp(`${route.replace("/", "\\/")}[^\n]*requireHardwareAdmin`));
