@@ -67,6 +67,11 @@ const dataFile = path.join(dataDir, "store.json");
 const backupsDir = dataLayout.backups;
 const MAX_BACKUPS = 30;
 const AUTO_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+// Declared here (ahead of settingsService/authService.bootstrap()) because bootstrap can
+// trigger the very first save()/backupNow() during module initialization, and
+// mirrorBackupExternally() (a hoisted function declaration) would otherwise read this `let`
+// before its own initializer line runs further down the file.
+let lastExternalBackupStatus = null;
 const checksum = value => crypto.createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex");
 
 function seed() {
@@ -205,7 +210,7 @@ const healthService = new HealthService({
   dataFiles: () => [{ name: "store.json", file: dataFile }, { name: "reservations.json", file: reservationRepository.file }, { name: "reservation-deposits.json", file: reservationDepositRepository.file }].map(item => { try { return { name: item.name, exists: fs.existsSync(item.file), parseable: (JSON.parse(fs.readFileSync(item.file, "utf8")), true), bytes: fs.statSync(item.file).size }; } catch { return { name: item.name, exists: fs.existsSync(item.file), parseable: false, bytes: fs.existsSync(item.file) ? fs.statSync(item.file).size : 0 }; } }),
   activeTimers: () => 1,
   activeWrites: activeJsonWrites,
-  backups: () => listBackups()[0] || { verificationStatus: "MISSING" },
+  backups: () => ({ ...(listBackups()[0] || { verificationStatus: "MISSING" }), externalBackup: lastExternalBackupStatus }),
   integrity: () => integrityCheckService.run(),
   recovery: () => lastRecovery,
   relay: () => !process.env.ESP32_BASE_URL ? "NOT_CONFIGURED" : store.tables.some(table=>table.relayPending) ? "WARNING" : "READY"
@@ -240,6 +245,33 @@ function listBackups() {
   return fs.readdirSync(backupsDir).filter(f => /^backup-.*\.json$/.test(f)).map(file => { const full=path.join(backupsDir,file),stat=fs.statSync(full),inspection=inspectBackup(full); return { file, backupId: inspection.metadata?.backupId || file, size: stat.size, createdAt: inspection.metadata?.createdAt || stat.mtime.toISOString(), fileCount: inspection.metadata?.fileCount || 1, checksum: inspection.metadata?.checksum || inspection.checksum, appVersion: inspection.metadata?.appVersion || "legacy", schemaVersion: inspection.metadata?.schemaVersion || 1, verifiedAt: new Date().toISOString(), verificationStatus: inspection.verificationStatus }; }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 function pruneBackups() { const list = listBackups(); list.slice(MAX_BACKUPS).forEach(b => fs.unlinkSync(path.join(backupsDir, b.file))); }
+function pruneExternalBackups(directory) {
+  const entries = fs.readdirSync(directory).filter(f => /^backup-.*\.json$/.test(f)).map(file => ({ file, mtime: fs.statSync(path.join(directory, file)).mtimeMs })).sort((a, b) => b.mtime - a.mtime);
+  entries.slice(MAX_BACKUPS).forEach(entry => fs.unlinkSync(path.join(directory, entry.file)));
+}
+// Mirrors the just-verified local backup to an owner-configured external folder (e.g. a
+// permanently attached USB drive or a mapped network path). Best-effort: the local backup is
+// already the source of truth and must never fail because the external drive is unplugged, so
+// failures here are logged as a WARNING (surfaced through /api/health) rather than thrown.
+function mirrorBackupExternally(file, payload) {
+  const externalPath = String(settingsService.getSettings().backupExternalPath || "").trim();
+  if (!externalPath) { lastExternalBackupStatus = null; return; }
+  const checkedAt = new Date().toISOString();
+  try {
+    const directory = path.resolve(externalPath);
+    fs.mkdirSync(directory, { recursive: true });
+    const target = path.join(directory, file);
+    atomicWriteJson(target, payload, { keepBackup: false });
+    const inspection = inspectBackup(target);
+    if (inspection.verificationStatus !== "VERIFIED") throw new Error("External backup verification failed");
+    pruneExternalBackups(directory);
+    lastExternalBackupStatus = { status: "VERIFIED", path: directory, file, checkedAt };
+    operationalLog("INFO", "EXTERNAL_BACKUP_VERIFIED", { file, path: directory });
+  } catch (error) {
+    lastExternalBackupStatus = { status: "UNREACHABLE", path: externalPath, message: error.message, checkedAt };
+    operationalLog("WARN", "EXTERNAL_BACKUP_FAILED", { file, path: externalPath, errorCode: error.code || "EXTERNAL_BACKUP_FAILED" });
+  }
+}
 function backupNow() {
   fs.mkdirSync(backupsDir, { recursive: true });
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -253,6 +285,7 @@ function backupNow() {
   if (inspection.verificationStatus !== "VERIFIED") throw new Error("Backup verification failed");
   operationalLog("INFO","BACKUP_VERIFIED",{backupId:metadata.backupId,file,checksum:metadata.checksum,size:fs.statSync(target).size});
   pruneBackups();
+  mirrorBackupExternally(file, payload);
   return { file, ...metadata, size: fs.statSync(target).size };
 }
 function maybeAutoBackup() {
