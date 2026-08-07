@@ -27,6 +27,17 @@ class HardwareService {
     if (!device.apiKey || device.credentialStatus === "REAUTHENTICATION_REQUIRED") throw new HardwareError("HARDWARE_REAUTHENTICATION_REQUIRED", "ต้องยืนยันอุปกรณ์อีกครั้งก่อนใช้งาน", 409);
     return device;
   }
+  // The physical device itself rejected the API Key (firmware returned 401), meaning the
+  // stored key no longer matches what is flashed on the ESP32. Flag the record so the UI's
+  // existing USB recovery modal switches to the Device Key rotation flow (see
+  // public/js/app.js openUsbRecovery / services/hardware-usb-recovery-service.js
+  // startKeyRotation) instead of silently retrying a key that will never work.
+  markAuthFailure(id, error) {
+    if (error?.code !== "DEVICE_AUTH_FAILED") return false;
+    this.repository.update(id, { credentialStatus: "REAUTHENTICATION_REQUIRED", status: DEVICE_STATUS.OFFLINE, lastErrorCode: error.code, updatedAt: new Date().toISOString() });
+    this.audit("HARDWARE_CREDENTIAL_REAUTHENTICATION_REQUIRED", "SYSTEM", { deviceId: id });
+    return true;
+  }
   input(data, existing = null) {
     const deviceName = String(data.deviceName ?? existing?.deviceName ?? "").trim();
     const ipAddress = String(data.ipAddress ?? existing?.ipAddress ?? "").trim();
@@ -227,8 +238,8 @@ class HardwareService {
     this.auditWiringReverify(updated, actorId);
     return result;
   }
-  relayState(id, relayId, state) { return this.driver.setRelayState(this.getRequired(id), relayId, Boolean(state)); }
-  allOff(id) { return this.driver.allOff(this.getRequired(id)); }
+  relayState(id, relayId, state) { return this.driver.setRelayState(this.getRequired(id), relayId, Boolean(state)).catch(error => { this.markAuthFailure(id, error); throw error; }); }
+  allOff(id) { return this.driver.allOff(this.getRequired(id)).catch(error => { this.markAuthFailure(id, error); throw error; }); }
   async replaceController(oldId, newId, confirmed, actorId) {
     if (confirmed !== true) throw new HardwareError("DEVICE_REPLACEMENT_CONFIRMATION_REQUIRED", "กรุณายืนยันการเปลี่ยนกล่องควบคุม", 409);
     if (oldId === newId) throw new HardwareError("DEVICE_REPLACEMENT_INVALID", "กล่องเดิมและกล่องใหม่ต้องเป็นคนละอุปกรณ์", 409);
@@ -316,7 +327,7 @@ class HardwareService {
       return { connected: true, ...result };
     } catch (error) {
       table.relayPending = true;
-      this.repository.update(device.id, { status: DEVICE_STATUS.OFFLINE });
+      if (!this.markAuthFailure(device.id, error)) this.repository.update(device.id, { status: DEVICE_STATUS.OFFLINE });
       throw error;
     }
   }
