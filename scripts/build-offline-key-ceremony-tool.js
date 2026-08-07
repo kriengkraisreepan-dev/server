@@ -34,6 +34,10 @@ const manifest = { schemaVersion: 1, classification: "OFFLINE PRODUCTION KEY CER
 fs.writeFileSync(path.join(stage, "TOOL-MANIFEST.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 const verify = spawnSync(path.join(stage, "node.exe"), [path.join(stage, "verify-bundle.js")], { cwd: stage, encoding: "utf8", windowsHide: true });
 if (verify.status !== 0 || !verify.stdout.includes("BUNDLE VERIFICATION: PASS")) throw new Error("Staged ceremony tool verification failed");
-const packed = spawnSync("tar.exe", ["-a", "-c", "-f", archive, "-C", output, id], { encoding: "utf8", windowsHide: true, timeout: 300000 });
+// tar.exe (bsdtar) treats an absolute -f argument starting with a drive letter (e.g.
+// "C:\...") as a "host:path" remote-archive spec and fails with "Cannot connect to C:
+// resolve failed" -- pass a plain relative filename with cwd set to the output directory
+// instead, which sidesteps the drive-letter parsing entirely.
+const packed = spawnSync("tar.exe", ["-a", "-c", "-f", `${id}.zip`, id], { cwd: output, encoding: "utf8", windowsHide: true, timeout: 300000 });
 if (packed.status !== 0) throw new Error("Unable to create ceremony tool ZIP");
 process.stdout.write(`${JSON.stringify({ archive, bytes: fs.statSync(archive).size, sha256: digest(archive), node: expectedNode, privateKeyIncluded: false, productionKeyCreated: false }, null, 2)}\n`);

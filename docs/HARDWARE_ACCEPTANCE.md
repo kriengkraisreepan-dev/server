@@ -1,6 +1,10 @@
 # Hardware Acceptance — Wiring Assistant
 
-สถานะเริ่มต้น: `PENDING` จนกว่าจะผ่านการทดสอบกับ ESP32/Relay จริง
+สถานะ: **ผ่านบางส่วนบน "Lucky Relay 01"** (กล่องเดียวที่ใช้งานจริง) — "Lucky Relay Test" (กล่องสำรอง ไม่ผูกกับโต๊ะใด) ถูกตัดออกจากขอบเขตการตรวจตามคำสั่งเจ้าของร้าน เนื่องจากใช้งานส่วนตัวร้านเดียว ไม่ได้จำหน่าย/แจกจ่าย จึงไม่จำเป็นต้องตรวจให้ครบทุกกล่อง
+
+ที่ผ่านแล้วจริงบน Lucky Relay 01 ระหว่าง Manual Windows Acceptance (ดู [PHASE6A_MANUAL_ACCEPTANCE.md](PHASE6A_MANUAL_ACCEPTANCE.md)): ตั้ง Relay Count, ทดสอบครบ 4 ช่อง (`relayTestStatus: PASSED`), พิมพ์ Wiring Sheet ได้ข้อมูลครบไม่มี credential หลุด
+
+ยังไม่ได้ตรวจ (ข้ามได้ถ้าไม่คิดใช้งานหนัก/ไม่วางแผนเปลี่ยนกล่องบ่อย): Reboot ESP32 แล้ว Wiring Profile ยังอยู่ไหม, เปลี่ยน IP แล้ว Profile ยังอยู่ไหม, ทดสอบสองกล่องพร้อมกันว่าไม่สลับ mapping (ข้ามไปแล้วเพราะเหลือกล่องเดียวที่ใช้งาน), Phase 5.4B ข้อ 1–6 ด้านล่าง (ถอดไฟจริงแล้วนับ 3 ครั้งค่อย Offline)
 
 ## Checklist
 

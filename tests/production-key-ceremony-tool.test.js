@@ -69,3 +69,13 @@ test("builder pins signed Node runtime, includes license and cannot create a Pro
   assert.match(source, /productionKeyCreated:\s*false/);
   assert.doesNotMatch(source, /generateKeyPair|https?:\/\/|Invoke-WebRequest|fetch\s*\(/);
 });
+
+test("builder invokes tar with a relative, cwd-scoped filename so bsdtar never misparses a Windows drive letter as a remote host", () => {
+  // bsdtar's -f argument treats a leading "C:\..." as "host:path" remote-archive syntax and
+  // fails with "Cannot connect to C: resolve failed" -- reproduced when packaging this exact
+  // tool on this machine. Passing an absolute archive path directly must never regress.
+  const source = fs.readFileSync(path.resolve(__dirname, "../scripts/build-offline-key-ceremony-tool.js"), "utf8");
+  const call = source.match(/spawnSync\("tar\.exe"[^;]*;/)[0];
+  assert.match(call, /cwd:\s*output/, "must run tar with cwd set to the output directory");
+  assert.doesNotMatch(call, /"-f",\s*archive\b/, "must not pass the absolute archive path straight to tar's -f argument");
+});
