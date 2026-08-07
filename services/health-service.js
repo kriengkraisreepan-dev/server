@@ -8,7 +8,7 @@ class HealthService {
     const backup = this.backups();
     const pendingRecoveryItems = this.recovery().pending || [];
     const critical = files.some(item => !item.exists || !item.parseable) || integrity.status === "ERROR";
-    const warning = !critical && (integrity.status === "WARNING" || pendingRecoveryItems.length || backup.verificationStatus !== "VERIFIED");
+    const warning = !critical && (integrity.status === "WARNING" || pendingRecoveryItems.length || backup.verificationStatus !== "VERIFIED" || backup.externalBackup?.status === "UNREACHABLE");
     return {
       status: critical ? "CRITICAL" : warning ? "WARNING" : "HEALTHY",
       server: "RUNNING",
