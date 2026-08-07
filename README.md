@@ -1,4 +1,4 @@
-# 88 Snooker Club Manager
+# 88 Snooker Manager
 
 ## Start
 
