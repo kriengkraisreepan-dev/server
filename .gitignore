@@ -23,3 +23,4 @@ tools/phase5_1/test-keys/
 output/
 tmp/
 .pio/
+dist_installer/
