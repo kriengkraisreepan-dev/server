@@ -16,7 +16,8 @@
     "build:phase5.3-test": "node scripts/build-phase5_3-production-like-package.js",
     "scan:phase5.3-secrets": "node scripts/phase5_3-secret-scan.js",
     "test:sprint10d": "node --test tests/sprint10d-*.test.js",
-    "check": "node --check index.js && node --check public/js/app.js"
+    "check": "node --check index.js && node --check public/js/app.js",
+    "build:win-installer": "electron-builder --win nsis --publish never"
   },
   "keywords": [],
   "author": "",
@@ -26,6 +27,44 @@
     "express": "^5.2.1"
   },
   "devDependencies": {
-    "electron": "43.2.0"
+    "electron": "43.2.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "local.88snookermanager.app",
+    "productName": "88 Snooker Manager",
+    "copyright": "88 Snooker Manager",
+    "directories": {
+      "output": "dist_installer"
+    },
+    "files": [
+      "index.js",
+      "electron/**/*",
+      "public/**/*",
+      "services/**/*",
+      "repositories/**/*",
+      "domain/**/*",
+      "infrastructure/**/*",
+      "drivers/**/*",
+      "config/**/*",
+      "package.json",
+      "!**/*.test.js"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "88 Snooker Manager"
+    }
   }
 }
