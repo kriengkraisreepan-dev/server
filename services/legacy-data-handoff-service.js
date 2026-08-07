@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const { atomicWriteJson } = require("../infrastructure/safe-json-file");
 
 const REQUIRED = Object.freeze(["store.json", "reservations.json", "reservation-deposits.json", "hardware-devices.json"]);
+const OPTIONAL_CONFIG = Object.freeze(["hardware-secrets.dpapi.json"]);
 const MIGRATION_ID = "program-data-separation-v1";
 function sha256File(file) { return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex"); }
 function stableHash(value) { return crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex"); }
@@ -60,6 +61,10 @@ class LegacyDataHandoffService {
       if (fs.lstatSync(backupRoot).isSymbolicLink()) throw Object.assign(new Error("Legacy backup directory cannot be a symlink"), { code: "LEGACY_SOURCE_UNSAFE_ENTRY" });
       for (const name of fs.readdirSync(backupRoot).filter(name => /^backup-.*\.json$/.test(name)).sort()) { const file = path.join(backupRoot, name); assertRegularFile(file); files.push({ relativePath: `backups/${name}`, size: fs.statSync(file).size, sha256: sha256File(file) }); }
     }
+    for (const name of OPTIONAL_CONFIG) {
+      const file = path.join(root, "config", name); if (fs.existsSync(file)) { assertRegularFile(file); files.push({ relativePath: `config/${name}`, size: fs.statSync(file).size, sha256: sha256File(file) }); }
+      const backup = `${file}.bak`; if (fs.existsSync(backup)) { assertRegularFile(backup); files.push({ relativePath: `config/${name}.bak`, size: fs.statSync(backup).size, sha256: sha256File(backup) }); }
+    }
     files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
     return { schemaVersion: 1, fileCount: files.length, files, sha256: stableHash(files) };
   }
@@ -115,7 +120,7 @@ class LegacyDataHandoffService {
       } else if (!fs.existsSync(staging) && fs.existsSync(recovery)) {
         fs.cpSync(recovery, staging, { recursive: true, errorOnExist: true });
       }
-      if (fs.existsSync(recovery)) for (const directory of ["database", "backups"]) {
+      if (fs.existsSync(recovery)) for (const directory of ["database", "backups", "config"]) {
         const stagedDirectory = path.join(staging, directory);
         const recoveryDirectory = path.join(recovery, directory);
         if (!fs.existsSync(stagedDirectory) && fs.existsSync(recoveryDirectory)) fs.cpSync(recoveryDirectory, stagedDirectory, { recursive: true, errorOnExist: true });
@@ -127,7 +132,7 @@ class LegacyDataHandoffService {
       if (!fs.existsSync(recovery)) fs.cpSync(staging, recovery, { recursive: true, errorOnExist: true });
       if (this.manifestStaging(recovery).sha256 !== sourceManifest.sha256) throw Object.assign(new Error("Recovery copy hash mismatch"), { code: "MIGRATION_RECOVERY_HASH_MISMATCH" });
       this.writeJournal({ migrationRunId, stage: "VERIFIED", sourceManifestSha256: sourceManifest.sha256 });
-      for (const directory of ["database", "backups"]) {
+      for (const directory of ["database", "backups", "config"]) {
         this.writeJournal({ migrationRunId, stage: `ACTIVATING_${directory.toUpperCase()}`, sourceManifestSha256: sourceManifest.sha256 });
         this.activateDirectory(directory, staging, sourceManifest);
       }
@@ -143,7 +148,7 @@ class LegacyDataHandoffService {
     } finally { if (lock !== undefined) this.releaseLock(lock); }
   }
 
-  manifestStaging(staging) { const files = []; for (const directory of ["database", "backups"]) { const root = path.join(staging, directory); if (!fs.existsSync(root)) continue; for (const name of fs.readdirSync(root).sort()) { const file = path.join(root, name); if (fs.statSync(file).isFile()) files.push({ relativePath: `${directory}/${name}`, size: fs.statSync(file).size, sha256: sha256File(file) }); } } files.sort((a,b)=>a.relativePath.localeCompare(b.relativePath)); return { schemaVersion: 1, fileCount: files.length, files, sha256: stableHash(files) }; }
+  manifestStaging(staging) { const files = []; for (const directory of ["database", "backups", "config"]) { const root = path.join(staging, directory); if (!fs.existsSync(root)) continue; for (const name of fs.readdirSync(root).sort()) { const file = path.join(root, name); if (fs.statSync(file).isFile()) files.push({ relativePath: `${directory}/${name}`, size: fs.statSync(file).size, sha256: sha256File(file) }); } } files.sort((a,b)=>a.relativePath.localeCompare(b.relativePath)); return { schemaVersion: 1, fileCount: files.length, files, sha256: stableHash(files) }; }
   manifestDestination() { return this.manifestStaging(this.destinationRoot); }
 }
 
