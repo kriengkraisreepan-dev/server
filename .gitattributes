@@ -1,0 +1,8 @@
+# Pre-built, hash-verified firmware/release package assets must be checked out byte-for-byte
+# identical on every OS. Windows' default core.autocrlf=true otherwise rewrites LF -> CRLF in
+# these text files, silently corrupting the SHA-256 hashes recorded in their signed manifest.json
+# (PACKAGE_HASH_MISMATCH / "ไฟล์ ... ไม่ผ่านการตรวจสอบ" at runtime and in tests).
+resources/** -text
+tools/phase5_1/THIRD-PARTY-NOTICES.txt -text
+tools/phase5_1/PROVENANCE.json -text
+tools/phase5_1/licenses/** -text
