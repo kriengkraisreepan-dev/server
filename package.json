@@ -1,6 +1,6 @@
 {
   "name": "server",
-  "version": "1.0.0",
+  "version": "1.0.3",
   "description": "",
   "main": "electron/main.js",
   "scripts": {
@@ -17,7 +17,9 @@
     "scan:phase5.3-secrets": "node scripts/phase5_3-secret-scan.js",
     "test:sprint10d": "node --test tests/sprint10d-*.test.js",
     "check": "node --check index.js && node --check public/js/app.js",
-    "build:win-installer": "electron-builder --win nsis --publish never"
+    "build:win-installer": "electron-builder --win nsis --publish never",
+    "build:win-msix": "electron-builder --win appx --publish never",
+    "build:win-release": "node scripts/build-windows-release.js"
   },
   "keywords": [],
   "author": "",
@@ -34,6 +36,7 @@
     "appId": "local.88snookermanager.app",
     "productName": "88 Snooker Manager",
     "copyright": "88 Snooker Manager",
+    "asar": false,
     "directories": {
       "output": "dist_installer"
     },
@@ -46,7 +49,9 @@
       "domain/**/*",
       "infrastructure/**/*",
       "drivers/**/*",
+      "controllers/**/*",
       "config/**/*",
+      "resources/**/*",
       "package.json",
       "!**/*.test.js"
     ],
@@ -54,6 +59,10 @@
       "target": [
         {
           "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "appx",
           "arch": ["x64"]
         }
       ]
@@ -65,6 +74,14 @@
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "88 Snooker Manager"
+    },
+    "appx": {
+      "applicationId": "SnookerManagerApp",
+      "identityName": "SnookerManager88",
+      "publisher": "CN=88 Snooker Manager",
+      "publisherDisplayName": "88 Snooker Manager",
+      "displayName": "88 Snooker Manager",
+      "backgroundColor": "#0b1120"
     }
   }
 }
