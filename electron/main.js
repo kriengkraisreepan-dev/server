@@ -1,8 +1,9 @@
 const fs = require("fs");
 const net = require("net");
+const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
-const { app, BrowserWindow, dialog, ipcMain, session, screen } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, session, screen } = require("electron");
 const { atomicWriteJson } = require("../infrastructure/safe-json-file");
 const { validateDataRoot, prepareDataLayout, isWithin } = require("../infrastructure/trusted-data-root");
 const { LegacyDataHandoffService } = require("../services/legacy-data-handoff-service");
@@ -39,6 +40,35 @@ if (!gotLock) app.quit();
 app.on("second-instance", () => { if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.show(); mainWindow.focus(); } });
 
 function reserveLoopbackPort() { return new Promise((resolve, reject) => { const server = net.createServer(); server.unref(); server.on("error", reject); server.listen(0, "127.0.0.1", () => { const port = server.address().port; server.close(error => error ? reject(error) : resolve(port)); }); }); }
+// LAN mode needs a fixed, memorable port (staff type it into a phone browser) instead of the
+// random one used for loopback-only mode, so this just confirms the fixed port is free.
+const LAN_PORT = 3000;
+function reserveLanPort(port) { return new Promise((resolve, reject) => { const server = net.createServer(); server.unref(); server.on("error", reject); server.listen(port, () => server.close(error => error ? reject(error) : resolve(port))); }); }
+function networkAccessConfigPath(layout) { return path.join(layout.config, "network-access.json"); }
+function loadNetworkAccessConfig(layout) { try { const value = JSON.parse(fs.readFileSync(networkAccessConfigPath(layout), "utf8")); return { lanAccess: value?.lanAccess === true }; } catch { return { lanAccess: false }; } }
+function saveNetworkAccessConfig(layout, lanAccess) { atomicWriteJson(networkAccessConfigPath(layout), { schemaVersion: 1, lanAccess: Boolean(lanAccess) }, { keepBackup: false }); }
+// Best-effort list of this machine's LAN IPv4 addresses, shown to staff so they know what to
+// type on a phone. Purely informational — not used for any security decision.
+function localLanAddresses() { const results = []; const interfaces = os.networkInterfaces(); for (const entries of Object.values(interfaces)) for (const entry of entries || []) if (entry.family === "IPv4" && !entry.internal) results.push(entry.address); return results; }
+function buildAppMenu(layout, networkAccess, port) {
+  const template = [{
+    label: "เครือข่าย",
+    submenu: [
+      { label: "อนุญาตมือถือ/เครื่องอื่นเข้าถึงผ่าน Wi-Fi ร้าน", type: "checkbox", checked: networkAccess.lanAccess, click: async menuItem => {
+        saveNetworkAccessConfig(layout, menuItem.checked);
+        const choice = await dialog.showMessageBox(mainWindow, { type: "info", buttons: ["รีสตาร์ทตอนนี้", "ไว้ทีหลัง"], defaultId: 0, title: "ต้องรีสตาร์ทโปรแกรม", message: menuItem.checked ? "เปิดโหมดเครือข่ายแล้ว — ต้องรีสตาร์ทโปรแกรมเพื่อให้มีผล" : "ปิดโหมดเครือข่ายแล้ว — ต้องรีสตาร์ทโปรแกรมเพื่อให้มีผล" });
+        if (choice.response === 0) { app.relaunch(); app.exit(0); }
+      } },
+      { label: "แสดงที่อยู่สำหรับมือถือ", click: () => {
+        if (!networkAccess.lanAccess) { dialog.showMessageBox(mainWindow, { type: "info", title: "ยังไม่ได้เปิดโหมดเครือข่าย", message: "เปิด \"อนุญาตมือถือ/เครื่องอื่นเข้าถึงผ่าน Wi-Fi ร้าน\" ก่อน แล้วรีสตาร์ทโปรแกรม" }); return; }
+        const addresses = localLanAddresses();
+        const message = addresses.length ? addresses.map(address => `http://${address}:${port}`).join("\n") : "ไม่พบ IP เครือข่าย — ตรวจสอบว่าต่อ Wi-Fi/สาย LAN อยู่";
+        dialog.showMessageBox(mainWindow, { type: "info", title: "ที่อยู่สำหรับมือถือ (ต้องต่อ Wi-Fi วงเดียวกัน)", message });
+      } },
+    ],
+  }];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
 function safeBounds(layout) { const file = path.join(layout.config, "window-state.json"); let value = null; try { value = JSON.parse(fs.readFileSync(file, "utf8")); } catch {} const fallback = { width: 1280, height: 800 }; if (!value || !["x", "y", "width", "height"].every(key => Number.isInteger(value[key])) || value.width < 1100 || value.height < 700) return fallback; const visible = screen.getAllDisplays().some(display => { const area = display.workArea; return value.x < area.x + area.width && value.x + value.width > area.x && value.y < area.y + area.height && value.y + value.height > area.y; }); return visible ? value : fallback; }
 function saveBounds(layout) { if (!mainWindow || mainWindow.isDestroyed() || mainWindow.isMinimized() || mainWindow.isMaximized()) return; atomicWriteJson(path.join(layout.config, "window-state.json"), mainWindow.getBounds()); }
 function installIpc(origin, layout) {
@@ -98,11 +128,19 @@ function createRuntimeMarker(layout, port) {
 function removeRuntimeMarker() { if (!runtimeMarkerFile) return; try { fs.unlinkSync(runtimeMarkerFile); } catch {} runtimeMarkerFile = null; }
 async function boot() {
   const layout = await resolveLayoutAndMigration();
-  const port = await reserveLoopbackPort();
+  const networkAccess = loadNetworkAccessConfig(layout);
+  let port, host = "127.0.0.1";
+  if (networkAccess.lanAccess) {
+    try { port = await reserveLanPort(LAN_PORT); host = ""; }
+    catch (error) { dialog.showErrorBox("เปิดโหมดเครือข่ายไม่สำเร็จ", `พอร์ต ${LAN_PORT} ถูกใช้งานอยู่แล้ว (${error.code || error.message})\nเปิดแบบใช้เครื่องเดียวแทนไปก่อน ปิดโปรแกรมที่ใช้พอร์ตนี้อยู่แล้วรีสตาร์ท`); port = await reserveLoopbackPort(); host = "127.0.0.1"; networkAccess.lanAccess = false; }
+  } else {
+    port = await reserveLoopbackPort();
+  }
   const origin = trustedOrigin(port);
   createRuntimeMarker(layout, port);
   installSessionPolicy(origin); installIpc(origin, layout);
-  supervisor = new BackendSupervisor({ entry: path.join(programRoot, "index.js"), programRoot, dataRoot: layout.root, port, logFile: path.join(layout.logs, "desktop-backend.log") });
+  buildAppMenu(layout, networkAccess, port);
+  supervisor = new BackendSupervisor({ entry: path.join(programRoot, "index.js"), programRoot, dataRoot: layout.root, port, host, logFile: path.join(layout.logs, "desktop-backend.log") });
   supervisor.onCrash = async () => { if (quitting) return; if (!supervisor.canRestart()) return dialog.showErrorBox("Backend หยุดทำงาน", "ระบบหยุดการเริ่มใหม่อัตโนมัติหลังล้มเหลว 3 ครั้งใน 5 นาที กรุณาปิดโปรแกรมและตรวจ logs"); try { supervisor.launch(); await supervisor.waitUntilReady(); mainWindow?.reload(); } catch { dialog.showErrorBox("เริ่ม Backend ไม่สำเร็จ", "กรุณาปิดโปรแกรมและตรวจสอบโฟลเดอร์ logs"); } };
   supervisor.launch(); await supervisor.waitUntilReady(); createWindow(layout, origin);
   app.on("before-quit", event => { if (quitting) return; event.preventDefault(); quitting = true; saveBounds(layout); supervisor.stop(10000).finally(() => { removeRuntimeMarker(); app.quit(); }); });
