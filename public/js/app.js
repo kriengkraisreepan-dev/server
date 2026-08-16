@@ -350,6 +350,48 @@ checkoutDialog=async function(id){const table=state.tables.find(x=>String(x.id)=
 const printBillRewards9b=printBill;printBill=function(id){const bill=state.bills.find(item=>item.id===id);if(!bill)return;const open=window.open;window.open=function(...args){const popup=open.apply(window,args);if(!popup)return popup;const write=popup.document.write.bind(popup.document);popup.document.write=html=>{const rewards=bill.memberId?`<div class="line"></div><table><tr><td>ใช้แต้ม</td><td class="right">${Number(bill.redeemedPoints||0)} แต้ม</td></tr><tr><td>ส่วนลดจากแต้ม</td><td class="right">${money(bill.redeemValue||0)}</td></tr><tr><td>แต้มที่ได้รับ</td><td class="right">${Number(bill.pointsEarned||0)} แต้ม</td></tr><tr><td>แต้มคงเหลือ</td><td class="right">${Number(bill.pointsBalance||bill.memberBalanceAfterRedeem||0)} แต้ม</td></tr></table>`:"";write(String(html).replace('<div id="receiptExtensionPoint"></div>',`${rewards}<div id="receiptExtensionPoint"></div>`));};return popup;};try{return printBillRewards9b(id);}finally{window.open=open;}};
 const bindReservationFormPreservation=bind;bind=function(){bindReservationFormPreservation();const form=$("#reservationForm");if(form){form.oninput=()=>{reservationFormDirty=true;};form.onchange=()=>{reservationFormDirty=true;};}};
 
+// Manual "ส่วนลด" button on table checkout — comes out of the table charge only (never
+// products), same rule as member point redemption. Server caps an over-large amount at the raw
+// table charge rather than rejecting it; only a negative amount is rejected. Re-fetches the
+// billing preview (with ?discountAmount=) as the cashier types so tableCharge/total/reward cap
+// all stay in sync, instead of computing it client-side and risking drift from the server's rule.
+async function fetchCombinedPreview(sessionId,discountAmount){const query=discountAmount?`?discountAmount=${encodeURIComponent(discountAmount)}`:"";return (await api(`/api/table-sessions/${sessionId}/billing-preview${query}`)).preview;}
+checkoutDialog=async function(id){
+  const table=state.tables.find(x=>String(x.id)===String(id));
+  if(!table?.runtimeSessionId)return notify("ไม่พบ Session ที่พร้อมคิดเงิน",true);
+  const sessionId=table.runtimeSessionId;
+  try{
+    let preview=await fetchCombinedPreview(sessionId,0);
+    const renderBody=p=>{const b=p.breakdown,d=p.deposit||{},interval=(state.settings.loyalty?.tablePointIntervalMinutes||60)*60,estimated=Math.floor(Number(p.playDurationSeconds||0)/interval)*(state.settings.loyalty?.tablePointsPerHour||5);
+      return `<h3>ตัวอย่างบิลรวม — ${escapeHtml(table.name)}</h3><p>ค่าโต๊ะ: <b id="checkoutTableCharge">${money(b.tableCharge)}</b><br>อาหาร/เครื่องดื่ม: <b>${money(b.products)}</b><br><span id="checkoutDiscountLine" style="${b.discount>0?"":"display:none"}">ส่วนลด: <b id="checkoutDiscountValue">-${money(b.discount)}</b><br></span>มัดจำการจอง: <b>-${money((d.depositAppliedSatang||0)/100)}</b><br>เวลาเล่น: <b>${duration(p.playDurationSeconds||0)}</b><br>แต้มโดยประมาณ: <b>${p.memberId?estimated:0} แต้ม</b></p>`
+        +`<div class="total" id="checkoutTotal">ยอดรับชำระ ${money((d.remainingPaymentSatang??b.totalSatang)/100)}</div>`
+        +`<label>ส่วนลด (บาท, ไม่บังคับ)</label><input id="checkoutDiscountAmount" type="number" min="0" step="1" value="${b.discount||0}">`
+        +`<label>เหตุผลส่วนลด (ไม่บังคับ)</label><input id="checkoutDiscountReason" placeholder="เช่น โปรโมชั่น" value="${escapeHtml($("#checkoutDiscountReason")?.value||"")}">`
+        +`${rewardPanel(p)}<label>วิธีชำระเงิน</label><select id="combinedPaymentMethod"><option value="cash">เงินสด</option><option value="transfer">โอนเงิน</option><option value="qr">QR Payment</option></select><div class="actions"><button class="outline" id="cancelCombinedPreview">กลับ</button><button class="success" id="confirmCombinedBill">ยืนยันสร้างบิล</button></div>`;};
+    const bindBody=async p=>{
+      $("#cancelCombinedPreview").onclick=closeModal;
+      $("#checkoutDiscountAmount").oninput=async event=>{
+        const value=Math.max(0,Number(event.target.value)||0);
+        try{preview=await fetchCombinedPreview(sessionId,value);}catch(error){return notify(error.message,true);}
+        // Only the price figures + reward cap refresh — re-rendering the whole modal here would
+        // steal focus from the input the cashier is actively typing in (see tickPlayingTables fix).
+        const b=preview.breakdown,d=preview.deposit||{};
+        $("#checkoutTableCharge").textContent=money(b.tableCharge);
+        $("#checkoutTotal").textContent=`ยอดรับชำระ ${money((d.remainingPaymentSatang??b.totalSatang)/100)}`;
+        const discountLine=$("#checkoutDiscountLine");if(discountLine){discountLine.style.display=b.discount>0?"":"none";$("#checkoutDiscountValue").textContent=`-${money(b.discount)}`;}
+        await bindRewardPanel(preview);
+      };
+      $("#confirmCombinedBill").onclick=async()=>{const button=$("#confirmCombinedBill");button.disabled=true;try{const created=await api(`/api/table-sessions/${sessionId}/create-bill`,{method:"POST",body:JSON.stringify({paymentMethod:$("#combinedPaymentMethod").value,discountAmount:Math.max(0,Number($("#checkoutDiscountAmount").value)||0),discountReason:$("#checkoutDiscountReason").value||"",...normalizedRewardPayload(preview)})});closeModal();await refresh();openPaymentConfirmation(created.bill,created.payment);}catch(e){notify(e.message,true);button.disabled=false;}};
+      await bindRewardPanel(p);
+    };
+    openModal(renderBody(preview));
+    await bindBody(preview);
+  }catch(e){notify(e.message,true);}
+};
+
+// Receipt line for the manual ฿ discount, alongside the existing point-redemption breakdown.
+const printBillDiscount9c=printBill;printBill=function(id){const bill=state.bills.find(item=>item.id===id);if(!bill||!(Number(bill.discount)>0))return printBillDiscount9c(id);const open=window.open;window.open=function(...args){const popup=open.apply(window,args);if(!popup)return popup;const write=popup.document.write.bind(popup.document);popup.document.write=html=>{const line=`<div class="line"></div><table><tr><td>ส่วนลด${bill.discountReason?` (${escapeHtml(bill.discountReason)})`:""}</td><td class="right">-${money(bill.discount)}</td></tr></table>`;write(String(html).replace('<div id="receiptExtensionPoint"></div>',`${line}<div id="receiptExtensionPoint"></div>`));};return popup;};try{return printBillDiscount9c(id);}finally{window.open=open;}};
+
 // Sprint 10C: staff decides before a reservation can open a table. Alerts are queued so modals never overlap.
 let reservationAlertBusy=false, reservationAlertQueue=[], reservationPollingPaused=false, reservationAlertRequest=null;
 function playReservationAlert(){const r=state?.settings?.reservation||{};if(!r.alertSoundEnabled)return;try{const C=window.AudioContext||window.webkitAudioContext,ctx=new C(),gain=ctx.createGain(),osc=ctx.createOscillator();gain.gain.value=Math.max(0,Math.min(100,Number(r.alertSoundVolume||80)))/200;osc.frequency.value=880;osc.connect(gain);gain.connect(ctx.destination);osc.start();osc.stop(ctx.currentTime+.18);}catch(_){/* Browser autoplay may block sound; visual alert remains. */}}

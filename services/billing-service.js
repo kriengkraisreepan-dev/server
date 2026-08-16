@@ -6,7 +6,7 @@ class BillingService {
   constructor(repository, clock = () => new Date()) { this.repository = repository; this.clock = clock; }
   now() { return this.clock().toISOString(); }
   audit(event, details = {}) { const actorId = String(details.actorId || details.userId || "SYSTEM").trim() || "UNKNOWN"; return this.repository.appendAudit({ id: crypto.randomUUID(), occurredAt: this.now(), event, tableId: details.tableId || null, sessionId: details.sessionId || null, billId: details.billId || null, paymentId: details.paymentId || null, actorId, userId: actorId, details: details.data || {} }); }
-  createBillDraft({ table, session, memberName = "ลูกค้าทั่วไป", memberCode = null, actorId = "SYSTEM", extraItems = [], tableSessionId = null, posOrderIds = [], breakdown = null, saleSource = "TABLE" }) {
+  createBillDraft({ table, session, memberName = "ลูกค้าทั่วไป", memberCode = null, actorId = "SYSTEM", extraItems = [], tableSessionId = null, posOrderIds = [], breakdown = null, discountReason = "", saleSource = "TABLE" }) {
     if (!session?.finalChargeSatang && session?.finalChargeSatang !== 0) throw new Error("Session has no final charge");
     const legacyItems = (table.items || []).map(item => {
       const priceSatang = bahtToSatang(item.price); const quantity = Number(item.quantity);
@@ -19,12 +19,17 @@ class BillingService {
       return { ...item, quantity, price: apiBaht(priceSatang), total: apiBaht(priceSatang * quantity), priceSatang, totalSatang: priceSatang * quantity };
     });
     const items = [...legacyItems, ...posItems];
-    const playAmountSatang = requireNonNegativeSatang(session.finalChargeSatang, "play amount");
+    // breakdown.tableChargeSatang reflects any manual discount already applied by the caller
+    // (CombinedBillingService#buildPreview) — session.finalChargeSatang never does, it's the raw
+    // pricing-engine charge. Prefer the breakdown's number so the bill reflects the discount.
+    const rawPlayAmountSatang = requireNonNegativeSatang(session.finalChargeSatang, "play amount");
+    const playAmountSatang = Number.isInteger(breakdown?.tableChargeSatang) ? breakdown.tableChargeSatang : rawPlayAmountSatang;
     const foodAmountSatang = items.reduce((sum, item) => sum + item.totalSatang, 0);
-    const totalSatang = Math.ceil((playAmountSatang + foodAmountSatang) / 100) * 100;
+    const totalSatang = Number.isInteger(breakdown?.totalSatang) ? breakdown.totalSatang : Math.ceil((playAmountSatang + foodAmountSatang) / 100) * 100;
+    const discount = Number(breakdown?.discount || 0);
     const createdAt = session.closedAt || this.now();
     const receiptNumber = this.repository.nextReceiptNumber(createdAt);
-    const bill = { id: crypto.randomUUID(), number: receiptNumber, receiptNumber, createdAt, tableId: table.id, tableName: table.name, memberId: table.memberId || null, memberName, memberCode, playStartedAt: session.openedAt, playEndedAt: session.closedAt, playDurationSeconds: session.billableSeconds, playAmount: apiBaht(playAmountSatang), foodAmount: apiBaht(foodAmountSatang), total: apiBaht(totalSatang), playAmountSatang, foodAmountSatang, totalSatang, pricingSnapshot: session.pricingSnapshot || null, paymentMethod: null, status: "awaiting_payment", items, tableSessionId: tableSessionId || session.id || null, posOrderIds: [...posOrderIds], saleSource: ["TABLE", "WALK_IN", "LEGACY"].includes(saleSource) ? saleSource : "LEGACY", breakdown: breakdown || { tableCharge: apiBaht(playAmountSatang), products: apiBaht(foodAmountSatang), food: apiBaht(foodAmountSatang), drink: 0, discount: 0, total: apiBaht(totalSatang), tableChargeSatang: playAmountSatang, productSatang: foodAmountSatang, totalSatang } };
+    const bill = { id: crypto.randomUUID(), number: receiptNumber, receiptNumber, createdAt, tableId: table.id, tableName: table.name, memberId: table.memberId || null, memberName, memberCode, playStartedAt: session.openedAt, playEndedAt: session.closedAt, playDurationSeconds: session.billableSeconds, playAmount: apiBaht(playAmountSatang), foodAmount: apiBaht(foodAmountSatang), total: apiBaht(totalSatang), playAmountSatang, tableChargeSatang: playAmountSatang, foodAmountSatang, totalSatang, discount, discountReason: discount > 0 ? String(discountReason || "").trim() : "", pricingSnapshot: session.pricingSnapshot || null, paymentMethod: null, status: "awaiting_payment", items, tableSessionId: tableSessionId || session.id || null, posOrderIds: [...posOrderIds], saleSource: ["TABLE", "WALK_IN", "LEGACY"].includes(saleSource) ? saleSource : "LEGACY", breakdown: breakdown || { tableCharge: apiBaht(playAmountSatang), products: apiBaht(foodAmountSatang), food: apiBaht(foodAmountSatang), drink: 0, discount: 0, total: apiBaht(totalSatang), tableChargeSatang: playAmountSatang, productSatang: foodAmountSatang, totalSatang } };
     this.repository.saveBill(bill); this.audit("BILL_DRAFT_CREATED", { tableId: table.id, sessionId: session.id, billId: bill.id, actorId, data: { receiptNumber, totalSatang } }); return bill;
   }
   markPaid(bill) { if (!["awaiting_payment", "pending"].includes(bill.status)) throw new Error("Bill is not awaiting payment"); bill.status = "paid"; bill.paidAt = this.now(); this.repository.saveBill(bill); return bill; }
