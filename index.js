@@ -10,6 +10,7 @@ const { JsonBillingRepository } = require("./repositories/json-billing-repositor
 const { BillingService } = require("./services/billing-service");
 const { PaymentService } = require("./services/payment-service");
 const { BillHistoryService } = require("./services/bill-history-service");
+const { AuditLogService } = require("./services/audit-log-service");
 const { JsonUserRepository } = require("./repositories/json-user-repository");
 const { AuthService } = require("./services/auth-service");
 const { JsonInventoryRepository } = require("./repositories/json-inventory-repository");
@@ -93,6 +94,7 @@ const memberService = new MemberService(memberRepository,{audit:(event,actor,dat
 memberService.normalize();
 const paymentService = new PaymentService(billingRepository, billingService);
 const billHistoryService = new BillHistoryService(billingRepository);
+const auditLogService = new AuditLogService(billingRepository);
 const userRepository = new JsonUserRepository({ getStore: () => store, save });
 const authService = new AuthService(userRepository, () => new Date(), (event, actorId, targetUserId, details = {}) => billingService.audit(event, { actorId, data: { targetUserId, ...details } }), () => settingsService.getSettings().security);
 const inventoryRepository = new JsonInventoryRepository({ getStore: () => store, save });
@@ -351,6 +353,8 @@ app.patch("/api/users/:id", requirePermission(PERMISSIONS.USER_MANAGE), (req,res
 app.patch("/api/users/:id/status", requirePermission(PERMISSIONS.USER_MANAGE), (req,res)=>{try{res.json(authService.setStatus(req.params.id,req.body.status,actorId(req)));}catch(error){res.status(400).json({error:error.message});}});
 app.patch("/api/users/:id/password", requireAuth, (req,res)=>{try{const own=req.user.userId===req.params.id; if(!own&&!hasPermission(req.user.role,PERMISSIONS.USER_MANAGE)) return res.status(403).json({error:"คุณไม่มีสิทธิ์รีเซ็ตรหัสผ่าน"}); if(own&&!req.body.currentPassword) return res.status(400).json({error:"กรุณาระบุรหัสผ่านเดิม"}); if(own&&!require("./services/auth-service").verifyPassword(req.body.currentPassword,userRepository.findById(req.params.id).passwordHash)) return res.status(400).json({error:"รหัสผ่านเดิมไม่ถูกต้อง"}); res.json(authService.changePassword(req.params.id,req.body.password,actorId(req),!own));}catch(error){res.status(400).json({error:error.message});}});
 app.get("/api/bills", (req, res) => { try { res.json(billHistoryService.search(req.query)); } catch (error) { res.status(400).json({ error: error.message }); } });
+app.get("/api/audit-logs", requirePermission(PERMISSIONS.AUDIT_VIEW), (req, res) => { try { res.json(auditLogService.search(req.query)); } catch (error) { res.status(400).json({ error: error.message }); } });
+app.get("/api/audit-logs/event-types", requirePermission(PERMISSIONS.AUDIT_VIEW), (req, res) => res.json({ items: auditLogService.eventTypes() }));
 app.get("/api/bills/:id", (req, res) => { try { res.json(billHistoryService.details(req.params.id)); } catch (error) { res.status(error.message === "Bill not found" ? 404 : 400).json({ error: error.message }); } });
 app.put("/api/settings", requirePermission(PERMISSIONS.SETTINGS_MANAGE), (req, res) => {
   const previousSettings = { ...store.settings }, previousTables = store.tables.map(table => ({ ...table }));
