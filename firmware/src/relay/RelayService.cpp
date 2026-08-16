@@ -7,10 +7,15 @@ RelayService::RelayService(IGpioDriver& gpio, ILogger& logger)
   states_.fill(RelayState::Off);
 }
 
+void RelayService::setActiveHigh(const bool activeHigh) { activeHigh_ = activeHigh; }
+bool RelayService::getActiveHigh() const { return activeHigh_; }
+void RelayService::activate(const std::uint8_t gpio) { activeHigh_ ? gpio_.writeHigh(gpio) : gpio_.writeLow(gpio); }
+void RelayService::deactivate(const std::uint8_t gpio) { activeHigh_ ? gpio_.writeLow(gpio) : gpio_.writeHigh(gpio); }
+
 void RelayService::safeInitializeAllPins() {
   for (const auto pin : kRelayGpioPins) {
     gpio_.configureOutput(pin);
-    gpio_.writeHigh(pin);
+    deactivate(pin);
   }
   states_.fill(RelayState::Off);
   pinsInitialized_ = true;
@@ -33,7 +38,7 @@ bool RelayService::turnOn(const std::uint8_t channel) {
     return false;
   }
   const auto index = static_cast<std::size_t>(channel - 1);
-  gpio_.writeLow(kRelayGpioPins[index]);
+  activate(kRelayGpioPins[index]);
   states_[index] = RelayState::On;
   logger_.info("RELAY_CHANGED", "Relay state changed to ON");
   forceDisabledChannelsOff();
@@ -46,7 +51,7 @@ bool RelayService::turnOff(const std::uint8_t channel) {
     return false;
   }
   const auto index = static_cast<std::size_t>(channel - 1);
-  gpio_.writeHigh(kRelayGpioPins[index]);
+  deactivate(kRelayGpioPins[index]);
   states_[index] = RelayState::Off;
   logger_.info("RELAY_CHANGED", "Relay state changed to OFF");
   forceDisabledChannelsOff();
@@ -55,7 +60,7 @@ bool RelayService::turnOff(const std::uint8_t channel) {
 
 void RelayService::turnAllOff() {
   for (std::size_t index = 0; index < kMaximumRelayCount; ++index) {
-    gpio_.writeHigh(kRelayGpioPins[index]);
+    deactivate(kRelayGpioPins[index]);
     states_[index] = RelayState::Off;
   }
 }
@@ -80,7 +85,7 @@ std::uint8_t RelayService::getGpio(const std::uint8_t channel) const {
 
 void RelayService::forceDisabledChannelsOff() {
   for (std::size_t index = getRelayCount(); index < kMaximumRelayCount; ++index) {
-    gpio_.writeHigh(kRelayGpioPins[index]);
+    deactivate(kRelayGpioPins[index]);
     states_[index] = RelayState::Off;
   }
 }

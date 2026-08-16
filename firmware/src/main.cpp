@@ -38,13 +38,19 @@ lucky::WatchdogService watchdog(logger);
 void setup() {
   Serial.begin(115200);
 
-  // Safe boot invariant: every known relay output is HIGH before NVS or Wi-Fi.
+  // Safe boot invariant: every known relay output is deactivated before Wi-Fi or any network
+  // activity. config.initialize() (a local NVS read, no network involved) now has to run first
+  // so relays knows this board's polarity — a relay board wired active-high would otherwise get
+  // its outputs driven ON by a "safe" write that assumed active-low. If NVS itself is
+  // unavailable/corrupt, ConfigService falls back to its in-memory defaults (active-low)
+  // immediately rather than blocking, so this still resolves fast.
+  config.initialize();
+  relays.setActiveHigh(config.getRelayActiveHigh());
   relays.safeInitializeAllPins();
   logger.info("BOOT", "Lucky Relay Controller boot started");
   logger.info("FIRMWARE_VERSION", lucky::defaults::kFirmwareVersion);
   if (esp_reset_reason() != ESP_RST_POWERON) logger.warning("RESTART_DETECTED", "Controller restarted");
 
-  config.initialize();
   relays.initialize(config.getRelayBoardSize());
   relays.turnAllOff();
 

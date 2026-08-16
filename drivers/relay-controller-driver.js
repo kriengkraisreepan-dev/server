@@ -101,9 +101,11 @@ class RelayControllerDriver {
   setupModeStatus(device) { return this.request(device, "/api/v1/setup/mode/status", { authenticated: true }); }
   startSetupMode(device, confirmed) { return this.request(device, "/api/v1/setup/mode/start", { method: "POST", body: { confirmed } }); }
   stopSetupMode(device) { return this.request(device, "/api/v1/setup/mode/stop", { method: "POST", body: {} }); }
-  setRelayCount(device, relayCount) {
+  setRelayCount(device, relayCount, activeHigh) {
     if (!SUPPORTED_RELAY_COUNTS.includes(Number(relayCount))) throw new HardwareError("INVALID_RELAY_COUNT", "Relay Count ต้องเป็น 2, 4 หรือ 8");
-    return this.request(device, "/api/v1/config/relay", { method: "POST", body: { relayCount: Number(relayCount) } });
+    const body = { relayCount: Number(relayCount) };
+    if (typeof activeHigh === "boolean") body.activeHigh = activeHigh;
+    return this.request(device, "/api/v1/config/relay", { method: "POST", body });
   }
   setRelayState(device, relayId, state) {
     const channel = Number(relayId);

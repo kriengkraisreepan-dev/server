@@ -16,6 +16,8 @@ class ConfigService {
   RelayBoardSize getRelayBoardSize() const;
   std::uint8_t getRelayCount() const;
   bool setRelayCount(std::uint8_t relayCount);
+  bool getRelayActiveHigh() const;
+  bool setRelayActiveHigh(bool activeHigh);
   static constexpr bool isSupportedRelayCount(std::uint8_t count) {
     return lucky::isSupportedRelayCount(count);
   }

@@ -33,7 +33,11 @@ test("discovery lifecycle follows Wi-Fi and cannot mutate relay state", () => {
   const main = read("firmware/src/main.cpp");
   assert.match(source, /wifi_\.isConnected\(\)\s*&&\s*!active_/);
   assert.match(source, /!wifi_\.isConnected\(\)\s*&&\s*active_/);
-  assert.match(main, /relays\.safeInitializeAllPins\(\)[\s\S]*config\.initialize\(\)[\s\S]*wifi\.initialize\(\)/);
+  // Order changed 2026-08-14 for per-device relay polarity support: config.initialize() (a local
+  // NVS read, no network) now has to run before the pins get driven, so safeInitializeAllPins()
+  // knows this board's polarity and doesn't briefly energize an active-high board while assuming
+  // active-low. See the boot-order comment in main.cpp for the full reasoning.
+  assert.match(main, /config\.initialize\(\)[\s\S]*relays\.setActiveHigh\(config\.getRelayActiveHigh\(\)\)[\s\S]*relays\.safeInitializeAllPins\(\)[\s\S]*wifi\.initialize\(\)/);
   assert.match(main, /api\.loop\(\);\s*discovery\.loop\(\);\s*watchdog\.feed\(\)/);
   assert.doesNotMatch(source, /turnOn|turnOff|turnAllOff|writeHigh|writeLow/);
 });
