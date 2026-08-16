@@ -87,6 +87,9 @@ const settingsService = new SettingsService(settingsRepository);
 const sessionRepository = new JsonSessionRepository({ getStore: () => store, save });
 const sessionService = new TableSessionService(sessionRepository);
 const billingRepository = new JsonBillingRepository({ getStore: () => store, save });
+// Unconditional prune at boot (on top of the throttled check inside appendAudit) so entries past
+// the retention window are cleared even if the server sat off for a while before this start.
+if (billingRepository.pruneAuditLogs() > 0) save();
 const billingService = new BillingService(billingRepository);
 const memberRepository = new JsonMemberRepository({ getStore: () => store, save });
 const memberService = new MemberService(memberRepository,{audit:(event,actor,data)=>billingService.audit(event,{actorId:actor,data})});
@@ -314,7 +317,7 @@ app.post("/api/auth/logout", (req, res) => { authService.logout(tokenFromRequest
 app.get("/api/auth/me", requireAuth, (req, res) => res.json({ user: req.user }));
 app.get("/api/session/status", requireAuth, (req,res)=>res.json(authService.sessionStatus(tokenFromRequest(req))));
 app.patch("/api/session/refresh", requireAuth, (req,res)=>{try{res.json(authService.refreshSession(tokenFromRequest(req),actorId(req)));}catch(error){res.status(401).json({error:error.message});}});
-app.get("/api/state", requireAuth, async (req, res) => { await reservationService.processDue(); res.json({ settings: settingsService.getSettings(), tables: store.tables.map(enrichTable), members: store.members, products: inventoryService.listProducts({ pageSize: 1000 }, req.user.role).items, posOrders: store.posOrders || [], bills: store.bills, payments: store.payments, reservations: reservationService.list(), reservationDeposits: reservationDepositService.list(), reservationDashboard: { ...reservationService.dashboard(), ...depositSettlementService.dashboard() }, auditLogs: store.auditLogs || [], user: req.user }); });
+app.get("/api/state", requireAuth, async (req, res) => { await reservationService.processDue(); res.json({ settings: settingsService.getSettings(), tables: store.tables.map(enrichTable), members: store.members, products: inventoryService.listProducts({ pageSize: 1000 }, req.user.role).items, posOrders: store.posOrders || [], bills: store.bills, payments: store.payments, reservations: reservationService.list(), reservationDeposits: reservationDepositService.list(), reservationDashboard: { ...reservationService.dashboard(), ...depositSettlementService.dashboard() }, user: req.user }); });
 app.use("/api", (req, res, next) => { if (req.path.startsWith("/auth/")) return next(); return requireAuth(req, res, next); });
 const reservationError = (res, error) => res.status(error.code === "FORBIDDEN" ? 403 : /not found/i.test(error.message) ? 404 : ["VERSION_CONFLICT","RESERVATION_OPERATION_IN_PROGRESS"].includes(error.code) ? 409 : 400).json({ error: error.code || "RESERVATION_ERROR", message: error.message });
 app.get("/api/reservations", requirePermission(PERMISSIONS.RESERVATION_VIEW), async (req, res) => { try { await reservationService.processDue(); res.json({ items: reservationService.list(req.query), dashboard: reservationService.dashboard() }); } catch (error) { reservationError(res, error); } });
