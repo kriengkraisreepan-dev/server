@@ -479,4 +479,29 @@ const bindSettingsAuditTab1=bind;bind=function(){
   $("#auditLogPrev")&&($("#auditLogPrev").onclick=()=>goToAuditLogPage((auditLogData?.pagination?.page||1)-1));
   $("#auditLogNext")&&($("#auditLogNext").onclick=()=>goToAuditLogPage((auditLogData?.pagination?.page||1)+1));
 };
+
+// "แยกบิลสั่งของ" — pay for a table's already-confirmed orders right now, without closing the
+// table or interrupting the running time charge. See CombinedBillingService#createTableOrdersBill.
+function tableOrdersBillableOrders(tableId){const table=state.tables.find(item=>String(item.id)===String(tableId));return (state.posOrders||[]).filter(order=>order.status==="CONFIRMED"&&order.billingStatus==="UNBILLED"&&String(order.tableId)===String(tableId)&&order.tableSessionId===table?.runtimeSessionId);}
+const tableCardOrdersBill9d=tableCardV2;tableCardV2=function(table){const html=tableCardOrdersBill9d(table);if(table.status==="free"||!tableOrdersBillableOrders(table.id).length)return html;return html.replace('<button class="outline" data-relay=',`<button class="outline" data-orders-bill="${table.id}">แยกบิลสั่งของ</button><button class="outline" data-relay=`);};
+function openOrdersBillPaymentConfirmation(bill,payment){openModal(`<h3>ยืนยันรับชำระ</h3><p>บิล <b>${escapeHtml(bill.number)}</b></p><div class="total">ยอดรับชำระ ${money(payment.amount)}</div><p class="muted">โต๊ะจะยังคงเล่นต่อได้ตามปกติหลังยืนยัน</p><div class="actions"><button id="confirmOrdersPay">ยืนยันรับชำระ</button><button class="outline" id="cancelOrdersPay">ยกเลิกรายการชำระ</button></div>`);$("#confirmOrdersPay").onclick=async()=>{try{await api(`/api/payments/${payment.id}/confirm`,{method:"POST"});closeModal();await refresh();notify("รับชำระค่าสั่งของแล้ว");offerPrint(bill.id);}catch(error){notify(error.message,true);}};$("#cancelOrdersPay").onclick=async()=>{try{await api(`/api/payments/${payment.id}/cancel`,{method:"POST"});closeModal();await refresh();notify("ยกเลิกรายการชำระแล้ว");}catch(error){notify(error.message,true);}};}
+function ordersBillDialog(tableId){
+  const orders=tableOrdersBillableOrders(tableId);
+  if(!orders.length)return notify("ไม่มีรายการที่ยืนยันแล้วให้แยกบิล",true);
+  const rows=orders.map(order=>`<label class="checkbox-line"><input type="checkbox" class="orders-bill-select" value="${order.id}" checked> ${escapeHtml(order.orderNumber)} — ${money(order.total)}</label>`).join("");
+  openModal(`<h3>แยกบิลสั่งของ</h3><p class="muted">เลือกรายการที่จะคิดเงินตอนนี้ โต๊ะจะยังคงเล่นต่อได้ตามปกติ</p>${rows}<div class="total" id="ordersBillTotal">รวม ${money(orders.reduce((s,o)=>s+Number(o.total||0),0))}</div><label>วิธีชำระเงิน</label><select id="ordersBillPaymentMethod"><option value="cash">เงินสด</option><option value="transfer">โอนเงิน</option><option value="qr">QR Payment</option></select><div class="actions"><button class="outline" id="cancelOrdersBill">กลับ</button><button class="success" id="confirmOrdersBill">ยืนยันแยกบิล</button></div>`);
+  const recomputeTotal=()=>{const selected=[...document.querySelectorAll(".orders-bill-select:checked")].map(el=>el.value);const total=orders.filter(o=>selected.includes(o.id)).reduce((s,o)=>s+Number(o.total||0),0);$("#ordersBillTotal").textContent=`รวม ${money(total)}`;};
+  document.querySelectorAll(".orders-bill-select").forEach(el=>el.onchange=recomputeTotal);
+  $("#cancelOrdersBill").onclick=closeModal;
+  $("#confirmOrdersBill").onclick=async()=>{
+    const orderIds=[...document.querySelectorAll(".orders-bill-select:checked")].map(el=>el.value);
+    if(!orderIds.length)return notify("กรุณาเลือกอย่างน้อย 1 รายการ",true);
+    const button=$("#confirmOrdersBill");button.disabled=true;
+    try{
+      const created=await api(`/api/tables/${tableId}/orders/create-bill`,{method:"POST",body:JSON.stringify({orderIds,paymentMethod:$("#ordersBillPaymentMethod").value})});
+      closeModal();await refresh();openOrdersBillPaymentConfirmation(created.bill,created.payment);
+    }catch(error){notify(error.message,true);button.disabled=false;}
+  };
+}
+const bindOrdersBill9d=bind;bind=function(){bindOrdersBill9d();document.querySelectorAll("[data-orders-bill]").forEach(button=>button.onclick=()=>ordersBillDialog(button.dataset.ordersBill));};
 nav();

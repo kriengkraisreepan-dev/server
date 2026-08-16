@@ -21,7 +21,9 @@ class CombinedBillingService {
     if (!session || !["ACTIVE", "PAUSED"].includes(session.state)) throw new Error("Session is not available for billing");
     const table = this.sessionRepository.findTable(session.tableId);
     if (!table) throw new Error("Table not found");
-    if (this.billingRepository.bills().some(bill => bill.tableSessionId === session.id && bill.status !== "void")) {
+    // A partial "pay for these orders now, keep playing" bill (see #createTableOrdersBill) does
+    // NOT count toward this guard — only a full/final bill for the session does.
+    if (this.billingRepository.bills().some(bill => bill.tableSessionId === session.id && bill.status !== "void" && !bill.partialOrdersOnly)) {
       const error = new Error("This table session already has a bill"); error.code = "DUPLICATE_BILL"; throw error;
     }
     return { session, table };
@@ -154,6 +156,63 @@ class CombinedBillingService {
     }
     if (restored.length) this.posOrderRepository.persist();
     return restored;
+  }
+
+  // "Pay for these drinks now, keep playing" — bills a subset of a table's confirmed, still-unbilled
+  // orders immediately, leaving the table session (and its accruing time charge) completely
+  // untouched. The eventual final checkout only sweeps up whatever is still UNBILLED at that point.
+  previewTableOrdersBilling(tableId, orderIds) {
+    const ids = Array.isArray(orderIds) ? orderIds.filter(Boolean) : [];
+    if (!ids.length) { const error = new Error("No orders selected for billing"); error.code = "NO_ORDERS_SELECTED"; throw error; }
+    const session = this.sessionRepository.findOpenSessionByTable(tableId);
+    if (!session) { const error = new Error("Table has no active session"); error.code = "SESSION_NOT_ACTIVE"; throw error; }
+    const orders = ids.map(orderId => {
+      const order = this.posOrderRepository.findById(orderId);
+      if (!order || order.status !== "CONFIRMED" || order.billingStatus !== "UNBILLED" || order.tableSessionId !== session.id || String(order.tableId) !== String(tableId)) {
+        const error = new Error("One or more orders are not available for billing"); error.code = "ORDER_NOT_AVAILABLE"; throw error;
+      }
+      return order;
+    });
+    const items = this.itemSnapshot(orders);
+    const productSatang = items.reduce((sum, item) => sum + item.totalSatang, 0);
+    const drinkSatang = items.filter(isDrink).reduce((sum, item) => sum + item.totalSatang, 0);
+    const foodSatang = productSatang - drinkSatang;
+    return {
+      tableId, tableSessionId: session.id, orderIds: orders.map(order => order.id), items,
+      total: asBaht(productSatang), totalSatang: productSatang, foodSatang, drinkSatang, productSatang
+    };
+  }
+
+  createTableOrdersBill(tableId, orderIds, actorId = "SYSTEM") {
+    const preview = this.previewTableOrdersBilling(tableId, orderIds);
+    const table = this.sessionRepository.findTable(tableId);
+    const session = this.sessionRepository.findSession(preview.tableSessionId);
+    const now = new Date().toISOString();
+    const breakdown = {
+      tableCharge: 0, tableChargeBeforeDiscount: 0, food: asBaht(preview.foodSatang), drink: asBaht(preview.drinkSatang), products: preview.total, discount: 0,
+      total: preview.total, tableChargeSatang: 0, rawTableChargeSatang: 0, foodSatang: preview.foodSatang, drinkSatang: preview.drinkSatang, productSatang: preview.productSatang, totalSatang: preview.totalSatang
+    };
+    const bill = this.billingService.createBillDraft({
+      table,
+      // A synthetic, already-"closed" session snapshot with a zero time-charge — the real session
+      // (openedAt/pricingSnapshot/etc.) is left completely untouched in the repository.
+      session: { id: session.id, openedAt: session.openedAt, closedAt: now, billableSeconds: 0, finalChargeSatang: 0, pricingSnapshot: session.pricingSnapshot || null },
+      memberName: this.getMemberName(table.memberId), memberCode: this.getMember(table.memberId)?.memberCode || this.getMember(table.memberId)?.code || null,
+      actorId,
+      extraItems: preview.items,
+      tableSessionId: session.id,
+      posOrderIds: preview.orderIds,
+      breakdown,
+      partialOrdersOnly: true,
+      saleSource: "TABLE"
+    });
+    for (const orderId of preview.orderIds) {
+      const order = this.posOrderRepository.findById(orderId);
+      Object.assign(order, { billingStatus: "BILLED", billedBillId: bill.id, billedAt: bill.createdAt, billedBy: actorId });
+    }
+    this.posOrderRepository.persist();
+    this.billingService.audit("TABLE_ORDERS_BILL_CREATED", { tableId, sessionId: session.id, billId: bill.id, actorId, data: { posOrderIds: bill.posOrderIds, totalSatang: bill.totalSatang } });
+    return { bill, preview };
   }
 }
 
