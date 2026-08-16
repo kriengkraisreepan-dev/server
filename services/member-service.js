@@ -1,6 +1,10 @@
 const crypto=require("crypto");
 const TIERS=new Set(["STANDARD","SILVER","GOLD","PLATINUM"]);
 const clean=v=>String(v??"").trim();
+// N months from `iso`, using the standard JS Date month-rollover rule (e.g. Jan 31 + 1 month lands
+// on Mar 3, since Feb is shorter) — deliberately simple, matches how most "N months from now"
+// systems behave and needs no special leap-year handling (setUTCMonth already accounts for it).
+function addMonthsIso(iso,months){const date=new Date(iso);date.setUTCMonth(date.getUTCMonth()+Number(months));return date.toISOString();}
 class MemberService{
  constructor(repository,{clock=()=>new Date(),audit=()=>{}}={}){this.repository=repository;this.clock=clock;this.audit=audit;}
  now(){return this.clock().toISOString();}
@@ -17,7 +21,34 @@ class MemberService{
  redeemPoints(bill,actor){if(!bill?.redeemSelected||bill.redeemApplied)return null;const member=this.repository.findById(bill.memberId);if(!member||member.status!=="ACTIVE")throw new Error("Active member is required for redemption");const points=Number(bill.redeemedPoints||0);if(points>Number(member.points||0))throw new Error("Member no longer has enough points");const before=Number(member.points||0);member.points-=points;member.updatedAt=this.now();member.updatedBy=actor;bill.memberBalanceBeforeRedeem=before;bill.memberBalanceAfterRedeem=member.points;bill.redeemApplied=true;this.repository.saveMember(member);this.repository.addPoint({id:crypto.randomUUID(),memberId:member.id,billId:bill.id,type:"REDEEM",points:-points,balanceBefore:before,balanceAfter:member.points,createdAt:this.now(),createdBy:actor});this.audit("POINT_REDEEM",actor,{memberId:member.id,billId:bill.id,points:-points});return member;}
  rollbackRedeem(bill,actor){if(!bill?.redeemApplied||bill.redeemRolledBack)return null;const member=this.repository.findById(bill.memberId);if(!member)return null;const points=Number(bill.redeemedPoints||0),before=Number(member.points||0);member.points+=points;member.updatedAt=this.now();member.updatedBy=actor;bill.redeemRolledBack=true;this.repository.saveMember(member);this.repository.addPoint({id:crypto.randomUUID(),memberId:member.id,billId:bill.id,type:"REDEEM_ROLLBACK",points,balanceBefore:before,balanceAfter:member.points,createdAt:this.now(),createdBy:actor});this.audit("POINT_REDEEM_ROLLBACK",actor,{memberId:member.id,billId:bill.id,points});return member;}
  calculateTablePoints(playSeconds,settings={}){const loyalty=settings.loyalty||settings,interval=Math.max(1,Number(loyalty.tablePointIntervalMinutes||60))*60,pointsPerInterval=Math.max(0,Number(loyalty.tablePointsPerHour??5));const completed=Math.floor(Math.max(0,Number(playSeconds||0))/interval);return {points:completed*pointsPerInterval,completedIntervals:completed,playSeconds:Math.max(0,Number(playSeconds||0)),policy:{mode:"TABLE_TIME",tablePointsPerHour:pointsPerInterval,intervalMinutes:interval/60,rounding:"FLOOR"}};}
- earn(bill,actor,settings={}){if(!bill.memberId||bill.pointsEarnedApplied||bill.saleSource!=="TABLE")return null;const m=this.repository.findById(bill.memberId);if(!m||m.status!=="ACTIVE")return null;const earned=this.calculateTablePoints(bill.playDurationSeconds,settings),before=Number(m.points||0);m.points+=earned.points;m.totalHoursPlayed=Number(m.totalHoursPlayed||0)+(earned.playSeconds/3600);m.totalTablePoints=Number(m.totalTablePoints||0)+earned.points;m.visitCount=Number(m.visitCount||0)+1;m.lastVisitAt=this.now();m.updatedAt=this.now();m.updatedBy=actor;Object.assign(bill,{tablePointsEarned:earned.points,tablePlaySecondsSnapshot:earned.playSeconds,tablePlayHoursSnapshot:earned.playSeconds/3600,loyaltyPolicySnapshot:earned.policy,pointsEarned:earned.points,pointsBalance:m.points,pointsEarnedApplied:true});this.repository.saveMember(m);this.repository.addPoint({id:crypto.randomUUID(),memberId:m.id,billId:bill.id,type:"EARN",reason:"TABLE_TIME",points:earned.points,balanceBefore:before,balanceAfter:m.points,createdAt:this.now(),createdBy:actor});this.audit("POINT_EARNED",actor,{memberId:m.id,billId:bill.id,points:earned.points,reason:"TABLE_TIME"});return m;}
+ earn(bill,actor,settings={}){if(!bill.memberId||bill.pointsEarnedApplied||bill.saleSource!=="TABLE")return null;const m=this.repository.findById(bill.memberId);if(!m||m.status!=="ACTIVE")return null;const earned=this.calculateTablePoints(bill.playDurationSeconds,settings),before=Number(m.points||0);
+  // Each earned "batch" remembers its own expiry (earn date + pointExpiryMonths at the time it was
+  // earned) — changing the setting later does not retroactively change already-earned batches.
+  const expiryMonths=Number((settings.loyalty||settings).pointExpiryMonths||0),now=this.now(),expiresAt=earned.points&&expiryMonths>0?addMonthsIso(now,expiryMonths):null;
+  m.points+=earned.points;m.totalHoursPlayed=Number(m.totalHoursPlayed||0)+(earned.playSeconds/3600);m.totalTablePoints=Number(m.totalTablePoints||0)+earned.points;m.visitCount=Number(m.visitCount||0)+1;m.lastVisitAt=now;m.updatedAt=now;m.updatedBy=actor;Object.assign(bill,{tablePointsEarned:earned.points,tablePlaySecondsSnapshot:earned.playSeconds,tablePlayHoursSnapshot:earned.playSeconds/3600,loyaltyPolicySnapshot:earned.policy,pointsEarned:earned.points,pointsBalance:m.points,pointsEarnedApplied:true});this.repository.saveMember(m);this.repository.addPoint({id:crypto.randomUUID(),memberId:m.id,billId:bill.id,type:"EARN",reason:"TABLE_TIME",points:earned.points,expiresAt,balanceBefore:before,balanceAfter:m.points,createdAt:now,createdBy:actor});this.audit("POINT_EARNED",actor,{memberId:m.id,billId:bill.id,points:earned.points,reason:"TABLE_TIME",expiresAt});return m;}
+ // Expires due EARN batches for one member — "oldest batch first, never below the current balance"
+ // (a deliberate approximation: it doesn't track exactly which batch a REDEEM/VOID drew down, so a
+ // partial redemption that happens to straddle two batches' boundaries is only approximately right —
+ // acceptable at this scale; see repository.points() for the full transaction trail if ever audited).
+ sweepExpiredPoints(member,now=new Date()){
+  const transactions=this.repository.points().filter(tx=>tx.memberId===member.id);
+  const dueSatang=transactions.filter(tx=>tx.type==="EARN"&&tx.expiresAt&&new Date(tx.expiresAt)<=now).reduce((sum,tx)=>sum+Number(tx.points||0),0);
+  const alreadyExpired=Math.abs(transactions.filter(tx=>tx.type==="EXPIRE").reduce((sum,tx)=>sum+Number(tx.points||0),0));
+  const amount=Math.max(0,Math.min(dueSatang-alreadyExpired,Number(member.points||0)));
+  if(!amount)return null;
+  const before=Number(member.points||0);
+  member.points=before-amount;member.updatedAt=this.now();member.updatedBy="SYSTEM";
+  this.repository.saveMember(member);
+  this.repository.addPoint({id:crypto.randomUUID(),memberId:member.id,billId:null,type:"EXPIRE",reason:"POINT_EXPIRY",points:-amount,balanceBefore:before,balanceAfter:member.points,createdAt:this.now(),createdBy:"SYSTEM"});
+  this.audit("POINT_EXPIRED","SYSTEM",{memberId:member.id,points:-amount});
+  return {memberId:member.id,expired:amount,balanceAfter:member.points};
+ }
+ // Runs the sweep for every member — call at boot and periodically (see index.js). No-op entirely
+ // when expiry is disabled (pointExpiryMonths=0), so existing shops with it off pay zero extra cost.
+ sweepAllExpiredPoints(settings={},now=new Date()){
+  if(!Number((settings.loyalty||settings).pointExpiryMonths||0))return [];
+  return this.repository.members().map(member=>this.sweepExpiredPoints(member,now)).filter(Boolean);
+ }
  void(bill,actor){if(!bill.memberId||!bill.pointsEarnedApplied||bill.pointsVoided)return null;const m=this.repository.findById(bill.memberId);if(!m)return null;const p=Number((bill.tablePointsEarned??bill.pointsEarned)||0),seconds=Number((bill.tablePlaySecondsSnapshot??bill.playDurationSeconds)||0),before=Number(m.points||0);m.points=Math.max(0,before-p);m.totalHoursPlayed=Math.max(0,Number(m.totalHoursPlayed||0)-(seconds/3600));m.totalTablePoints=Math.max(0,Number(m.totalTablePoints||0)-p);m.updatedAt=this.now();m.updatedBy=actor;bill.pointsVoided=true;this.repository.saveMember(m);this.repository.addPoint({id:crypto.randomUUID(),memberId:m.id,billId:bill.id,type:"VOID",reason:"TABLE_TIME",points:-p,balanceBefore:before,balanceAfter:m.points,createdAt:this.now(),createdBy:actor});this.audit("POINT_VOID",actor,{memberId:m.id,billId:bill.id,points:-p,reason:"TABLE_TIME"});return m;}
  history(id){return this.repository.points().filter(t=>t.memberId===id);}
 }
