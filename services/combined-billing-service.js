@@ -49,11 +49,15 @@ class CombinedBillingService {
     })));
   }
 
-  buildPreview(sessionId) {
+  buildPreview(sessionId, { manualDiscountSatang = 0 } = {}) {
     const { session, table } = this.requireActiveSession(sessionId);
+    const requestedDiscountSatang = Math.round(Number(manualDiscountSatang) || 0);
+    if (requestedDiscountSatang < 0) { const error = new Error("Discount amount must not be negative"); error.code = "INVALID_DISCOUNT_AMOUNT"; throw error; }
     const orders = this.ordersForSession(session);
     const items = this.itemSnapshot(orders);
-    const tableChargeSatang = this.sessionService.previewCharge(session.id);
+    const rawTableChargeSatang = this.sessionService.previewCharge(session.id);
+    const discountSatang = Math.min(requestedDiscountSatang, rawTableChargeSatang);
+    const tableChargeSatang = rawTableChargeSatang - discountSatang;
     const productSatang = items.reduce((sum, item) => sum + item.totalSatang, 0);
     const drinkSatang = items.filter(isDrink).reduce((sum, item) => sum + item.totalSatang, 0);
     const foodSatang = productSatang - drinkSatang;
@@ -67,14 +71,14 @@ class CombinedBillingService {
       posOrders: orders.map(order => ({ id: order.id, orderNumber: order.orderNumber, total: order.total })),
       items,
       breakdown: {
-        tableCharge: asBaht(tableChargeSatang), food: asBaht(foodSatang), drink: asBaht(drinkSatang), products: asBaht(productSatang), discount: 0,
-        total: asBaht(totalSatang), tableChargeSatang, foodSatang, drinkSatang, productSatang, totalSatang
+        tableCharge: asBaht(tableChargeSatang), tableChargeBeforeDiscount: asBaht(rawTableChargeSatang), food: asBaht(foodSatang), drink: asBaht(drinkSatang), products: asBaht(productSatang), discount: asBaht(discountSatang),
+        total: asBaht(totalSatang), tableChargeSatang, rawTableChargeSatang, foodSatang, drinkSatang, productSatang, totalSatang
       }
     };
   }
 
-  createBill(sessionId, actorId = "SYSTEM") {
-    const preview = this.buildPreview(sessionId);
+  createBill(sessionId, actorId = "SYSTEM", { manualDiscountSatang = 0, discountReason = "" } = {}) {
+    const preview = this.buildPreview(sessionId, { manualDiscountSatang });
     const beforeOrders = preview.posOrders.map(({ id }) => {
       const order = this.posOrderRepository.findById(id);
       return { order, billingStatus: order.billingStatus, billedBillId: order.billedBillId, billedAt: order.billedAt, billedBy: order.billedBy };
@@ -91,6 +95,7 @@ class CombinedBillingService {
         tableSessionId: closedSession.id,
         posOrderIds: preview.posOrders.map(order => order.id),
         breakdown: preview.breakdown,
+        discountReason: preview.breakdown.discount > 0 ? String(discountReason || "").trim() : "",
         saleSource: "TABLE"
       });
       for (const entry of beforeOrders) Object.assign(entry.order, { billingStatus: "BILLED", billedBillId: bill.id, billedAt: bill.createdAt, billedBy: actorId });
