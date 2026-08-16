@@ -96,12 +96,33 @@ const bindPricingProfiles9e=bind;bind=function(){
   document.querySelectorAll("[data-delete-profile]").forEach(button=>button.onclick=()=>deletePricingProfile(button.dataset.deleteProfile));
   document.querySelectorAll("[data-table-profile]").forEach(select=>select.onchange=()=>assignTablePricingProfile(select.dataset.tableProfile,select.value));
 };
+// "พนักงาน", "Active Sessions", "บัญชีของฉัน" used to be separate top-level nav pages — folded in
+// here as settings tabs so the sidebar isn't cluttered with account/admin plumbing. Their render
+// functions (staff/sessions/account) and all existing bind()/data-loading wiring for them are
+// untouched; only where they're reached from changed.
 function settings(){
-  const showAuditTab=auditLogAllowed();
-  const activeTab=["auditlog","pricing"].includes(settingsTabView)&&(settingsTabView!=="auditlog"||showAuditTab)?settingsTabView:"general";
-  const tabs=`<div class="page-settings-tabs"><button type="button" class="settings-tab-btn ${activeTab==="general"?"active":""}" data-settings-tab="general">ทั่วไป</button><button type="button" class="settings-tab-btn ${activeTab==="pricing"?"active":""}" data-settings-tab="pricing">ราคาโต๊ะ</button>${showAuditTab?`<button type="button" class="settings-tab-btn ${activeTab==="auditlog"?"active":""}" data-settings-tab="auditlog">ประวัติการใช้งาน</button>`:""}</div>`;
-  const panel=activeTab==="auditlog"?auditlog():activeTab==="pricing"?pricingProfilesPanel():settingsGeneralPanel();
-  return `${tabs}${panel}`;
+  const role=state.user.role, showAuditTab=auditLogAllowed();
+  // Tab visibility mirrors each tab's own backend permission, so nobody sees a tab whose actions
+  // would just 403 anyway: "ทั่วไป"/"พนักงาน"/"ราคาโต๊ะ" need OWNER (SETTINGS_MANAGE/USER_MANAGE),
+  // "Active Sessions" needs OWNER or MANAGER, "บัญชีของฉัน" (change own password) is open to every
+  // role — it must never end up gated out, since it's the only UI path to that for non-OWNER staff.
+  const tabDefs=[];
+  if(role==="OWNER")tabDefs.push(["general","ทั่วไป"]);
+  if(role==="OWNER")tabDefs.push(["pricing","ราคาโต๊ะ"]);
+  if(role==="OWNER")tabDefs.push(["staff","พนักงาน"]);
+  if(["OWNER","MANAGER"].includes(role))tabDefs.push(["sessions","Active Sessions"]);
+  tabDefs.push(["account","บัญชีของฉัน"]);
+  if(showAuditTab)tabDefs.push(["auditlog","ประวัติการใช้งาน"]);
+  const validTabs=tabDefs.map(([key])=>key);
+  const activeTab=validTabs.includes(settingsTabView)?settingsTabView:tabDefs[0][0];
+  // Persist the resolved tab back to the global: the general-tab-only patches below (Security,
+  // Display, Reward, Reservation settings) key off this exact variable to decide whether to render
+  // — if a non-OWNER role's requested tab fell back (e.g. "general" isn't in their tabDefs, so they
+  // land on "account"), those patches must see the ACTUAL displayed tab, not the stale request.
+  settingsTabView=activeTab;
+  const tabs=`<div class="page-settings-tabs">${tabDefs.map(([key,label])=>`<button type="button" class="settings-tab-btn ${activeTab===key?"active":""}" data-settings-tab="${key}">${label}</button>`).join("")}</div>`;
+  const panels={general:settingsGeneralPanel,pricing:pricingProfilesPanel,staff,sessions,account,auditlog};
+  return `${tabs}${panels[activeTab]()}`;
 }
 function backupSection(){ const list=backups||[],health=healthStatus||{},external=health.backup?.externalBackup; const externalNote=!external?"":external.status==="VERIFIED"?`<p class="muted">สำรองภายนอกล่าสุด: <b style="color:#4ade80">✓ สำเร็จ</b> (${escapeHtml(external.path)}, ${new Date(external.checkedAt).toLocaleString("th-TH")})</p>`:`<p class="wizard-status warning">สำรองภายนอกล่าสุด: ✕ ไม่สำเร็จ — ${escapeHtml(external.message||"ตรวจสอบว่าไดรฟ์/โฟลเดอร์เชื่อมต่ออยู่หรือไม่")} (${escapeHtml(external.path)})</p>`; return `<div class="card" style="margin-top:18px"><h3>สถานะระบบ: ${escapeHtml(health.status||"ยังไม่ได้ตรวจ")}</h3><p class="muted">JSON: ${escapeHtml(health.repositories||"-")} · Integrity: ${escapeHtml(health.integrity?.status||"-")} · Recovery รอตรวจ: ${(health.pendingRecoveryItems||[]).length} · Uptime: ${duration(health.uptimeSeconds||0)}</p></div><div class="card" style="margin-top:18px"><h3>สำรองข้อมูล (Backup)</h3><p class="muted">ระบบสำรองข้อมูลอัตโนมัติทุก 24 ชั่วโมง เก็บล่าสุด ${MAX_BACKUPS_LABEL} ชุด และสำรองให้เองก่อนกู้คืนทุกครั้ง</p>${externalNote}<button id="backupNow">สำรองข้อมูลตอนนี้</button><table style="margin-top:14px"><tr><th>วันที่สำรอง</th><th>ขนาดไฟล์</th><th>ตรวจสอบ</th><th></th></tr>${list.length?list.map(b=>`<tr><td>${new Date(b.createdAt).toLocaleString("th-TH")}</td><td>${(b.size/1024).toFixed(1)} KB</td><td>${escapeHtml(b.verificationStatus||"UNKNOWN")}</td><td><div class="actions"><button class="outline" data-backup-download="${b.file}">ดาวน์โหลด</button><button data-backup-restore="${b.file}">กู้คืน</button><button class="danger" data-backup-delete="${b.file}">ลบ</button></div></td></tr>`).join(""):`<tr><td colspan="4" class="muted">ยังไม่มีข้อมูลสำรอง</td></tr>`}</table></div>`; }
 const MAX_BACKUPS_LABEL = 30;
@@ -115,7 +136,10 @@ const bindLegacyControls = bind;
 bind = function(){ bindLegacyControls(); document.querySelectorAll("[data-pause]").forEach(button=>button.onclick=()=>tableSessionAction(button.dataset.pause,"pause")); document.querySelectorAll("[data-resume]").forEach(button=>button.onclick=()=>tableSessionAction(button.dataset.resume,"resume")); document.querySelectorAll("[data-cancel]").forEach(button=>button.onclick=()=>tableSessionAction(button.dataset.cancel,"cancel")); };
 const bindSprint4Controls = bind;
 bind = function(){ bindSprint4Controls(); $("#billSearchForm") && ($("#billSearchForm").onsubmit=searchBills); document.querySelectorAll("[data-bill-details]").forEach(button=>button.onclick=()=>viewBillDetails(button.dataset.billDetails)); document.querySelectorAll("[data-bill-reprint]").forEach(button=>button.onclick=()=>reprintBillFromHistory(button.dataset.billReprint)); document.querySelectorAll("[data-void-bill]").forEach(button=>button.onclick=()=>voidBillDialog(button.dataset.voidBill)); applyPermissionVisibility(); };
-function applyPermissionVisibility(){ if(!state?.user) return; const allowed={OWNER:["start","pause","resume","checkout","void"],MANAGER:["start","pause","resume","checkout","void"],CASHIER:["start","checkout"],STAFF:["start","pause","resume"]}[state.user.role]||[]; [["[data-start]","start"],["[data-pause]","pause"],["[data-resume]","resume"],["[data-checkout]","checkout"],["[data-void-bill]","void"]].forEach(([selector,key])=>{if(!allowed.includes(key)) document.querySelectorAll(selector).forEach(button=>button.remove());}); if(!["OWNER","MANAGER"].includes(state.user.role)) document.querySelector('aside button[data-page="reports"]')?.remove(); if(state.user.role!=="OWNER") document.querySelector('aside button[data-page="settings"]')?.remove(); }
+// Settings nav stays visible to every role now — "บัญชีของฉัน" (change own password) lives inside
+// it and every role needs that; settings() itself restricts which TABS beyond "account" each role
+// can reach (mirroring each tab's backend permission), so this no longer needs an all-or-nothing gate.
+function applyPermissionVisibility(){ if(!state?.user) return; const allowed={OWNER:["start","pause","resume","checkout","void"],MANAGER:["start","pause","resume","checkout","void"],CASHIER:["start","checkout"],STAFF:["start","pause","resume"]}[state.user.role]||[]; [["[data-start]","start"],["[data-pause]","pause"],["[data-resume]","resume"],["[data-checkout]","checkout"],["[data-void-bill]","void"]].forEach(([selector,key])=>{if(!allowed.includes(key)) document.querySelectorAll(selector).forEach(button=>button.remove());}); if(!["OWNER","MANAGER"].includes(state.user.role)) document.querySelector('aside button[data-page="reports"]')?.remove(); }
 async function loadBillHistory(query=""){ try { billHistory=await api(`/api/bills${query?`?${query}`:""}`); } catch(e) { notify(e.message,true); } }
 async function searchBills(event){ event.preventDefault(); const params=new URLSearchParams(Object.fromEntries(new FormData(event.target))); params.set("page", "1"); params.set("pageSize", "50"); await loadBillHistory(params.toString()); render(); }
 async function viewBillDetails(id){ try{ const data=await api(`/api/bills/${id}`); const b=data.bill, snapshot=b.pricingSnapshot||{}; const events=data.auditEvents.map(e=>`<li>${new Date(e.occurredAt).toLocaleString("th-TH")} — ${escapeHtml(e.event)} <small>(${escapeHtml(e.actorId||e.userId||"UNKNOWN")})</small></li>`).join("")||"<li>ไม่มี Audit Event ที่เชื่อมโยง</li>"; const payments=data.payments.map(p=>`${p.method||"qr"}: ${money(p.amount)} (${p.status}) ${p.paidAt?new Date(p.paidAt).toLocaleString("th-TH"):""}`).join("<br>")||"ยังไม่มีข้อมูลการชำระ"; openModal(`<h3>รายละเอียดบิล ${escapeHtml(b.receiptNumber||b.number)}</h3><p>โต๊ะ: <b>${escapeHtml(b.tableName)}</b><br>เริ่ม: ${b.playStartedAt?new Date(b.playStartedAt).toLocaleString("th-TH"):"-"}<br>สิ้นสุด: ${b.playEndedAt?new Date(b.playEndedAt).toLocaleString("th-TH"):"-"}<br>ระยะเวลา: ${Number.isFinite(b.playDurationSeconds)?duration(b.playDurationSeconds):"-"}</p><p>ราคาที่ใช้: ${snapshot.rateSatang?money(snapshot.rateSatang/100)+" / ชั่วโมง":"ไม่มี Snapshot"}<br>ก่อนปัด: ${money(((b.playAmountSatang||0)+(b.foodAmountSatang||0))/100)}<br>ยอดหลังปัด: <b>${money(b.total)}</b></p><p>วิธีชำระ / เวลาได้รับเงิน:<br>${payments}</p>${b.status==="void"?`<p class="danger">Void: ${escapeHtml(b.voidReason||"-")} (${escapeHtml(b.voidedBy||"UNKNOWN")})</p>`:""}<h4>Audit Events</h4><ul>${events}</ul></div>`); }catch(e){notify(e.message,true);} }
@@ -655,7 +679,10 @@ function auditlog(){const result=auditLogData||{items:[],pagination:{page:1,tota
 // Audit Log now lives as a tab inside the Settings page (not its own top-level nav item) —
 // visiting Settings always resets to the "ทั่วไป" tab; switching to "ประวัติการใช้งาน" lazily
 // loads the data (not preloaded with the rest of Settings, since most visits won't need it).
-const navSettingsAuditTab1=nav;nav=function(){navSettingsAuditTab1();const settingsButton=document.querySelector('aside button[data-page="settings"]');if(settingsButton)settingsButton.onclick=async()=>{page="settings";settingsTabView="general";await loadBackups();render();};};
+const navSettingsAuditTab1=nav;nav=function(){navSettingsAuditTab1();const settingsButton=document.querySelector('aside button[data-page="settings"]');if(settingsButton)settingsButton.onclick=async()=>{page="settings";settingsTabView="general";
+  // allSettled, not all: a non-OWNER/MANAGER role 403s on loadStaff/loadSessions (tabs they won't
+  // see anyway per settings()'s own role check) — that must not block "บัญชีของฉัน" from rendering.
+  await Promise.allSettled([loadBackups(),loadStaff(),loadSessions()]);render();};};
 const bindSettingsAuditTab1=bind;bind=function(){
   bindSettingsAuditTab1();
   document.querySelectorAll("[data-settings-tab]").forEach(button=>button.onclick=async()=>{
