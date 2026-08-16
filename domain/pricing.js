@@ -22,4 +22,31 @@ function calculateSessionPreview(pricingSnapshot, billableSeconds) {
   return Math.max(profile.minimumChargeSatang, Math.ceil((profile.rateSatang * billableSeconds) / denominator));
 }
 function snapshotPricing(profile) { return { ...normalizePricingProfile(profile) }; }
-module.exports = { normalizePricingProfile, calculateSessionCharge, calculateSessionPreview, snapshotPricing, applyRounding };
+
+// Happy Hour rate rules — each rule in profile.timeRules is {weekdays:number[] (0=Sun..6=Sat, empty
+// = every day), startTime:"HH:MM", endTime:"HH:MM" (both empty = all day), rateSatang}. The FIRST
+// matching rule (in array order) wins; no match falls back to the profile's base rateSatang. Time
+// ranges that wrap past midnight (e.g. 22:00-02:00, for shops open late) are supported.
+function parseTimeToMinutes(value) { if (!value) return 0; const [hours, minutes] = String(value).split(":").map(Number); return (Number.isFinite(hours) ? hours : 0) * 60 + (Number.isFinite(minutes) ? minutes : 0); }
+function minutesWithinRange(minutes, startMinutes, endMinutes) {
+  if (startMinutes === endMinutes) return true; // both empty (or identical) = matches all day
+  if (startMinutes < endMinutes) return minutes >= startMinutes && minutes < endMinutes;
+  return minutes >= startMinutes || minutes < endMinutes; // overnight span
+}
+function ruleMatches(rule, weekday, minutes) {
+  const weekdayMatch = !Array.isArray(rule.weekdays) || !rule.weekdays.length || rule.weekdays.includes(weekday);
+  return weekdayMatch && minutesWithinRange(minutes, parseTimeToMinutes(rule.startTime), parseTimeToMinutes(rule.endTime));
+}
+// Resolves the effective profile (with rateSatang possibly overridden by a matching Happy Hour
+// rule) as of `at` — always call this once, at table-start time, and snapshot the result on the
+// session; the resolved rate must never be recalculated mid-session even if the rule window
+// starts/ends while the table is playing (see pricingSnapshot on TableSession).
+function resolveEffectiveProfile(profile, at = new Date()) {
+  const normalized = normalizePricingProfile(profile);
+  const thaiLocal = new Date(at.getTime() + 7 * 60 * 60 * 1000); // shop is always Asia/Bangkok (UTC+7)
+  const weekday = thaiLocal.getUTCDay(), minutes = thaiLocal.getUTCHours() * 60 + thaiLocal.getUTCMinutes();
+  const rule = (normalized.timeRules || []).find(candidate => ruleMatches(candidate, weekday, minutes));
+  if (!rule) return normalized;
+  return Object.freeze({ ...normalized, rateSatang: requireNonNegativeSatang(Number(rule.rateSatang), "rule rateSatang"), appliedRuleId: rule.id || null });
+}
+module.exports = { normalizePricingProfile, calculateSessionCharge, calculateSessionPreview, snapshotPricing, applyRounding, resolveEffectiveProfile };
