@@ -15,6 +15,9 @@ constexpr const char* kWifiPasswordKey = "wifiPassword";
 constexpr const char* kFirmwareVersionKey = "firmware";
 constexpr const char* kHardwareStandardKey = "hardware";
 constexpr const char* kRelayCountKey = "relayCount";
+// Persisted as 0/1 via putUInt8/getUInt8 — StorageService has no bool accessor, and NVS keys
+// are capped at 15 chars so "relayActiveHigh" (16 chars) doesn't fit.
+constexpr const char* kRelayActiveHighKey = "relayActHigh";
 constexpr const char* kKeyCandidateKey = "keyCandidate";
 constexpr const char* kKeyTransitionKey = "keyTransId";
 constexpr const char* kKeyRotationStateKey = "keyRotState";
@@ -36,7 +39,7 @@ ConfigService::ConfigService(StorageService& storage, ILogger& logger)
 
 DeviceConfig ConfigService::defaults() const {
   return {defaults::kDeviceId, "", defaults::kDeviceName, "", "", "",
-          defaults::kFirmwareVersion, defaults::kHardwareStandard, kDefaultRelayBoardSize};
+          defaults::kFirmwareVersion, defaults::kHardwareStandard, kDefaultRelayBoardSize, false};
 }
 
 String ConfigService::deviceIdFromHardware(const std::uint64_t hardwareId) {
@@ -70,6 +73,7 @@ bool ConfigService::load() {
   }
   if (!storage_.hasKey(kHardwareStandardKey)) storage_.putString(kHardwareStandardKey, defaults::kHardwareStandard);
   if (!storage_.hasKey(kRelayCountKey)) storage_.putUInt8(kRelayCountKey, relayCount(kDefaultRelayBoardSize));
+  if (!storage_.hasKey(kRelayActiveHighKey)) storage_.putUInt8(kRelayActiveHighKey, 0);
   DeviceConfig loaded = defaults();
   loaded.deviceId = storage_.getString(kDeviceIdKey, "");
   loaded.previousDeviceId = storage_.getString(kPreviousDeviceIdKey, "");
@@ -94,6 +98,7 @@ bool ConfigService::load() {
   const auto resolution = resolveRelayBoardSize(
       storage_.getUInt8(kRelayCountKey, static_cast<std::uint8_t>(kDefaultRelayBoardSize)));
   loaded.relayBoardSize = resolution.boardSize;
+  loaded.relayActiveHigh = storage_.getUInt8(kRelayActiveHighKey, 0) != 0;
   usedFallback_ = resolution.usedFallback;
   config_ = loaded;
   if (storage_.getString(kKeyRotationStateKey, "") == "PENDING") {
@@ -233,11 +238,23 @@ bool ConfigService::setRelayCount(const std::uint8_t count) {
   return true;
 }
 
+bool ConfigService::getRelayActiveHigh() const { return config_.relayActiveHigh; }
+bool ConfigService::setRelayActiveHigh(const bool activeHigh) {
+  if (!storage_.putUInt8(kRelayActiveHighKey, activeHigh ? 1 : 0)) {
+    logger_.error("CONFIG_RELAY_POLARITY_PERSIST_FAILED", "NVS rejected relayActiveHigh update");
+    return false;
+  }
+  config_.relayActiveHigh = activeHigh;
+  logger_.info("CONFIG_RELAY_POLARITY_CHANGED", "relayActiveHigh persisted");
+  return true;
+}
+
 bool ConfigService::resetToDefaults() {
   if (!storage_.clear()) return false;
   config_ = defaults();
   usedFallback_ = false;
-  return storage_.putUInt8(kRelayCountKey, relayCount(kDefaultRelayBoardSize));
+  return storage_.putUInt8(kRelayCountKey, relayCount(kDefaultRelayBoardSize)) &&
+         storage_.putUInt8(kRelayActiveHighKey, 0);
 }
 
 }  // namespace lucky

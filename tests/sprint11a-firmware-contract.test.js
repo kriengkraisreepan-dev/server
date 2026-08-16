@@ -28,9 +28,13 @@ test("fixed relay mapping, supported counts, and API v1 contract are exact",()=>
   assert.match(api,/restartRequired.*false/s);
 });
 
-test("safe boot precedes configuration, Wi-Fi, API, and watchdog startup",()=>{
+test("safe boot precedes Wi-Fi, API, and watchdog startup",()=>{
   const source=read("src/main.cpp");
-  const order=["relays.safeInitializeAllPins()","config.initialize()","relays.initialize","wifi.initialize()","api.initialize()","watchdog.initialize()"].map(token=>source.indexOf(token));
+  // config.initialize() moved ahead of relays.safeInitializeAllPins() on 2026-08-14 for
+  // per-device relay polarity support — it's a local NVS read (no network), and
+  // safeInitializeAllPins() needs to know this board's polarity before it drives any pin, or an
+  // active-high board would briefly get energized by a "safe" write that assumed active-low.
+  const order=["config.initialize()","relays.safeInitializeAllPins()","relays.initialize","wifi.initialize()","api.initialize()","watchdog.initialize()"].map(token=>source.indexOf(token));
   assert.ok(order.every(index=>index>=0),JSON.stringify(order));
   assert.deepEqual([...order].sort((a,b)=>a-b),order);
   assert.doesNotMatch(source,/delay\s*\(/);

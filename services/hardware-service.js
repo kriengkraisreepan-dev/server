@@ -54,6 +54,7 @@ class HardwareService {
     const identity = probe.identity, health = probe.health, config = probe.config;
     return {
       deviceId: identity.deviceId, relayCount: Number(config.relayCount),
+      relayActiveHigh: Boolean(config.activeHigh),
       firmwareVersion: identity.firmwareVersion, apiVersion: String(identity.apiVersion),
       hardwareStandard: identity.hardwareStandard, boardModel: identity.boardModel || null,
       status: DEVICE_STATUS.ONLINE, lastSeen: new Date().toISOString(),
@@ -226,15 +227,18 @@ class HardwareService {
   }
   relays(id) { return this.driver.relays(this.getAuthenticated(id)); }
   relayConfig(id) { return this.driver.relayConfig(this.getRequired(id)); }
-  async setRelayCount(id, relayCount, actorId = "SYSTEM") {
+  async setRelayCount(id, relayCount, actorId = "SYSTEM", activeHigh) {
     const device = this.getRequired(id);
     const count = Number(relayCount);
     if (!SUPPORTED_RELAY_COUNTS.includes(count)) throw new HardwareError("INVALID_RELAY_COUNT", "Relay Count ต้องเป็น 2, 4 หรือ 8");
     if (this.tables().some(table => table.hardwareDeviceId === id && Number(table.relayChannel) > count)) {
       throw new HardwareError("RELAY_COUNT_HAS_MAPPINGS", "มีโต๊ะผูกกับช่องที่เกิน Relay Count ใหม่ กรุณาแก้การผูกก่อน", 409);
     }
-    const result = await this.driver.setRelayCount(device, relayCount);
-    const updated = this.repository.update(id, { relayCount: count, status: DEVICE_STATUS.ONLINE, lastSeen: new Date().toISOString(), updatedAt: new Date().toISOString() });
+    const hasActiveHigh = typeof activeHigh === "boolean";
+    const result = await this.driver.setRelayCount(device, relayCount, hasActiveHigh ? activeHigh : undefined);
+    const changes = { relayCount: count, status: DEVICE_STATUS.ONLINE, lastSeen: new Date().toISOString(), updatedAt: new Date().toISOString() };
+    if (hasActiveHigh) changes.relayActiveHigh = activeHigh;
+    const updated = this.repository.update(id, changes);
     this.auditWiringReverify(updated, actorId);
     return result;
   }
@@ -324,6 +328,10 @@ class HardwareService {
     try {
       const result = await this.driver.setRelayState(device, table.relayChannel, state === "on");
       table.relayState = state; table.relayDesiredState = state; table.relayActualState = state; table.relayPending = false;
+      // Stamped only on ON so callers (the manual toggle cooldown check in index.js) can measure
+      // how long the relay has actually been energized, regardless of which flow turned it on
+      // (table open, manual button, etc.) — protects the physical contacts from rapid cycling.
+      if (state === "on") table.relayChangedAt = Date.now();
       return { connected: true, ...result };
     } catch (error) {
       table.relayPending = true;

@@ -15,6 +15,7 @@ struct DeviceConfig {
   String firmwareVersion;
   String hardwareStandard;
   RelayBoardSize relayBoardSize;
+  bool relayActiveHigh;
 };
 
 namespace defaults {

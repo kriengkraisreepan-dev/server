@@ -488,6 +488,7 @@ void ApiServer::handleAllOff() {
 
 void ApiServer::appendRelayConfiguration(ArduinoJson::JsonDocument& document) const {
   document["relayCount"] = relays_.getRelayCount();
+  document["activeHigh"] = relays_.getActiveHigh();
   JsonArray supported = document["supportedRelayCounts"].to<JsonArray>();
   for (const auto count : kSupportedRelayCounts) supported.add(count);
   JsonArray active = document["activeChannels"].to<JsonArray>();
@@ -514,11 +515,23 @@ void ApiServer::handleSetRelayConfig() {
     sendError(400, "UNSUPPORTED_RELAY_COUNT", "relayCount must be 2, 4, or 8.");
     return;
   }
+  const bool hasActiveHigh = request["activeHigh"].is<bool>();
+  // Deactivate everything under the CURRENT polarity before touching any config, so a
+  // mid-request failure never leaves an output physically energized.
   relays_.turnAllOff();
   if (!config_.setRelayCount(count)) {
     sendError(500, "CONFIG_PERSISTENCE_FAILED", "relayCount could not be persisted to NVS.");
     return;
   }
+  if (hasActiveHigh) {
+    if (!config_.setRelayActiveHigh(request["activeHigh"].as<bool>())) {
+      sendError(500, "CONFIG_PERSISTENCE_FAILED", "activeHigh could not be persisted to NVS.");
+      return;
+    }
+    relays_.setActiveHigh(config_.getRelayActiveHigh());
+  }
+  // initialize() re-runs turnAllOff() internally, this time under whichever polarity is now
+  // active, so every known pin ends up physically deactivated under the new configuration too.
   relays_.initialize(config_.getRelayBoardSize());
   JsonDocument document;
   document["success"] = true;

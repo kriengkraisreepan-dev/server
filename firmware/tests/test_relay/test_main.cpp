@@ -113,6 +113,71 @@ void testRuntimeShrinkTurnsEverythingOff() {
   assertAllKnownPinsHigh(gpio);
 }
 
+void testDefaultPolarityIsActiveLow() {
+  FakeGpio gpio;
+  FakeLogger logger;
+  lucky::RelayService service(gpio, logger);
+  TEST_ASSERT_FALSE(service.getActiveHigh());
+}
+
+void testActiveHighSafeBootStartsAllPinsLow() {
+  FakeGpio gpio;
+  FakeLogger logger;
+  lucky::RelayService service(gpio, logger);
+  service.setActiveHigh(true);
+  service.safeInitializeAllPins();
+  for (const auto pin : lucky::kRelayGpioPins) {
+    TEST_ASSERT_TRUE(gpio.configured[pin]);
+    TEST_ASSERT_FALSE(gpio.high[pin]);
+  }
+}
+
+void testActiveHighTurnOnDrivesPinHigh() {
+  FakeGpio gpio;
+  FakeLogger logger;
+  lucky::RelayService service(gpio, logger);
+  service.setActiveHigh(true);
+  service.safeInitializeAllPins();
+  service.initialize(lucky::RelayBoardSize::Channels2);
+  TEST_ASSERT_TRUE(service.turnOn(1));
+  TEST_ASSERT_TRUE(gpio.high[lucky::kRelayGpioPins[0]]);
+  TEST_ASSERT_TRUE(service.turnOff(1));
+  TEST_ASSERT_FALSE(gpio.high[lucky::kRelayGpioPins[0]]);
+}
+
+void testActiveLowUnaffectedByPolarityHelpers() {
+  // Same assertions as testTwoChannelBoard, but going through setActiveHigh(false) explicitly
+  // rather than relying on the constructor default, to pin down that an explicit "false" behaves
+  // identically to never calling it at all.
+  FakeGpio gpio;
+  FakeLogger logger;
+  lucky::RelayService service(gpio, logger);
+  service.setActiveHigh(false);
+  service.safeInitializeAllPins();
+  service.initialize(lucky::RelayBoardSize::Channels2);
+  TEST_ASSERT_TRUE(service.turnOn(1));
+  TEST_ASSERT_FALSE(gpio.high[lucky::kRelayGpioPins[0]]);
+  TEST_ASSERT_TRUE(service.turnOff(1));
+  TEST_ASSERT_TRUE(gpio.high[lucky::kRelayGpioPins[0]]);
+}
+
+void testSwitchingPolarityDeactivatesUnderBothLevels() {
+  // Simulates the ApiServer::handleSetRelayConfig flow: turn everything off under the old
+  // polarity, then flip polarity and reinitialize — every known pin must end up deactivated
+  // under the NEW polarity too, never left energized from either polarity's perspective.
+  FakeGpio gpio;
+  FakeLogger logger;
+  lucky::RelayService service(gpio, logger);
+  service.safeInitializeAllPins();
+  service.initialize(lucky::RelayBoardSize::Channels2);
+  TEST_ASSERT_TRUE(service.turnOn(1));
+  TEST_ASSERT_TRUE(gpio.high[lucky::kRelayGpioPins[0]]);
+  service.turnAllOff();
+  service.setActiveHigh(true);
+  service.initialize(lucky::RelayBoardSize::Channels2);
+  for (const auto pin : lucky::kRelayGpioPins) TEST_ASSERT_FALSE(gpio.high[pin]);
+}
+
 }  // namespace
 
 int main(int, char**) {
@@ -124,5 +189,10 @@ int main(int, char**) {
   RUN_TEST(testFourChannelBoard);
   RUN_TEST(testEightChannelBoard);
   RUN_TEST(testRuntimeShrinkTurnsEverythingOff);
+  RUN_TEST(testDefaultPolarityIsActiveLow);
+  RUN_TEST(testActiveHighSafeBootStartsAllPinsLow);
+  RUN_TEST(testActiveHighTurnOnDrivesPinHigh);
+  RUN_TEST(testActiveLowUnaffectedByPolarityHelpers);
+  RUN_TEST(testSwitchingPolarityDeactivatesUnderBothLevels);
   return UNITY_END();
 }
