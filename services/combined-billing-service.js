@@ -145,6 +145,28 @@ class CombinedBillingService {
     return { bill, order, preview };
   }
 
+  // Reverts a bill that was successfully created but never got a valid payment attached (e.g. the
+  // client's split-payment amounts didn't add up) — reopens the table session (mirrors createBill's
+  // own internal revert-on-failure branch) so the table isn't left stuck in "awaiting payment" with
+  // nothing to pay, un-bills its POS orders back to UNBILLED (not cancelled — nothing was ever
+  // charged), and voids the orphaned bill record.
+  reopenUnpaidBill(bill, actorId = "SYSTEM") {
+    if (!bill || bill.status !== "awaiting_payment") return;
+    const session = bill.tableSessionId ? this.sessionRepository.findSession(bill.tableSessionId) : null;
+    if (session) {
+      Object.assign(session, { state: "ACTIVE", closedAt: null, finalChargeSatang: null, billableSeconds: undefined });
+      this.sessionRepository.saveSession(session);
+    }
+    if (Array.isArray(bill.posOrderIds) && bill.posOrderIds.length) {
+      for (const id of bill.posOrderIds) {
+        const order = this.posOrderRepository.findById(id);
+        if (order && order.billedBillId === bill.id) Object.assign(order, { billingStatus: "UNBILLED", billedBillId: null, billedAt: null, billedBy: null });
+      }
+      this.posOrderRepository.persist();
+    }
+    this.billingService.voidBill(bill, "ไม่สามารถสร้างรายการชำระเงินได้ (เช่น ยอดแบ่งชำระไม่ถูกต้อง)", actorId);
+  }
+
   voidCombinedBill(bill, actorId) {
     if (!Array.isArray(bill.posOrderIds) || !bill.posOrderIds.length) return [];
     const restored = [];

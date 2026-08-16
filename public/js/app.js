@@ -364,7 +364,13 @@ checkoutDialog=async function(id){
     $("#confirmCombinedBill").onclick=async()=>{const button=$("#confirmCombinedBill");button.disabled=true;try{const created=await api(`/api/table-sessions/${table.runtimeSessionId}/create-bill`,{method:"POST",body:JSON.stringify({paymentMethod:$("#combinedPaymentMethod").value})});closeModal();await refresh();openPaymentConfirmation(created.bill,created.payment); }catch(error){notify(error.message,true);button.disabled=false;}};
   }catch(error){notify(error.message,true);}
 };
-function openPaymentConfirmation(bill,payment){openModal(`<h3>ยืนยันรับชำระ</h3><p>บิล <b>${escapeHtml(bill.number)}</b></p><div class="total">ยอดรับชำระ ${money(payment.amount)}</div><p class="muted">โต๊ะจะถูกปิดหลังยืนยันการชำระเงิน</p><div class="actions"><button id="confirmPay">ยืนยันรับชำระ</button><button class="outline" id="cancelPay">ยกเลิกรายการชำระ</button></div>`);$("#confirmPay").onclick=async()=>{try{const confirmed=await api(`/api/payments/${payment.id}/confirm`,{method:"POST"});closeModal();await refresh();notify(confirmed.warning||"ชำระเงินแล้วและปิด Relay",!!confirmed.warning);offerPrint(bill.id);}catch(error){notify(error.message,true);}};$("#cancelPay").onclick=async()=>{try{await api(`/api/payments/${payment.id}/cancel`,{method:"POST"});closeModal();await refresh();notify("ยกเลิกรายการชำระแล้ว");}catch(error){notify(error.message,true);}};}
+const PAYMENT_METHOD_LABELS9g={cash:"เงินสด",transfer:"โอนเงิน",qr:"QR Payment"};
+function paymentListSummary(payments){if(payments.length<=1){const p=payments[0];return `<div class="total">ยอดรับชำระ ${money(p.amount)}</div>`;}const rows=payments.map(p=>`<div class="item"><span>${escapeHtml(PAYMENT_METHOD_LABELS9g[p.method]||p.method)}</span><span>${money(p.amount)}</span></div>`).join("");const total=payments.reduce((s,p)=>s+Number(p.amount||0),0);return `<div class="movement-list">${rows}</div><div class="total">รวม ${money(total)}</div>`;}
+// Confirms every leg of a (possibly split) payment sequentially — the backend only runs its
+// "bill fully settled" side effects (relay off, session close, points) once the LAST leg pushes
+// the bill to fully paid, so sequential awaiting here matters, not Promise.all.
+async function confirmAllPayments(payments){let result=null;for(const p of payments)result=await api(`/api/payments/${p.id}/confirm`,{method:"POST"});return result;}
+function openPaymentConfirmation(bill,payments){const list=Array.isArray(payments)?payments:[payments];openModal(`<h3>ยืนยันรับชำระ</h3><p>บิล <b>${escapeHtml(bill.number)}</b></p>${paymentListSummary(list)}<p class="muted">โต๊ะจะถูกปิดหลังยืนยันการชำระเงิน</p><div class="actions"><button id="confirmPay">ยืนยันรับชำระ</button><button class="outline" id="cancelPay">ยกเลิกรายการชำระ</button></div>`);$("#confirmPay").onclick=async()=>{const button=$("#confirmPay");button.disabled=true;try{const confirmed=await confirmAllPayments(list);closeModal();await refresh();notify(confirmed.warning||"ชำระเงินแล้วและปิด Relay",!!confirmed.warning);offerPrint(bill.id);}catch(error){notify(error.message,true);button.disabled=false;}};$("#cancelPay").onclick=async()=>{try{await Promise.all(list.map(p=>api(`/api/payments/${p.id}/cancel`,{method:"POST"})));closeModal();await refresh();notify("ยกเลิกรายการชำระแล้ว");}catch(error){notify(error.message,true);}};}
 
 // Sprint 8C.1: only unbilled orders belonging to the current table session affect its live card.
 const tableCard8c1=tableCardV2;tableCardV2=function(table){const active=table.status!=="free",currentOrders=(state.posOrders||[]).filter(order=>order.status==="CONFIRMED"&&order.billingStatus==="UNBILLED"&&String(order.tableId)===String(table.id)&&order.tableSessionId===table.runtimeSessionId),confirmed=currentOrders.reduce((sum,order)=>sum+Number(order.total||0),0);if(!active)return tableCard8c1(table);const html=tableCard8c1(table);return html.replace(/ค่าสินค้ายืนยันแล้ว: <b>[^<]*<\/b><br>รวมชั่วคราว: <b>[^<]*<\/b>/,`ค่าสินค้ายืนยันแล้ว: <b>${money(confirmed)}</b><br>รวมชั่วคราว: <b>${money((Number(table.currentPrice)||0)+confirmed)}</b>`);};
@@ -372,7 +378,7 @@ const tableCard8c1=tableCardV2;tableCardV2=function(table){const active=table.st
 const posCart8c1=posCart;posCart=function(order,editable,canConfirm){const html=posCart8c1(order,editable,canConfirm);if(order.orderType!=="WALK_IN"||order.status!=="CONFIRMED"||!canConfirm)return html;return `${html}<div class="actions"><button class="success" id="walkInCheckout">คิดเงินสินค้าหน้าร้าน</button></div>`;};
 const bindPos8c1=bindPos;bindPos=function(){bindPos8c1();$("#walkInCheckout")&&($("#walkInCheckout").onclick=()=>walkInCheckout(posOrder.id));};
 async function walkInCheckout(orderId){try{const preview=await api(`/api/pos-orders/${orderId}/billing-preview`);openModal(`<h3>ตัวอย่างบิลขายหน้าร้าน</h3><p>เลขรายการ: <b>${escapeHtml(preview.orderNumber)}</b></p><p>ค่าสินค้า: <b>${money(preview.total)}</b></p><div class="total">รวมทั้งสิ้น ${money(preview.total)}</div><label>วิธีชำระเงิน</label><select id="walkInPaymentMethod"><option value="cash">เงินสด</option><option value="transfer">โอนเงิน</option><option value="qr">QR Payment</option></select><div class="actions"><button class="outline" id="cancelWalkIn">กลับ</button><button class="success" id="createWalkInBill">ยืนยันสร้างบิล</button></div>`);$("#cancelWalkIn").onclick=closeModal;$("#createWalkInBill").onclick=async()=>{const button=$("#createWalkInBill");button.disabled=true;try{const created=await api(`/api/pos-orders/${orderId}/create-bill`,{method:"POST",body:JSON.stringify({paymentMethod:$("#walkInPaymentMethod").value})});closeModal();await refresh();openWalkInPaymentConfirmation(created.bill,created.payment,orderId);}catch(error){notify(error.message,true);button.disabled=false;}};}catch(error){notify(error.message,true);}}
-function openWalkInPaymentConfirmation(bill,payment,orderId){openModal(`<h3>ยืนยันรับชำระ</h3><p>บิล <b>${escapeHtml(bill.number)}</b></p><div class="total">ยอดรับชำระ ${money(payment.amount)}</div><div class="actions"><button id="confirmWalkInPay">ยืนยันรับชำระ</button><button class="outline" id="cancelWalkInPay">ยกเลิกรายการชำระ</button></div>`);$("#confirmWalkInPay").onclick=async()=>{try{await api(`/api/payments/${payment.id}/confirm`,{method:"POST"});closeModal();localStorage.removeItem(posStorageKey());posOrder=null;await refresh();await loadPos();render();offerPrint(bill.id);}catch(error){notify(error.message,true);}};$("#cancelWalkInPay").onclick=async()=>{try{await api(`/api/payments/${payment.id}/cancel`,{method:"POST"});closeModal();await refresh();await loadPos();render();notify("ยกเลิกรายการชำระแล้ว");}catch(error){notify(error.message,true);}};}
+function openWalkInPaymentConfirmation(bill,payments,orderId){const list=Array.isArray(payments)?payments:[payments];openModal(`<h3>ยืนยันรับชำระ</h3><p>บิล <b>${escapeHtml(bill.number)}</b></p>${paymentListSummary(list)}<div class="actions"><button id="confirmWalkInPay">ยืนยันรับชำระ</button><button class="outline" id="cancelWalkInPay">ยกเลิกรายการชำระ</button></div>`);$("#confirmWalkInPay").onclick=async()=>{const button=$("#confirmWalkInPay");button.disabled=true;try{await confirmAllPayments(list);closeModal();localStorage.removeItem(posStorageKey());posOrder=null;await refresh();await loadPos();render();offerPrint(bill.id);}catch(error){notify(error.message,true);button.disabled=false;}};$("#cancelWalkInPay").onclick=async()=>{try{await Promise.all(list.map(p=>api(`/api/payments/${p.id}/cancel`,{method:"POST"})));closeModal();await refresh();await loadPos();render();notify("ยกเลิกรายการชำระแล้ว");}catch(error){notify(error.message,true);}};}
 
 dashboard=function(){const paid=state.bills.filter(b=>b.status==="paid"&&billReportingDateKey(b)===thaiTodayKey()),total=paid.reduce((sum,b)=>sum+Number(b.total||0),0),tableRevenue=paid.reduce((sum,b)=>sum+Number(b.playAmount||0),0),productRevenue=paid.reduce((sum,b)=>sum+Number(b.foodAmount||0),0);return `<div class="grid"><div class="card"><div class="muted">รายได้วันนี้</div><div class="stat">${money(total)}</div></div><div class="card"><div class="muted">ค่าโต๊ะวันนี้</div><div class="stat">${money(tableRevenue)}</div></div><div class="card"><div class="muted">อาหาร/เครื่องดื่มวันนี้</div><div class="stat">${money(productRevenue)}</div></div><div class="card"><div class="muted">บิลวันนี้</div><div class="stat">${paid.length}</div></div></div><h3 style="margin-top:25px">สถานะโต๊ะ</h3><div class="grid">${state.tables.map(tableCardV2).join("")}</div>`;};
 
@@ -421,6 +427,65 @@ const settingsSettlement10b=settings;settings=function(){const html=settingsSett
 const bindSettlement10b=bind;bind=function(){bindSettlement10b();const sf=$("#reservationSettingsForm");if(sf){const previous=sf.onsubmit;sf.onsubmit=async e=>{e.preventDefault();const d=Object.fromEntries(new FormData(sf));["defaultDepositAmount","minimumDepositAmount","checkInGraceMinutes"].forEach(k=>d[k]=Number(d[k]));["depositRequired","autoAssignTable","autoLightOn","allowLightBeforeCheckIn","autoApplyDeposit","allowManualDepositRemoval"].forEach(k=>d[k]=sf.elements[k].checked);try{await api("/api/settings",{method:"PUT",body:JSON.stringify({reservation:d})});await refresh();notify("บันทึก Reservation Settings แล้ว");}catch(x){notify(x.message,true);}};}};
 checkoutDialog=async function(id){const table=state.tables.find(x=>String(x.id)===String(id));if(!table?.runtimeSessionId)return notify("ไม่พบ Session ที่พร้อมคิดเงิน",true);try{const {preview}=await api(`/api/table-sessions/${table.runtimeSessionId}/billing-preview`),b=preview.breakdown,d=preview.deposit||{},interval=(state.settings.loyalty?.tablePointIntervalMinutes||60)*60,estimated=Math.floor(Number(preview.playDurationSeconds||0)/interval)*(state.settings.loyalty?.tablePointsPerHour||5);openModal(`<h3>ตัวอย่างบิลรวม — ${escapeHtml(table.name)}</h3><p>ค่าโต๊ะ: <b>${money(b.tableCharge)}</b><br>อาหาร/เครื่องดื่ม: <b>${money(b.products)}</b><br>มัดจำการจอง: <b>-${money((d.depositAppliedSatang||0)/100)}</b><br>เวลาเล่น: <b>${duration(preview.playDurationSeconds||0)}</b><br>แต้มโดยประมาณ: <b>${preview.memberId?estimated:0} แต้ม</b></p><div class="total">ยอดรับชำระ ${money((d.remainingPaymentSatang??b.totalSatang)/100)}</div>${rewardPanel(preview)}<label>วิธีชำระเงิน</label><select id="combinedPaymentMethod"><option value="cash">เงินสด</option><option value="transfer">โอนเงิน</option><option value="qr">QR Payment</option></select><div class="actions"><button class="outline" id="cancelCombinedPreview">กลับ</button><button class="success" id="confirmCombinedBill">ยืนยันสร้างบิล</button></div>`);await bindRewardPanel(preview);$("#cancelCombinedPreview").onclick=closeModal;$("#confirmCombinedBill").onclick=async()=>{const button=$("#confirmCombinedBill");button.disabled=true;try{const created=await api(`/api/table-sessions/${table.runtimeSessionId}/create-bill`,{method:"POST",body:JSON.stringify({paymentMethod:$("#combinedPaymentMethod").value,...normalizedRewardPayload(preview)})});closeModal();await refresh();openPaymentConfirmation(created.bill,created.payment);}catch(e){notify(e.message,true);button.disabled=false;}};}catch(e){notify(e.message,true);}};
 const printBillRewards9b=printBill;printBill=function(id){const bill=state.bills.find(item=>item.id===id);if(!bill)return;const open=window.open;window.open=function(...args){const popup=open.apply(window,args);if(!popup)return popup;const write=popup.document.write.bind(popup.document);popup.document.write=html=>{const rewards=bill.memberId?`<div class="line"></div><table><tr><td>ใช้แต้ม</td><td class="right">${Number(bill.redeemedPoints||0)} แต้ม</td></tr><tr><td>ส่วนลดจากแต้ม</td><td class="right">${money(bill.redeemValue||0)}</td></tr><tr><td>แต้มที่ได้รับ</td><td class="right">${Number(bill.pointsEarned||0)} แต้ม</td></tr><tr><td>แต้มคงเหลือ</td><td class="right">${Number(bill.pointsBalance||bill.memberBalanceAfterRedeem||0)} แต้ม</td></tr></table>`:"";write(String(html).replace('<div id="receiptExtensionPoint"></div>',`${rewards}<div id="receiptExtensionPoint"></div>`));};return popup;};try{return printBillRewards9b(id);}finally{window.open=open;}};
+
+// Split payment: pay one bill with cash + transfer (or any mix of methods) together in one
+// checkout, instead of forcing the whole amount onto a single method. Shared between the table
+// checkout and walk-in checkout dialogs. See PaymentService#createSplitPayments.
+const SPLIT_METHODS9g=[["cash","เงินสด"],["transfer","โอนเงิน"]];
+function paymentPanelHtml(totalSatang){
+  const totalBaht=(totalSatang/100).toFixed(2);
+  return `<div class="payment-panel"><label class="checkbox-line"><input type="checkbox" id="splitPaymentToggle"> แบ่งชำระหลายวิธี (เช่น เงินสด + โอนเงิน)</label>
+    <div id="singlePaymentFields"><label>วิธีชำระเงิน</label><select id="paymentMethodSingle"><option value="cash">เงินสด</option><option value="transfer">โอนเงิน</option><option value="qr">QR Payment</option></select></div>
+    <div id="splitPaymentFields" style="display:none" data-total-baht="${totalBaht}">${SPLIT_METHODS9g.map(([value,label])=>`<label>${label} (บาท)</label><input type="number" min="0" step="0.01" class="split-amount" data-split-method="${value}" value="0">`).join("")}<p id="splitPaymentStatus" class="muted"></p></div>
+  </div>`;
+}
+function updateSplitPaymentStatus(){
+  const wrap=$("#splitPaymentFields");if(!wrap)return;
+  const totalBaht=Number(wrap.dataset.totalBaht||0);
+  const sum=[...document.querySelectorAll(".split-amount")].reduce((s,el)=>s+(Number(el.value)||0),0);
+  const diff=Number((totalBaht-sum).toFixed(2));
+  const status=$("#splitPaymentStatus");if(!status)return;
+  if(diff===0)status.innerHTML=`<span class="status-active">ยอดครบพอดี ✓</span>`;
+  else if(diff>0)status.textContent=`ขาดอีก ${money(diff)}`;
+  else status.innerHTML=`<span class="status-disabled">เกินยอด ${money(Math.abs(diff))}</span>`;
+}
+function bindPaymentPanel(){
+  const toggle=$("#splitPaymentToggle"),single=$("#singlePaymentFields"),split=$("#splitPaymentFields");
+  if(!toggle)return;
+  toggle.onchange=()=>{
+    const isSplit=toggle.checked;
+    single.style.display=isSplit?"none":"";
+    split.style.display=isSplit?"":"none";
+    if(isSplit){
+      // Auto-default to an even split across the two methods — the cashier just adjusts from there.
+      const totalBaht=Number(split.dataset.totalBaht||0),half=Number((totalBaht/2).toFixed(2));
+      const inputs=[...document.querySelectorAll(".split-amount")];
+      if(inputs[0])inputs[0].value=half;
+      if(inputs[1])inputs[1].value=Number((totalBaht-half).toFixed(2));
+      updateSplitPaymentStatus();
+    }
+  };
+  document.querySelectorAll(".split-amount").forEach(el=>el.oninput=updateSplitPaymentStatus);
+}
+// freshDueSatang (optional): the table charge keeps accruing per second, so a few seconds spent
+// filling in the split fields can leave the cashier's entered amounts a satang or two short of what
+// the server will actually charge by submit time. When given the just-refetched authoritative due
+// amount, absorb that drift into the LAST leg — the cashier's entered proportions are respected,
+// only the tiny remainder shifts — instead of the split being flakily rejected as a "mismatch".
+function paymentPanelPayload(freshDueSatang){
+  const toggle=$("#splitPaymentToggle");
+  if(!toggle?.checked)return {paymentMethod:$("#paymentMethodSingle").value};
+  const entries=[...document.querySelectorAll(".split-amount")].filter(el=>Number(el.value)>0).map(el=>({method:el.dataset.splitMethod,amountSatang:Math.round(Number(el.value)*100)}));
+  if(entries.length<2){notify("กรุณาระบุยอดอย่างน้อย 2 วิธีชำระ",true);throw new Error("SPLIT_PAYMENT_TOO_FEW");}
+  if(Number.isInteger(freshDueSatang)){const enteredSum=entries.reduce((sum,entry)=>sum+entry.amountSatang,0);entries[entries.length-1].amountSatang+=freshDueSatang-enteredSum;}
+  if(entries.some(entry=>entry.amountSatang<=0)){notify("ยอดชำระต้องมากกว่าศูนย์ทุกวิธี",true);throw new Error("INVALID_SPLIT_AMOUNT");}
+  return {paymentMethod:entries[0].method,splitPayments:entries.map(entry=>({method:entry.method,amount:Number((entry.amountSatang/100).toFixed(2))}))};
+}
+walkInCheckout=async function(orderId){try{const preview=await api(`/api/pos-orders/${orderId}/billing-preview`);openModal(`<h3>ตัวอย่างบิลขายหน้าร้าน</h3><p>เลขรายการ: <b>${escapeHtml(preview.orderNumber)}</b></p><div class="total">รวม ${money(preview.total)}</div>${rewardPanel(preview)}${paymentPanelHtml(preview.totalSatang)}<div class="actions"><button class="outline" id="cancelWalkIn">กลับ</button><button class="success" id="createWalkInBill">ยืนยันสร้างบิล</button></div>`);await bindRewardPanel(preview);bindPaymentPanel();$("#cancelWalkIn").onclick=closeModal;$("#createWalkInBill").onclick=async()=>{const button=$("#createWalkInBill");button.disabled=true;try{const created=await api(`/api/pos-orders/${orderId}/create-bill`,{method:"POST",body:JSON.stringify({...paymentPanelPayload(),...normalizedRewardPayload(preview)})});closeModal();await refresh();openWalkInPaymentConfirmation(created.bill,created.payments||[created.payment],orderId);}catch(e){notify(e.message,true);button.disabled=false;}};}catch(e){notify(e.message,true);}};
+
+// Receipt: show a per-method breakdown when the bill was paid with a split (bill.paymentMethod
+// is "mixed"), sourced from the actual confirmed payment records for the bill.
+const printBillSplit9g=printBill;printBill=function(id){const bill=state.bills.find(item=>item.id===id);if(!bill||bill.paymentMethod!=="mixed")return printBillSplit9g(id);const payments=(state.payments||[]).filter(p=>p.billId===id&&p.status==="paid");if(payments.length<2)return printBillSplit9g(id);const open=window.open;window.open=function(...args){const popup=open.apply(window,args);if(!popup)return popup;const write=popup.document.write.bind(popup.document);popup.document.write=html=>{const rows=payments.map(p=>`<tr><td>${escapeHtml(PAYMENT_METHOD_LABELS9g[p.method]||p.method)}</td><td class="right">${money(p.amount)}</td></tr>`).join("");const breakdown=`<div class="line"></div><table><tr><td colspan="2"><b>แบ่งชำระ</b></td></tr>${rows}</table>`;write(String(html).replace('<div id="receiptExtensionPoint"></div>',`${breakdown}<div id="receiptExtensionPoint"></div>`));};return popup;};try{return printBillSplit9g(id);}finally{window.open=open;}};
 const bindReservationFormPreservation=bind;bind=function(){bindReservationFormPreservation();const form=$("#reservationForm");if(form){form.oninput=()=>{reservationFormDirty=true;};form.onchange=()=>{reservationFormDirty=true;};}};
 
 // Manual "ส่วนลด" button on table checkout — comes out of the table charge only (never
@@ -429,32 +494,40 @@ const bindReservationFormPreservation=bind;bind=function(){bindReservationFormPr
 // billing preview (with ?discountAmount=) as the cashier types so tableCharge/total/reward cap
 // all stay in sync, instead of computing it client-side and risking drift from the server's rule.
 async function fetchCombinedPreview(sessionId,discountAmount){const query=discountAmount?`?discountAmount=${encodeURIComponent(discountAmount)}`:"";return (await api(`/api/table-sessions/${sessionId}/billing-preview${query}`)).preview;}
+// Merges two independently-built pieces of this same dialog: the discount input (live-recompute via
+// fetchCombinedPreview with ?discountAmount=, targeted DOM patches so the field never loses focus)
+// and the split-payment panel (cash+transfer together). The discount input changes the amount due,
+// so its live-recompute handler also refreshes the split panel's total/status to match.
 checkoutDialog=async function(id){
   const table=state.tables.find(x=>String(x.id)===String(id));
   if(!table?.runtimeSessionId)return notify("ไม่พบ Session ที่พร้อมคิดเงิน",true);
   const sessionId=table.runtimeSessionId;
   try{
     let preview=await fetchCombinedPreview(sessionId,0);
-    const renderBody=p=>{const b=p.breakdown,d=p.deposit||{},interval=(state.settings.loyalty?.tablePointIntervalMinutes||60)*60,estimated=Math.floor(Number(p.playDurationSeconds||0)/interval)*(state.settings.loyalty?.tablePointsPerHour||5);
+    const renderBody=p=>{const b=p.breakdown,d=p.deposit||{},interval=(state.settings.loyalty?.tablePointIntervalMinutes||60)*60,estimated=Math.floor(Number(p.playDurationSeconds||0)/interval)*(state.settings.loyalty?.tablePointsPerHour||5),dueSatang=d.remainingPaymentSatang??b.totalSatang;
       return `<h3>ตัวอย่างบิลรวม — ${escapeHtml(table.name)}</h3><p>ค่าโต๊ะ: <b id="checkoutTableCharge">${money(b.tableCharge)}</b><br>อาหาร/เครื่องดื่ม: <b>${money(b.products)}</b><br><span id="checkoutDiscountLine" style="${b.discount>0?"":"display:none"}">ส่วนลด: <b id="checkoutDiscountValue">-${money(b.discount)}</b><br></span>มัดจำการจอง: <b>-${money((d.depositAppliedSatang||0)/100)}</b><br>เวลาเล่น: <b>${duration(p.playDurationSeconds||0)}</b><br>แต้มโดยประมาณ: <b>${p.memberId?estimated:0} แต้ม</b></p>`
-        +`<div class="total" id="checkoutTotal">ยอดรับชำระ ${money((d.remainingPaymentSatang??b.totalSatang)/100)}</div>`
+        +`<div class="total" id="checkoutTotal">ยอดรับชำระ ${money(dueSatang/100)}</div>`
         +`<label>ส่วนลด (บาท, ไม่บังคับ)</label><input id="checkoutDiscountAmount" type="number" min="0" step="1" value="${b.discount||0}">`
         +`<label>เหตุผลส่วนลด (ไม่บังคับ)</label><input id="checkoutDiscountReason" placeholder="เช่น โปรโมชั่น" value="${escapeHtml($("#checkoutDiscountReason")?.value||"")}">`
-        +`${rewardPanel(p)}<label>วิธีชำระเงิน</label><select id="combinedPaymentMethod"><option value="cash">เงินสด</option><option value="transfer">โอนเงิน</option><option value="qr">QR Payment</option></select><div class="actions"><button class="outline" id="cancelCombinedPreview">กลับ</button><button class="success" id="confirmCombinedBill">ยืนยันสร้างบิล</button></div>`;};
+        +`${rewardPanel(p)}${paymentPanelHtml(dueSatang)}<div class="actions"><button class="outline" id="cancelCombinedPreview">กลับ</button><button class="success" id="confirmCombinedBill">ยืนยันสร้างบิล</button></div>`;};
     const bindBody=async p=>{
+      bindPaymentPanel();
       $("#cancelCombinedPreview").onclick=closeModal;
       $("#checkoutDiscountAmount").oninput=async event=>{
         const value=Math.max(0,Number(event.target.value)||0);
         try{preview=await fetchCombinedPreview(sessionId,value);}catch(error){return notify(error.message,true);}
         // Only the price figures + reward cap refresh — re-rendering the whole modal here would
         // steal focus from the input the cashier is actively typing in (see tickPlayingTables fix).
-        const b=preview.breakdown,d=preview.deposit||{};
+        const b=preview.breakdown,d=preview.deposit||{},dueSatang=d.remainingPaymentSatang??b.totalSatang;
         $("#checkoutTableCharge").textContent=money(b.tableCharge);
-        $("#checkoutTotal").textContent=`ยอดรับชำระ ${money((d.remainingPaymentSatang??b.totalSatang)/100)}`;
+        $("#checkoutTotal").textContent=`ยอดรับชำระ ${money(dueSatang/100)}`;
         const discountLine=$("#checkoutDiscountLine");if(discountLine){discountLine.style.display=b.discount>0?"":"none";$("#checkoutDiscountValue").textContent=`-${money(b.discount)}`;}
+        // The discount changes the amount due, so the split panel's notion of "the total" (used for
+        // its 50/50 default and shortfall/overage status) must track it too.
+        const splitFields=$("#splitPaymentFields");if(splitFields){splitFields.dataset.totalBaht=(dueSatang/100).toFixed(2);updateSplitPaymentStatus();}
         await bindRewardPanel(preview);
       };
-      $("#confirmCombinedBill").onclick=async()=>{const button=$("#confirmCombinedBill");button.disabled=true;try{const created=await api(`/api/table-sessions/${sessionId}/create-bill`,{method:"POST",body:JSON.stringify({paymentMethod:$("#combinedPaymentMethod").value,discountAmount:Math.max(0,Number($("#checkoutDiscountAmount").value)||0),discountReason:$("#checkoutDiscountReason").value||"",...normalizedRewardPayload(preview)})});closeModal();await refresh();openPaymentConfirmation(created.bill,created.payment);}catch(e){notify(e.message,true);button.disabled=false;}};
+      $("#confirmCombinedBill").onclick=async()=>{const button=$("#confirmCombinedBill");button.disabled=true;try{const discountAmount=Math.max(0,Number($("#checkoutDiscountAmount").value)||0);const fresh=await fetchCombinedPreview(sessionId,discountAmount),freshDue=fresh.deposit?.remainingPaymentSatang??fresh.breakdown.totalSatang;const created=await api(`/api/table-sessions/${sessionId}/create-bill`,{method:"POST",body:JSON.stringify({...paymentPanelPayload(freshDue),discountAmount,discountReason:$("#checkoutDiscountReason").value||"",...normalizedRewardPayload(preview)})});closeModal();await refresh();openPaymentConfirmation(created.bill,created.payments||[created.payment]);}catch(e){notify(e.message,true);button.disabled=false;}};
       await bindRewardPanel(p);
     };
     openModal(renderBody(preview));
@@ -619,4 +692,8 @@ function ordersBillDialog(tableId){
   };
 }
 const bindOrdersBill9d=bind;bind=function(){bindOrdersBill9d();document.querySelectorAll("[data-orders-bill]").forEach(button=>button.onclick=()=>ordersBillDialog(button.dataset.ordersBill));};
+// Split-payment breakdown card: attributed from actual payment records, so a cash+transfer split
+// bill correctly counts toward BOTH methods (unlike bill.paymentMethod, which just reads "mixed").
+const METHOD_LABELS9g={cash:"เงินสด",transfer:"โอนเงิน",qr:"QR Payment"};
+const reportsPaymentBreakdown9g=reports;reports=function(){const base=reportsPaymentBreakdown9g();if(!analytics||!analytics.paymentMethodBreakdown?.length)return base;const rows=analytics.paymentMethodBreakdown.map(entry=>`<div class="item"><span>${escapeHtml(METHOD_LABELS9g[entry.method]||entry.method)}</span><span>${money(entry.amount)} · ${entry.count} บิล · ${entry.percent}%</span></div>`).join("");return base+`<div class="card" style="margin-top:18px"><h3>แยกตามวิธีชำระเงิน</h3><div class="movement-list">${rows}</div></div>`;};
 nav();
