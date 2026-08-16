@@ -41,6 +41,26 @@ class TableConfigurationService {
     }
     return current;
   }
+
+  // Assigns (or clears, with profileId=null) a per-table pricing-profile override — a table with no
+  // override falls back to settings.defaultPricingProfileId at start time. validProfileIds guards
+  // against assigning a profile that doesn't exist (or was already deleted).
+  assignProfile(tables, tableId, profileId, validProfileIds) {
+    const table = tables.find(item => String(item.id) === String(tableId));
+    if (!table) throw new TableConfigurationError("TABLE_NOT_FOUND", "ไม่พบโต๊ะ");
+    const normalized = profileId ? String(profileId) : null;
+    if (normalized && !validProfileIds.includes(normalized)) throw new TableConfigurationError("PRICING_PROFILE_NOT_FOUND", "ไม่พบโปรไฟล์ราคาที่เลือก");
+    table.pricingProfileId = normalized;
+    return table;
+  }
+
+  // Called after a pricing profile is deleted — any table still pointing at it silently falls back
+  // to the default profile rather than being left with a dangling reference.
+  resetTablesUsingProfile(tables, profileId) {
+    const affected = tables.filter(table => table.pricingProfileId === profileId);
+    affected.forEach(table => { table.pricingProfileId = null; });
+    return affected;
+  }
 }
 
 module.exports = { TableConfigurationService, TableConfigurationError };

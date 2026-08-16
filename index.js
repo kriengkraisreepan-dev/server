@@ -27,6 +27,7 @@ const { ReservationDepositService } = require("./services/reservation-deposit-se
 const { DepositSettlementService } = require("./services/deposit-settlement-service");
 const { PERMISSIONS, hasPermission } = require("./domain/permissions");
 const { bahtToSatang, satangToBaht } = require("./domain/money");
+const { resolveEffectiveProfile } = require("./domain/pricing");
 const { atomicWriteJson, readJsonWithRecovery, activeJsonWrites } = require("./infrastructure/safe-json-file");
 const { resolveServerDataLayout } = require("./infrastructure/trusted-data-root");
 const { IntegrityCheckService } = require("./services/integrity-check-service");
@@ -202,7 +203,7 @@ const reservationAudit = (event, actorId, data) => billingService.audit(event, {
 const reservationDepositService = new ReservationDepositService(reservationDepositRepository, { audit: reservationAudit });
 const depositSettlementService = new DepositSettlementService(reservationDepositRepository, { reservationRepository, billingRepository, audit: reservationAudit });
 paymentService.onBeforeConfirm = (bill, settlementActorId) => { if (!bill.depositId) return; const deposit = reservationDepositRepository.findById(bill.depositId); depositSettlementService.settle(deposit.id, bill, settlementActorId, deposit.version, deposit.lockToken); };
-const reservationService = new ReservationService(reservationRepository, reservationDepositService, { settings: () => settingsService.getSettings(), tables: () => store.tables, relay: setRelayState, startSession: (reservation, user) => { const settings = settingsService.getSettings(), profile = settings.pricingProfiles.find(item => item.id === settings.defaultPricingProfileId); const session = sessionService.openSession({ tableId: reservation.assignedTableId, memberId: reservation.memberId || null, pricingProfile: profile }); session.reservationId = reservation.id; session.reservationNumber = reservation.reservationNumber; sessionRepository.saveSession(session); billingService.audit("TABLE_OPENED", { tableId: reservation.assignedTableId, sessionId: session.id, actorId: user.userId, data: { reservationId: reservation.id } }); return session; }, cancelSession: async sessionId => { if (!sessionId) return; const session = sessionRepository.findSession(sessionId); if (session && ["ACTIVE", "PAUSED"].includes(session.state)) sessionService.cancelSession(sessionId); }, memberById, audit: reservationAudit });
+const reservationService = new ReservationService(reservationRepository, reservationDepositService, { settings: () => settingsService.getSettings(), tables: () => store.tables, relay: setRelayState, startSession: (reservation, user) => { const settings = settingsService.getSettings(), table = tableById(reservation.assignedTableId), profile = table ? resolvePricingProfileForTable(table, settings) : settings.pricingProfiles.find(item => item.id === settings.defaultPricingProfileId); const session = sessionService.openSession({ tableId: reservation.assignedTableId, memberId: reservation.memberId || null, pricingProfile: profile }); session.reservationId = reservation.id; session.reservationNumber = reservation.reservationNumber; sessionRepository.saveSession(session); billingService.audit("TABLE_OPENED", { tableId: reservation.assignedTableId, sessionId: session.id, actorId: user.userId, data: { reservationId: reservation.id } }); return session; }, cancelSession: async sessionId => { if (!sessionId) return; const session = sessionRepository.findSession(sessionId); if (session && ["ACTIVE", "PAUSED"].includes(session.state)) sessionService.cancelSession(sessionId); }, memberById, audit: reservationAudit });
 const tableConfigurationService = new TableConfigurationService({
   hasActiveSession: tableId => Boolean(sessionRepository.findOpenSessionByTable(tableId)),
   hasActiveReservation: tableId => reservationRepository.list().some(item => String(item.assignedTableId) === String(tableId) && !["CANCELLED", "NO_SHOW", "CHECKED_IN", "COMPLETED"].includes(item.status))
@@ -308,6 +309,14 @@ function tableChargeSatang(table) { const session = sessionRepository.findSessio
 function apiBaht(satang) { return Number(satangToBaht(satang)); }
 function enrichTable(table) { const session = sessionRepository.findSessionByTable(table.id); const active = table.status === "playing" || table.status === "paused" || table.status === "awaiting_payment"; return { ...table, ...hardwareService.tableHardware(table), elapsedSeconds: session ? sessionService.billableSeconds(session) : elapsedSeconds(table), currentPrice: active ? apiBaht(tableChargeSatang(table)) : 0, member: memberById(table.memberId) || null, sessionState: session?.state || null }; }
 function createBill(table, closedSession, loggedInActorId = "SYSTEM") { return billingService.createBillDraft({ table, session: closedSession, memberName: memberById(table.memberId)?.name || "ลูกค้าทั่วไป", actorId: loggedInActorId }); }
+// Resolves the pricing profile to snapshot at table-start time: the table's own override
+// (table.pricingProfileId) if set and still valid, else settings.defaultPricingProfileId — then
+// applies any matching Happy Hour rule for "now". Called once per start; never recomputed mid-session.
+function resolvePricingProfileForTable(table, settings) {
+  const profileId = table.pricingProfileId && settings.pricingProfiles.some(p => p.id === table.pricingProfileId) ? table.pricingProfileId : settings.defaultPricingProfileId;
+  const raw = settings.pricingProfiles.find(p => p.id === profileId) || settings.pricingProfiles.find(p => p.id === settings.defaultPricingProfileId);
+  return resolveEffectiveProfile(raw);
+}
 const relayService=new RelayService({baseUrl:process.env.ESP32_BASE_URL,logger:(level,event,details)=>operationalLog(level,event,details)});
 async function setRelayState(table,state){try{return await hardwareService.setTableRelay(table,state);}catch(error){operationalLog("ERROR","HARDWARE_RELAY_FAILED",{tableId:table.id,errorCode:error.code||"HARDWARE_ERROR"});return {connected:false,failed:true,code:error.code,message:error.message};}}
 // The manual Relay button (as opposed to the automatic on/off that table start/checkout/cancel
@@ -377,9 +386,16 @@ app.put("/api/settings", requirePermission(PERMISSIONS.SETTINGS_MANAGE), (req, r
     const nextTables = tableConfigurationService.resize(store.tables, requestedCount);
     if (nextTables.length !== store.tables.length) backupNow();
     store.tables = nextTables;
+    const beforeProfileIds = settingsService.getSettings().pricingProfiles.map(profile => profile.id);
     const updated = settingsService.updateSettings({ ...req.body, tableCount: nextTables.length });
     if (JSON.stringify(beforeRewards) !== JSON.stringify(updated.rewards)) billingService.audit("REWARD_SETTING_CHANGED", { actorId:actorId(req), data:{ before:beforeRewards, after:updated.rewards } });
     if (previousTables.length !== nextTables.length) billingService.audit("TABLE_COUNT_CHANGED", { actorId:actorId(req), data:{ before:previousTables.length, after:nextTables.length } });
+    // A deleted pricing profile must not leave any table with a dangling reference — silently fall
+    // back those tables to the (new) default profile instead.
+    const afterProfileIds = new Set(updated.pricingProfiles.map(profile => profile.id));
+    const removedProfileIds = beforeProfileIds.filter(id => !afterProfileIds.has(id));
+    for (const removedId of removedProfileIds) { const affected = tableConfigurationService.resetTablesUsingProfile(store.tables, removedId); if (affected.length) billingService.audit("TABLE_PRICING_PROFILE_RESET", { actorId:actorId(req), data:{ removedProfileId: removedId, tableIds: affected.map(table => table.id) } }); }
+    if (removedProfileIds.length) save();
     res.json({ ...updated, tableCount: nextTables.length });
   } catch (error) {
     store.settings = previousSettings; store.tables = previousTables;
@@ -442,11 +458,24 @@ app.delete("/api/pos-orders/:id/items/:itemId", requirePermission(PERMISSIONS.PO
 app.patch("/api/pos-orders/:id", requirePermission(PERMISSIONS.POS_ORDER_EDIT), (req, res) => { try { res.json({ order: posOrderService.updateOrderMetadata(req.params.id, req.body || {}, req.user) }); } catch (error) { posOrderError(res, error); } });
 app.post("/api/pos-orders/:id/confirm", requirePermission(PERMISSIONS.POS_ORDER_CONFIRM), async (req, res) => { try { res.json({ order: await posOrderService.confirmOrder(req.params.id, req.user) }); } catch (error) { posOrderError(res, error); } });
 app.post("/api/pos-orders/:id/cancel", requirePermission(PERMISSIONS.POS_ORDER_CANCEL_DRAFT), async (req, res) => { try { res.json({ order: await posOrderService.cancelOrder(req.params.id, req.body || {}, req.user) }); } catch (error) { posOrderError(res, error); } });
-app.post("/api/tables/:id/start", requirePermission(PERMISSIONS.TABLE_OPEN), async (req, res) => { try { const table = tableById(req.params.id); if (!table) return res.status(404).json({ error: "ไม่พบโต๊ะ" }); if (req.body.memberId && memberById(req.body.memberId)?.status !== "ACTIVE") return res.status(400).json({ error: "ไม่พบสมาชิกที่ใช้งานอยู่" }); const settings = settingsService.getSettings(); const profile = settings.pricingProfiles.find(item => item.id === settings.defaultPricingProfileId); const session = sessionService.openSession({ tableId: table.id, memberId: req.body.memberId || null, pricingProfile: profile }); billingService.audit("TABLE_OPENED", { tableId: table.id, sessionId: session.id, actorId: actorId(req) }); const relay = await setRelayState(table, "on"); save(); res.json({ ...enrichTable(table), warning: relay.failed ? "เปิดโต๊ะแล้ว แต่ติดต่อ ESP32 เพื่อเปิด Relay ไม่สำเร็จ" : undefined }); } catch (error) { res.status(409).json({ error: error.message }); } });
+app.post("/api/tables/:id/start", requirePermission(PERMISSIONS.TABLE_OPEN), async (req, res) => { try { const table = tableById(req.params.id); if (!table) return res.status(404).json({ error: "ไม่พบโต๊ะ" }); if (req.body.memberId && memberById(req.body.memberId)?.status !== "ACTIVE") return res.status(400).json({ error: "ไม่พบสมาชิกที่ใช้งานอยู่" }); const settings = settingsService.getSettings(); const profile = resolvePricingProfileForTable(table, settings); const session = sessionService.openSession({ tableId: table.id, memberId: req.body.memberId || null, pricingProfile: profile }); billingService.audit("TABLE_OPENED", { tableId: table.id, sessionId: session.id, actorId: actorId(req) }); const relay = await setRelayState(table, "on"); save(); res.json({ ...enrichTable(table), warning: relay.failed ? "เปิดโต๊ะแล้ว แต่ติดต่อ ESP32 เพื่อเปิด Relay ไม่สำเร็จ" : undefined }); } catch (error) { res.status(409).json({ error: error.message }); } });
 app.post("/api/tables/:id/pause", requirePermission(PERMISSIONS.TABLE_PAUSE), (req, res) => { try { const session = sessionRepository.findOpenSessionByTable(req.params.id); if (!session) return res.status(409).json({ error: "โต๊ะยังไม่ได้เปิดใช้งาน" }); sessionService.pauseSession(session.id); billingService.audit("TABLE_PAUSED", { tableId: Number(req.params.id), sessionId: session.id, actorId: actorId(req) }); res.json(enrichTable(tableById(req.params.id))); } catch (error) { res.status(409).json({ error: error.message }); } });
 app.post("/api/tables/:id/resume", requirePermission(PERMISSIONS.TABLE_RESUME), (req, res) => { try { const session = sessionRepository.findOpenSessionByTable(req.params.id); if (!session) return res.status(409).json({ error: "โต๊ะยังไม่ได้เปิดใช้งาน" }); sessionService.resumeSession(session.id); billingService.audit("TABLE_RESUMED", { tableId: Number(req.params.id), sessionId: session.id, actorId: actorId(req) }); res.json(enrichTable(tableById(req.params.id))); } catch (error) { res.status(409).json({ error: error.message }); } });
 app.post("/api/tables/:id/cancel", async (req, res) => { try { const table = tableById(req.params.id), session = sessionRepository.findOpenSessionByTable(req.params.id); if (!table || !session) return res.status(409).json({ error: "ไม่มี Session ที่ยกเลิกได้" }); sessionService.cancelSession(session.id); billingService.audit("SESSION_CANCELLED", { tableId: table.id, sessionId: session.id }); const relay = await setRelayState(table, "off"); save(); res.json({ table: enrichTable(table), warning: relay.failed ? "ยกเลิก Session แล้ว แต่ติดต่อ ESP32 เพื่อปิด Relay ไม่สำเร็จ" : undefined }); } catch (error) { res.status(409).json({ error: error.message }); } });
 app.post("/api/tables/:id/items", (req, res) => { const table = tableById(req.params.id); const product = store.products.find(p => p.id === req.body.productId); if (!table || table.status !== "playing") return res.status(400).json({ error: "โต๊ะยังไม่เปิดใช้งาน" }); if (!product) return res.status(404).json({ error: "ไม่พบสินค้า" }); const existing = table.items.find(i => i.productId === product.id); if (existing) existing.quantity += Number(req.body.quantity) || 1; else table.items.push({ productId: product.id, name: product.name, price: product.price, quantity: Number(req.body.quantity) || 1 }); save(); res.json(enrichTable(table)); });
+// Per-table pricing-profile override (e.g. a VIP room billed differently from the standard tables).
+// null clears the override, falling back to settings.defaultPricingProfileId.
+app.put("/api/tables/:id/pricing-profile", requirePermission(PERMISSIONS.SETTINGS_MANAGE), (req, res) => {
+  try {
+    const settings = settingsService.getSettings();
+    const table = tableConfigurationService.assignProfile(store.tables, req.params.id, req.body?.pricingProfileId ?? null, settings.pricingProfiles.map(profile => profile.id));
+    save();
+    billingService.audit("TABLE_PRICING_PROFILE_CHANGED", { tableId: table.id, actorId: actorId(req), data: { pricingProfileId: table.pricingProfileId } });
+    res.json(enrichTable(table));
+  } catch (error) {
+    res.status(error.code === "TABLE_NOT_FOUND" ? 404 : error.code === "PRICING_PROFILE_NOT_FOUND" ? 400 : 400).json({ error: error.code || "PRICING_PROFILE_ASSIGN_ERROR", message: error.message });
+  }
+});
 function createCombinedCheckout(sessionId, paymentMethod, requestActorId, rewardInput={}) {
   const discount=discountFromBody(rewardInput);
   const preview=combinedBillingService.buildPreview(sessionId,{manualDiscountSatang:discount.manualDiscountSatang}), session=sessionRepository.findSession(sessionId), reward=normalizeRewardRequest({...rewardInput,memberId:rewardInput.memberId??preview.memberId});
