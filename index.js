@@ -310,6 +310,12 @@ function enrichTable(table) { const session = sessionRepository.findSessionByTab
 function createBill(table, closedSession, loggedInActorId = "SYSTEM") { return billingService.createBillDraft({ table, session: closedSession, memberName: memberById(table.memberId)?.name || "ลูกค้าทั่วไป", actorId: loggedInActorId }); }
 const relayService=new RelayService({baseUrl:process.env.ESP32_BASE_URL,logger:(level,event,details)=>operationalLog(level,event,details)});
 async function setRelayState(table,state){try{return await hardwareService.setTableRelay(table,state);}catch(error){operationalLog("ERROR","HARDWARE_RELAY_FAILED",{tableId:table.id,errorCode:error.code||"HARDWARE_ERROR"});return {connected:false,failed:true,code:error.code,message:error.message};}}
+// The manual Relay button (as opposed to the automatic on/off that table start/checkout/cancel
+// already trigger) gets a cooldown after actually flipping the relay, so a staff member mashing the
+// button can't rapid-cycle the physical relay contacts. Only a state FLIP starts/checks the clock —
+// re-requesting the same state (idempotent) is always allowed.
+const RELAY_MANUAL_TOGGLE_COOLDOWN_MS = 5000;
+const relayManualToggleAt = new Map();
 
 function operationalLog(level,event,details={}) { console.log(JSON.stringify({timestamp:new Date().toISOString(),level,event,...details})); }
 app.use((req,res,next)=>{const started=Date.now();req.requestId=req.get("x-request-id")||crypto.randomUUID();res.setHeader("X-Request-Id",req.requestId);res.on("finish",()=>operationalLog("INFO","HTTP_REQUEST",{requestId:req.requestId,userId:req.user?.userId||null,route:req.originalUrl.split("?")[0],status:res.statusCode,durationMs:Date.now()-started}));next();});
@@ -540,7 +546,7 @@ app.post("/api/hardware/devices/:id/relays/:relayId/state", requireHardwareAdmin
 app.get("/api/hardware/devices/:id/config/relay", requireHardwareAdmin, hardwareRoute(req => hardwareService.relayConfig(req.params.id)));
 app.post("/api/hardware/devices/:id/config/relay", requireHardwareAdmin, hardwareRoute(req => hardwareService.setRelayCount(req.params.id, req.body?.relayCount, actorId(req), typeof req.body?.activeHigh === "boolean" ? req.body.activeHigh : undefined)));
 app.put("/api/hardware/tables/:tableId/relay", requireHardwareAdmin, hardwareRoute(req => ({ mapping: hardwareService.mapTable(req.params.tableId, req.body?.deviceId, req.body?.relayChannel, actorId(req)) })));
-app.post("/api/relay/:tableId", async (req, res) => { const table = tableById(req.params.tableId); if (!table) return res.status(404).json({ error: "ไม่พบโต๊ะ" }); const state = req.body.state === "on" ? "on" : "off"; const relay = await setRelayState(table, state); save(); if (relay.failed) return res.status(relay.code === "DEVICE_OFFLINE" ? 503 : 409).json({ error: relay.code, message: relay.message }); res.json({ table: enrichTable(table), message: "ส่งคำสั่ง Relay ผ่าน Hardware Manager แล้ว" }); });
+app.post("/api/relay/:tableId", async (req, res) => { const table = tableById(req.params.tableId); if (!table) return res.status(404).json({ error: "ไม่พบโต๊ะ" }); const state = req.body.state === "on" ? "on" : "off"; const lastToggleAt = relayManualToggleAt.get(String(table.id)); if (table.relayState && table.relayState !== state && lastToggleAt) { const elapsed = Date.now() - lastToggleAt; if (elapsed < RELAY_MANUAL_TOGGLE_COOLDOWN_MS) return res.status(429).json({ error: "RELAY_COOLDOWN_ACTIVE", message: "กรุณารอสักครู่ก่อนสลับสถานะ Relay อีกครั้ง เพื่อป้องกันหน้าสัมผัสเสียหาย", retryAfterMs: RELAY_MANUAL_TOGGLE_COOLDOWN_MS - elapsed }); } const relay = await setRelayState(table, state); save(); if (relay.failed) return res.status(relay.code === "DEVICE_OFFLINE" ? 503 : 409).json({ error: relay.code, message: relay.message }); relayManualToggleAt.set(String(table.id), Date.now()); res.json({ table: enrichTable(table), message: "ส่งคำสั่ง Relay ผ่าน Hardware Manager แล้ว" }); });
 // A table opened before midnight (Thai time) but paid after it must count toward the day it was
 // OPENED, not the day the bill happened to close — matches how a shop reconciling "last night's
 // takings" thinks about a session that ran past 00:00. Walk-in/POS-only bills have no play start,
