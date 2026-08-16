@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>สถานะโต๊ะ</title>
+<style>
+  :root{color-scheme:dark;--bg:#0b0f14;--card:#161d26;--card-border:#232c38;--text:#e7edf3;--muted:#8a97a6;--free:#1f9d55;--playing:#e0a72e;--paused:#3d7bd6;--awaiting:#c0392b;}
+  *{box-sizing:border-box}
+  body{margin:0;min-height:100vh;background:var(--bg);color:var(--text);font-family:"Tahoma","Segoe UI",Arial,sans-serif;padding:20px 16px 40px}
+  header{text-align:center;margin-bottom:20px}
+  header h1{margin:0 0 4px;font-size:1.4rem}
+  header .muted{color:var(--muted);font-size:.85rem}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;max-width:720px;margin:0 auto}
+  .card{background:var(--card);border:1px solid var(--card-border);border-radius:12px;padding:16px;text-align:center}
+  .card .name{font-size:1.05rem;font-weight:600;margin-bottom:8px}
+  .badge{display:inline-block;padding:3px 10px;border-radius:999px;font-size:.75rem;font-weight:600;color:#0b0f14}
+  .badge.free{background:var(--free)}
+  .badge.playing{background:var(--playing)}
+  .badge.paused{background:var(--paused)}
+  .badge.awaiting_payment{background:var(--awaiting)}
+  .elapsed{margin-top:10px;font-size:1.1rem;font-variant-numeric:tabular-nums;color:var(--muted)}
+  .elapsed.active{color:var(--text)}
+  footer{text-align:center;margin-top:24px;color:var(--muted);font-size:.75rem}
+  .empty{text-align:center;color:var(--muted);margin-top:40px}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="shopName">สถานะโต๊ะ</h1>
+  <div class="muted">อัปเดตอัตโนมัติทุก 10 วินาที</div>
+</header>
+<div id="grid" class="grid"></div>
+<footer id="lastUpdated"></footer>
+<script>
+const LABEL={free:"ว่าง",playing:"กำลังเล่น",paused:"พักเวลา",awaiting_payment:"รอชำระเงิน"};
+function duration(seconds){
+  const s=Math.max(0,Math.floor(Number(seconds)||0));
+  const h=String(Math.floor(s/3600)).padStart(2,"0");
+  const m=String(Math.floor((s%3600)/60)).padStart(2,"0");
+  const sec=String(s%60).padStart(2,"0");
+  return `${h}:${m}:${sec}`;
+}
+function render(data){
+  document.getElementById("shopName").textContent=data.shopName||"สถานะโต๊ะ";
+  const grid=document.getElementById("grid");
+  if(!data.items||!data.items.length){grid.innerHTML='<div class="empty">ยังไม่มีโต๊ะในระบบ</div>';return;}
+  grid.innerHTML=data.items.map(table=>{
+    const active=table.status!=="free";
+    return `<div class="card"><div class="name">${escapeHtml(table.name)}</div><span class="badge ${escapeHtml(table.status)}">${escapeHtml(LABEL[table.status]||table.status)}</span><div class="elapsed ${active?"active":""}" data-elapsed="${table.elapsedSeconds}" data-active="${active}">${active?duration(table.elapsedSeconds):"—"}</div></div>`;
+  }).join("");
+}
+function escapeHtml(value){return String(value??"").replace(/[&<>'"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;","\"":"&quot;"})[c]);}
+let latest=null;
+// Between the 10s server polls, tick the visible counters up client-side every second so "กำลังเล่น"
+// tables don't look frozen — matches the live-clock feel of the staff-facing table cards.
+function tick(){
+  document.querySelectorAll('[data-active="true"]').forEach(el=>{
+    const next=Number(el.dataset.elapsed)+1;
+    el.dataset.elapsed=next;
+    el.textContent=duration(next);
+  });
+}
+async function refresh(){
+  try{
+    const res=await fetch("/api/public/tables");
+    if(!res.ok)throw new Error("โหลดข้อมูลไม่สำเร็จ");
+    latest=await res.json();
+    render(latest);
+    document.getElementById("lastUpdated").textContent=`อัปเดตล่าสุด ${new Date().toLocaleTimeString("th-TH")}`;
+  }catch(error){
+    document.getElementById("lastUpdated").textContent="ไม่สามารถเชื่อมต่อได้ กำลังลองใหม่…";
+  }
+}
+refresh();
+setInterval(refresh,10000);
+setInterval(tick,1000);
+</script>
+</body>
+</html>
