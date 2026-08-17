@@ -13,7 +13,15 @@ function resolveDevelopmentFirmwarePackage({ workspaceRoot, environment = proces
   const root = path.resolve(workspaceRoot || path.join(__dirname, ".."));
   const bundledRoot = path.join(root, "resources", "firmware", "internal-test");
   const bundledKey = path.join(bundledRoot, "internal-test-public.pem");
-  if (environment.LUCKY_INTERNAL_TEST === "1" && fs.existsSync(path.join(bundledRoot, "manifest.json")) && fs.existsSync(bundledKey)) {
+  // Note: deliberately NOT gated on LUCKY_INTERNAL_TEST here. That flag also controls whether
+  // electron/main.js switches to a separate "Internal Test" userData folder (see the
+  // INTERNAL_TEST_ONLY marker file check there) — a real production install never sets it, but
+  // still ships this bundled internal-test-signed firmware package (there is no separate
+  // production-signed package; Phase 5.3 production signing is shelved, see
+  // project-scope-and-decisions memory). Gating firmware-package discovery on the same flag as
+  // data-folder isolation meant a normal installed app could never find its own bundled firmware
+  // package. Existence of the manifest+key on disk is itself the trust boundary here.
+  if (fs.existsSync(path.join(bundledRoot, "manifest.json")) && fs.existsSync(bundledKey)) {
     return { packageRoot: bundledRoot, publicKey: fs.readFileSync(bundledKey, "utf8"), mode: "internal-test" };
   }
   if (environment.NODE_ENV === "production" || !fs.existsSync(path.join(root, ".git"))) {
