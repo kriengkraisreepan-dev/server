@@ -66,6 +66,17 @@ function buildAppMenu(layout, networkAccess, port) {
         dialog.showMessageBox(mainWindow, { type: "info", title: "ที่อยู่สำหรับมือถือ (ต้องต่อ Wi-Fi วงเดียวกัน)", message });
       } },
     ],
+  }, {
+    // Setting a custom application menu (above) replaces Electron's default menu outright,
+    // which is where "Reload" / "Force Reload" normally live — leaving no way to recover a
+    // renderer stuck on stale JS state (e.g. dropdowns that stopped responding) without fully
+    // quitting and reopening the app. Restore that escape hatch explicitly. role:"forceReload"
+    // keeps its default CmdOrCtrl+Shift+R accelerator.
+    label: "มุมมอง",
+    submenu: [
+      { role: "reload", label: "รีเฟรช" },
+      { role: "forceReload", label: "รีเฟรชแบบเต็ม (Hard Refresh)" },
+    ],
   }];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
@@ -99,6 +110,14 @@ function createWindow(layout, origin) {
   mainWindow.webContents.on("will-attach-webview", event => event.preventDefault());
   mainWindow.on("close", event => { if (!quitting) { event.preventDefault(); app.quit(); } });
   mainWindow.on("closed", () => { mainWindow = null; });
+  // New-device hardware setup sends staff out of the app to join the relay controller's temporary
+  // Wi-Fi Access Point and finish Wi-Fi through Windows' own network UI / captive portal, then back
+  // into this window. Round-tripping through another app like that can leave an Electron
+  // BrowserWindow OS-focused (frontmost, visually active) without its webContents actually holding
+  // DOM focus, so clicks land on nothing until the user does something else to "wake" it up —
+  // reported as "the naming/zone fields don't even register a click" right after a new-install USB
+  // flash. Explicitly re-focus the page whenever the window regains OS focus.
+  mainWindow.on("focus", () => { if (!mainWindow?.isDestroyed() && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.focus(); });
   mainWindow.loadURL(origin).then(() => mainWindow?.show());
 }
 async function resolveLayoutAndMigration() {

@@ -582,9 +582,16 @@ setInterval(()=>{if(!state||reservationPollingPaused)return;if(page==="reservati
 // Sprint 11A Hardware Manager: all ESP32 traffic stays behind the server-side HAL.
 let hardwareDevices=[],hardwareTimer=null,hardwarePollingBusy=false;
 function hardwareAllowed(){return ["OWNER","ADMIN"].includes(state?.user?.role);}
+// Background re-renders (health polling) blindly replace #app's innerHTML, which destroys and
+// recreates every <select>/<input> on the page — including a native dropdown popup the user
+// currently has open, or mid-typing keystrokes. That silently "eats" the interaction (the user
+// sees a dropdown/input that stops responding). Skip a background re-render while the user is
+// actively focused in a form control or has a modal open; the fetched data is still kept so the
+// next safe render (page change, modal close, or a subsequent poll once focus moves on) is fresh.
+function backgroundRenderSafe(){const el=document.activeElement;if(el&&["INPUT","SELECT","TEXTAREA"].includes(el.tagName))return false;return $("#modal").classList.contains("hidden");}
 async function loadHardware(silent=false){if(!hardwareAllowed())return;try{const data=await api("/api/hardware/devices");hardwareDevices=data.devices||[];if(page==="hardware")render();}catch(error){if(!silent)notify(error.message,true);}}
 function stopHardwarePolling(){if(hardwareTimer){clearInterval(hardwareTimer);hardwareTimer=null;}}
-async function pollHardwareHealth(){if(hardwarePollingBusy||page!=="hardware"||!hardwareAllowed())return;hardwarePollingBusy=true;try{const data=await api('/api/hardware/health/check-all',{method:'POST',body:'{}'});hardwareDevices=data.devices||hardwareDevices;if(page==='hardware')render();}catch(error){console.error('Hardware health polling failed',{code:error.code||'HEALTH_POLL_FAILED'});}finally{hardwarePollingBusy=false;}}
+async function pollHardwareHealth(){if(hardwarePollingBusy||page!=="hardware"||!hardwareAllowed())return;hardwarePollingBusy=true;try{const data=await api('/api/hardware/health/check-all',{method:'POST',body:'{}'});hardwareDevices=data.devices||hardwareDevices;if(page==='hardware'&&backgroundRenderSafe())render();}catch(error){console.error('Hardware health polling failed',{code:error.code||'HEALTH_POLL_FAILED'});}finally{hardwarePollingBusy=false;}}
 function startHardwarePolling(){if(hardwareTimer||page!=="hardware"||!hardwareAllowed())return;pollHardwareHealth();hardwareTimer=setInterval(pollHardwareHealth,15000);}
 function hardwareBadge(status,lastErrorCode){const labels={ONLINE:"✓ ออนไลน์",OFFLINE:"✕ ออฟไลน์",CHECKING:"… กำลังตรวจสอบ",STALE:"! ไม่ได้ตรวจมานาน",TIMEOUT:"⌛ หมดเวลาติดต่อ",UNKNOWN:lastErrorCode==='DEVICE_ID_MISMATCH'||lastErrorCode==='RELAY_COUNT_MISMATCH'?"! ข้อมูลอุปกรณ์ไม่ตรง":"? ยังไม่ทราบสถานะ",WARNING:"! คำเตือน",ERROR:"✕ ผิดพลาด",REPLACED_ARCHIVED:"🗄 เปลี่ยนแทนแล้ว"};return `<span class="hardware-badge hw-${String(status||"UNKNOWN").toLowerCase()}">${labels[status]||labels.UNKNOWN}</span>`;}
 function hardware(){
