@@ -66,6 +66,17 @@ function buildAppMenu(layout, networkAccess, port) {
         dialog.showMessageBox(mainWindow, { type: "info", title: "ที่อยู่สำหรับมือถือ (ต้องต่อ Wi-Fi วงเดียวกัน)", message });
       } },
     ],
+  }, {
+    // Setting a custom application menu (above) replaces Electron's default menu outright,
+    // which is where "Reload" / "Force Reload" normally live — leaving no way to recover a
+    // renderer stuck on stale JS state (e.g. dropdowns that stopped responding) without fully
+    // quitting and reopening the app. Restore that escape hatch explicitly. role:"forceReload"
+    // keeps its default CmdOrCtrl+Shift+R accelerator.
+    label: "มุมมอง",
+    submenu: [
+      { role: "reload", label: "รีเฟรช" },
+      { role: "forceReload", label: "รีเฟรชแบบเต็ม (Hard Refresh)" },
+    ],
   }];
   Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 }
