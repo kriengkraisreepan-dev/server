@@ -110,6 +110,14 @@ function createWindow(layout, origin) {
   mainWindow.webContents.on("will-attach-webview", event => event.preventDefault());
   mainWindow.on("close", event => { if (!quitting) { event.preventDefault(); app.quit(); } });
   mainWindow.on("closed", () => { mainWindow = null; });
+  // New-device hardware setup sends staff out of the app to join the relay controller's temporary
+  // Wi-Fi Access Point and finish Wi-Fi through Windows' own network UI / captive portal, then back
+  // into this window. Round-tripping through another app like that can leave an Electron
+  // BrowserWindow OS-focused (frontmost, visually active) without its webContents actually holding
+  // DOM focus, so clicks land on nothing until the user does something else to "wake" it up —
+  // reported as "the naming/zone fields don't even register a click" right after a new-install USB
+  // flash. Explicitly re-focus the page whenever the window regains OS focus.
+  mainWindow.on("focus", () => { if (!mainWindow?.isDestroyed() && !mainWindow.webContents.isDestroyed()) mainWindow.webContents.focus(); });
   mainWindow.loadURL(origin).then(() => mainWindow?.show());
 }
 async function resolveLayoutAndMigration() {
