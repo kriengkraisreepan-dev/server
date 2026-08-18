@@ -365,7 +365,7 @@ function posProductCards(products,editable){return products.map(product=>`<div c
 function posTapCountsKey(){return "posTapCounts";}
 function loadPosTapCounts(){try{return JSON.parse(localStorage.getItem(posTapCountsKey()))||{};}catch{return {};}}
 function bumpPosTapCount(productId){const counts=loadPosTapCounts();counts[productId]=(counts[productId]||0)+1;try{localStorage.setItem(posTapCountsKey(),JSON.stringify(counts));}catch{}}
-function posFavoriteProducts(products,limit=8){const counts=loadPosTapCounts();return products.filter(product=>counts[product.id]>0).sort((a,b)=>(counts[b.id]||0)-(counts[a.id]||0)).slice(0,limit);}
+function posFavoriteProducts(products,limit=6){const counts=loadPosTapCounts();return products.filter(product=>counts[product.id]>0).sort((a,b)=>(counts[b.id]||0)-(counts[a.id]||0)).slice(0,limit);}
 // No data-pos-name/data-pos-category on these cards on purpose — the favorites row always shows
 // the same top picks regardless of the search box or category tab currently selected.
 function posFavoriteCards(products,editable){return products.map(product=>`<div class="card pos-product"><b>${escapeHtml(product.name)}</b><div class="total">${money(product.price)}</div>${posStock(product)}<button class="pos-add" data-pos-add="${product.id}" ${!editable||product.isOutOfStock?"disabled":""}>เพิ่ม</button></div>`).join("");}
