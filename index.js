@@ -605,28 +605,58 @@ app.post("/api/relay/:tableId", async (req, res) => { const table = tableById(re
 function billReportingTimestamp(bill) { return bill.playStartedAt || bill.createdAt; }
 app.get("/api/reports/summary", (req, res) => { const date = req.query.date || new Date().toISOString().slice(0, 10); const bills = store.bills.filter(b => b.status === "paid" && billReportingTimestamp(b).startsWith(date)); const sum = key => bills.reduce((s, b) => s + (b[key] || 0), 0); res.json({ date, billCount: bills.length, revenue: sum("total"), tableRevenue: sum("playAmount"), posRevenue: sum("foodAmount"), bills }); });
 app.get("/api/reports/analytics", (req, res) => {
-  const type = ["day", "year"].includes(req.query.type) ? req.query.type : "month";
+  const type = ["day", "year", "range"].includes(req.query.type) ? req.query.type : "month";
   const now = new Date();
   const period = req.query.period || (type === "year" ? String(now.getFullYear()) : type === "day" ? now.toISOString().slice(0, 10) : now.toISOString().slice(0, 7));
+  // type=range takes an inclusive from/to pair of Thai-calendar days. Anything malformed collapses
+  // to a single day rather than widening to "everything", so a bad query can never quietly report
+  // the whole history as if it were the requested range. Reversed input is swapped, not rejected.
+  const isoDay = value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || "")) ? String(value) : null;
+  const requestedFrom = isoDay(req.query.from) || now.toISOString().slice(0, 10);
+  const requestedTo = isoDay(req.query.to) || requestedFrom;
+  const [rangeFrom, rangeTo] = requestedFrom <= requestedTo ? [requestedFrom, requestedTo] : [requestedTo, requestedFrom];
   const partCache=new Map(),part=date=>{const key=String(date);if(partCache.has(key))return partCache.get(key);const shifted=new Date(new Date(date).getTime()+7*60*60*1000),value={year:String(shifted.getUTCFullYear()),month:String(shifted.getUTCMonth()+1).padStart(2,"0"),day:String(shifted.getUTCDate()).padStart(2,"0"),hour:String(shifted.getUTCHours()).padStart(2,"0")};partCache.set(key,value);return value;};
   const dateKey = bill => { const p = part(billReportingTimestamp(bill)); return `${p.year}-${p.month}-${p.day}`; };
   const periodKey = bill => { const p = part(billReportingTimestamp(bill)); return type === "year" ? p.year : type === "day" ? `${p.year}-${p.month}-${p.day}` : `${p.year}-${p.month}`; };
-  const bills = store.bills.filter(b => b.status === "paid" && periodKey(b) === period);
+  // Single membership test for every series on this endpoint (bills, point transactions, new
+  // members) so a custom range cannot end up applied to some of them and not others.
+  const matches = source => { const p = part(source); const day = `${p.year}-${p.month}-${p.day}`; return type === "range" ? day >= rangeFrom && day <= rangeTo : (type === "year" ? p.year : type === "day" ? day : `${p.year}-${p.month}`) === period; };
+  const bills = store.bills.filter(b => b.status === "paid" && matches(billReportingTimestamp(b)));
+  // Cost of goods sold uses the per-item cost snapshot taken when the bill was created. Bills made
+  // during the window where cost was not carried onto bill items have no snapshot; those fall back
+  // to the product's current cost so they read as an approximation instead of silently reporting a
+  // 100% margin. estimatedCostItems reports how many lines needed that fallback.
+  const productCostById = new Map((store.products || []).map(p => [p.id, Number(p.cost || 0)]));
+  const productCostByName = new Map((store.products || []).map(p => [String(p.name || ""), Number(p.cost || 0)]));
+  let estimatedCostItems = 0;
+  const itemCost = item => {
+    const quantity = Number(item.quantity || 0);
+    if (item.costTotal !== undefined) return Number(item.costTotal) || 0;
+    if (item.costTotalSatang !== undefined) return Number(item.costTotalSatang || 0) / 100;
+    if (item.cost !== undefined) return Number(item.cost || 0) * quantity;
+    estimatedCostItems += 1;
+    const unitCost = productCostById.get(item.productId) ?? productCostByName.get(String(item.name || "")) ?? 0;
+    return unitCost * quantity;
+  };
   const sum = key => Number(bills.reduce((s, b) => s + (b[key] || 0), 0).toFixed(2));
   const hours = Array.from({ length: 24 }, (_, hour) => ({ hour, bills: 0, revenue: 0 }));
   const weekdays = ["อาทิตย์", "จันทร์", "อังคาร", "พุธ", "พฤหัสบดี", "ศุกร์", "เสาร์"].map(name => ({ name, bills: 0, revenue: 0 }));
   const daily = {};
   const products = {}, members = {};
-  bills.forEach(b => { const p = part(billReportingTimestamp(b)); const hour = Number(p.hour); const day = new Date(`${p.year}-${p.month}-${p.day}T12:00:00+07:00`).getDay(); hours[hour].bills++; hours[hour].revenue += b.total; weekdays[day].bills++; weekdays[day].revenue += b.total; const key = dateKey(b); daily[key] = (daily[key] || 0) + b.total; if(b.memberId){const m=members[b.memberId]||{memberId:b.memberId,memberCode:b.memberCode||null,name:b.memberName||"-",revenue:0,visits:0};m.revenue+=Number(b.total||0);m.visits++;members[b.memberId]=m;}(b.items || []).forEach(item => { const x = products[item.name] || { name: item.name, quantity: 0, revenue: 0 }; x.quantity += item.quantity; x.revenue += item.total; products[item.name] = x; }); });
+  bills.forEach(b => { const p = part(billReportingTimestamp(b)); const hour = Number(p.hour); const day = new Date(`${p.year}-${p.month}-${p.day}T12:00:00+07:00`).getDay(); hours[hour].bills++; hours[hour].revenue += b.total; weekdays[day].bills++; weekdays[day].revenue += b.total; const key = dateKey(b); daily[key] = (daily[key] || 0) + b.total; if(b.memberId){const m=members[b.memberId]||{memberId:b.memberId,memberCode:b.memberCode||null,name:b.memberName||"-",revenue:0,visits:0};m.revenue+=Number(b.total||0);m.visits++;members[b.memberId]=m;}(b.items || []).forEach(item => { const x = products[item.name] || { name: item.name, quantity: 0, revenue: 0, cost: 0 }; x.quantity += item.quantity; x.revenue += item.total; x.cost += itemCost(item); products[item.name] = x; }); });
   const top = list => list.reduce((best, item) => item.bills > best.bills || (item.bills === best.bills && item.revenue > best.revenue) ? item : best, { bills: 0, revenue: 0 });
-  const memberRevenue=bills.filter(b=>b.memberId).reduce((total,b)=>total+Number(b.total||0),0), points=(store.memberPointTransactions||[]).filter(tx=>periodKey({createdAt:tx.createdAt})===period), newMembers=(store.members||[]).filter(member=>periodKey({createdAt:member.createdAt||""})===period).length, redeemers={}; bills.forEach(b=>{if(!b.memberId||!b.redeemedPoints)return;const x=redeemers[b.memberId]||{memberId:b.memberId,memberCode:b.memberCode||null,name:b.memberName||"-",points:0,discount:0};x.points+=Number(b.redeemedPoints||0);x.discount+=Number(b.redeemValue||0);redeemers[b.memberId]=x;});
+  const memberRevenue=bills.filter(b=>b.memberId).reduce((total,b)=>total+Number(b.total||0),0), points=(store.memberPointTransactions||[]).filter(tx=>matches(tx.createdAt)), newMembers=(store.members||[]).filter(member=>matches(member.createdAt||"")).length, redeemers={}; bills.forEach(b=>{if(!b.memberId||!b.redeemedPoints)return;const x=redeemers[b.memberId]||{memberId:b.memberId,memberCode:b.memberCode||null,name:b.memberName||"-",points:0,discount:0};x.points+=Number(b.redeemedPoints||0);x.discount+=Number(b.redeemValue||0);redeemers[b.memberId]=x;});
   // Attributed from the actual payment records (not bill.paymentMethod, which reads "mixed" for a
   // split bill) so a cash+transfer split bill correctly contributes to BOTH methods' totals.
   const billIds=new Set(bills.map(b=>b.id)), paidPayments=(store.payments||[]).filter(p=>p.status==="paid"&&billIds.has(p.billId));
   const paymentMethodTotals={};paidPayments.forEach(p=>{const key=p.method||"cash";const entry=paymentMethodTotals[key]||{method:key,amount:0,count:0};entry.amount+=Number(p.amount||0);entry.count+=1;paymentMethodTotals[key]=entry;});
   const paymentMethodTotalAmount=Object.values(paymentMethodTotals).reduce((total,entry)=>total+entry.amount,0);
   const paymentMethodBreakdown=Object.values(paymentMethodTotals).map(entry=>({...entry,percent:paymentMethodTotalAmount?Number((entry.amount/paymentMethodTotalAmount*100).toFixed(1)):0})).sort((a,b)=>b.amount-a.amount);
-  res.json({ type, period, billCount: bills.length, revenue: sum("total"), tableRevenue: sum("playAmount"), posRevenue: sum("foodAmount"), averageBill: bills.length ? Number((sum("total") / bills.length).toFixed(2)) : 0, peakHour: top(hours), peakWeekday: top(weekdays), hours, weekdays, daily: Object.entries(daily).sort(([a], [b]) => a.localeCompare(b)).map(([date, revenue]) => ({ date, revenue })), topProducts: Object.values(products).sort((a, b) => b.revenue - a.revenue).slice(0, 10), memberRevenue, nonMemberRevenue:Number((sum("total")-memberRevenue).toFixed(2)), topMembersBySpend:Object.values(members).sort((a,b)=>b.revenue-a.revenue).slice(0,10), topMembersByVisit:Object.values(members).sort((a,b)=>b.visits-a.visits).slice(0,10), pointsEarned:points.filter(tx=>tx.type==="EARN").reduce((total,tx)=>total+Number(tx.points||0),0), pointsVoided:Math.abs(points.filter(tx=>tx.type==="VOID").reduce((total,tx)=>total+Number(tx.points||0),0)), pointsExpired:Math.abs(points.filter(tx=>tx.type==="EXPIRE").reduce((total,tx)=>total+Number(tx.points||0),0)), redeemedPoints:bills.reduce((total,b)=>total+Number(b.redeemedPoints||0),0), rewardDiscount:bills.reduce((total,b)=>total+Number(b.redeemValue||0),0), outstandingPoints:(store.members||[]).reduce((total,m)=>total+Number(m.points||0),0), topRedeemers:Object.values(redeemers).sort((a,b)=>b.points-a.points).slice(0,10), newMembers, paymentMethodBreakdown });
+  // Table time has no cost of goods, so all of it is margin; only POS items carry a cost basis.
+  const posCost = Number(bills.reduce((total, b) => total + (b.items || []).reduce((s, i) => s + itemCost(i), 0), 0).toFixed(2));
+  const grossProfit = Number((sum("total") - posCost).toFixed(2));
+  const posProfit = Number((sum("foodAmount") - posCost).toFixed(2));
+  res.json({ type, period, from: type === "range" ? rangeFrom : null, to: type === "range" ? rangeTo : null, billCount: bills.length, revenue: sum("total"), tableRevenue: sum("playAmount"), posRevenue: sum("foodAmount"), posCost, grossProfit, posProfit, profitMargin: sum("total") ? Number((grossProfit / sum("total") * 100).toFixed(1)) : 0, posMargin: sum("foodAmount") ? Number((posProfit / sum("foodAmount") * 100).toFixed(1)) : 0, estimatedCostItems, averageBill: bills.length ? Number((sum("total") / bills.length).toFixed(2)) : 0, peakHour: top(hours), peakWeekday: top(weekdays), hours, weekdays, daily: Object.entries(daily).sort(([a], [b]) => a.localeCompare(b)).map(([date, revenue]) => ({ date, revenue })), topProducts: Object.values(products).map(item => ({ ...item, cost: Number(item.cost.toFixed(2)), profit: Number((item.revenue - item.cost).toFixed(2)) })).sort((a, b) => b.revenue - a.revenue).slice(0, 10), memberRevenue, nonMemberRevenue:Number((sum("total")-memberRevenue).toFixed(2)), topMembersBySpend:Object.values(members).sort((a,b)=>b.revenue-a.revenue).slice(0,10), topMembersByVisit:Object.values(members).sort((a,b)=>b.visits-a.visits).slice(0,10), pointsEarned:points.filter(tx=>tx.type==="EARN").reduce((total,tx)=>total+Number(tx.points||0),0), pointsVoided:Math.abs(points.filter(tx=>tx.type==="VOID").reduce((total,tx)=>total+Number(tx.points||0),0)), pointsExpired:Math.abs(points.filter(tx=>tx.type==="EXPIRE").reduce((total,tx)=>total+Number(tx.points||0),0)), redeemedPoints:bills.reduce((total,b)=>total+Number(b.redeemedPoints||0),0), rewardDiscount:bills.reduce((total,b)=>total+Number(b.redeemValue||0),0), outstandingPoints:(store.members||[]).reduce((total,m)=>total+Number(m.points||0),0), topRedeemers:Object.values(redeemers).sort((a,b)=>b.points-a.points).slice(0,10), newMembers, paymentMethodBreakdown });
 });
 app.get("/api/integrity", requirePermission(PERMISSIONS.SETTINGS_MANAGE), (req,res)=>res.json(integrityCheckService.run()));
 app.get("/api/health", requirePermission(PERMISSIONS.SETTINGS_MANAGE), (req,res)=>res.json(healthService.status()));

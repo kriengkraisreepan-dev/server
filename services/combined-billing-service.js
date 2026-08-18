@@ -46,6 +46,15 @@ class CombinedBillingService {
       total: Number(item.lineSubtotal),
       priceSatang: bahtToSatang(item.unitPrice),
       totalSatang: bahtToSatang(item.lineSubtotal),
+      // Unit cost is snapshotted onto the bill rather than looked up from the product at report
+      // time, so editing a product's cost later never rewrites the profit of past sales. The POS
+      // order item already captures unitCost (productSnapshot); it was simply being dropped here,
+      // which left every bill with no cost basis. Field names match the ones already present on
+      // pre-existing bills so historical and new bills report through the same path.
+      cost: Number(item.unitCost || 0),
+      costSatang: bahtToSatang(item.unitCost || 0),
+      costTotal: Number(item.unitCost || 0) * Number(item.quantity),
+      costTotalSatang: bahtToSatang(Number(item.unitCost || 0) * Number(item.quantity)),
       posOrderId: order.id,
       posOrderNumber: order.orderNumber
     })));

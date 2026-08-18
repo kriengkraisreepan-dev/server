@@ -130,7 +130,12 @@ class InventoryService {
   updateProduct(id, input, actorId) {
     const current = this.repository.findProduct(id); if (!current) throw new Error("Product not found");
     this.normalizeLegacyProducts(); const product = this.repository.findProduct(id); const before = { ...product };
-    this.validateProduct(input, product); product.active = product.status === "ACTIVE"; product.updatedAt = this.now(); product.updatedBy = actorId; this.repository.saveProduct(product); this.audit("PRODUCT_UPDATED", actorId, { before, after: product }); return this.publicProduct(product);
+    // validateProduct builds and returns a NEW object ({ ...existing } plus the validated changes)
+    // and deliberately does not mutate what it is given, so its result has to be applied back onto
+    // the stored record. It was being called for its (non-existent) side effects and the result
+    // dropped, which meant every product edit validated correctly, returned 200, and saved the
+    // completely unchanged product — price, cost, name and category edits all silently did nothing.
+    Object.assign(product, this.validateProduct(input, product)); product.active = product.status === "ACTIVE"; product.updatedAt = this.now(); product.updatedBy = actorId; this.repository.saveProduct(product); this.audit("PRODUCT_UPDATED", actorId, { before, after: product }); return this.publicProduct(product);
   }
   changeProductStatus(id, status, actorId) {
     const product = this.repository.findProduct(id); if (!product) throw new Error("Product not found"); if (!PRODUCT_STATUS.includes(status)) throw new Error("Invalid product status");
