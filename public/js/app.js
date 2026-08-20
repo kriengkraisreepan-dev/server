@@ -930,26 +930,41 @@ const bindColumnFilters11=bind;bind=function(){bindColumnFilters11();bindColumnF
 // naming its own rate — the point of the change is that the price is explainable at the counter.
 // The lines come from bill.rateSegments, frozen when the session closed, so a reprint months later
 // still shows the rates that were actually charged rather than today's rules.
+const baht2=n=>{const value=Number(n)||0;return `฿${value.toLocaleString("th-TH",{minimumFractionDigits:Number.isInteger(value)?0:2,maximumFractionDigits:2})}`;};
 function rateSegmentRows9h(bill){
   const clock=iso=>new Date(iso).toLocaleTimeString("th-TH",{hour:"2-digit",minute:"2-digit"});
   return (bill.rateSegments||[]).map(segment=>{
     const minutes=Math.round(segment.seconds/60);
     const label=segment.ruleName?` · ${escapeHtml(segment.ruleName)}`:"";
     const paused=segment.pausedSeconds?` · พัก ${Math.round(segment.pausedSeconds/60)} น.`:"";
-    return `<tr><td>${clock(segment.from)}–${clock(segment.to)}<br><small>${money(segment.rateSatang/100)}/ชม. · ${minutes} นาที${paused}${label}</small></td><td class="right">${money(segment.satang/100)}</td></tr>`;
+    return `<tr><td>${clock(segment.from)}–${clock(segment.to)}<br><small>${baht2(segment.rateSatang/100)}/ชม. · ${minutes} นาที${paused}${label}</small></td><td class="right">${baht2(segment.satang/100)}</td></tr>`;
   }).join("");
 }
 const printBillRates9h=printBill;printBill=function(id){
   const bill=state.bills.find(item=>item.id===id);
-  if(!bill||!Array.isArray(bill.rateSegments)||!bill.rateSegments.length)return printBillRates9h(id);
+  if(!bill)return printBillRates9h(id);
+  const segments=Array.isArray(bill.rateSegments)?bill.rateSegments:[];
+  // Itemise ONLY when the session really spanned more than one rate. Someone who played entirely
+  // inside a single rate gets the plain "ค่าบริการโต๊ะ" row they have always had — a time breakdown
+  // of one line explains nothing and only makes a 58mm receipt longer.
+  const itemise=segments.length>=2;
+  // The bill rounds its grand total up to a whole baht, so the lines above it can end in satang and
+  // fall short of it — ฿728.34 of table time printed under a ฿729.00 total. That gap was invisible
+  // while the table charge was one row; with the charge itemised a customer WILL add the lines up.
+  // Print the rounding as its own row so the receipt reconciles to the satang.
+  const roundingSatang=Math.round((Number(bill.total||0)-(Number(bill.playAmount||0)+Number(bill.foodAmount||0)))*100);
+  if(!itemise)return printBillRates9h(id);
   const open=window.open;
   window.open=function(...args){
     const popup=open.apply(window,args);
     if(!popup)return popup;
     const write=popup.document.write.bind(popup.document);
     popup.document.write=html=>{
-      const original=`<tr><td>ค่าบริการโต๊ะ</td><td class="right">${money(bill.playAmount)}</td></tr>`;
-      write(String(html).replace(original,rateSegmentRows9h(bill)));
+      let out=String(html);
+      if(itemise)out=out.replace(`<tr><td>ค่าบริการโต๊ะ</td><td class="right">${money(bill.playAmount)}</td></tr>`,rateSegmentRows9h(bill));
+      if(roundingSatang)out=out.replace(`</table><div class="line"></div><table class="total">`,
+        `<tr><td>ปัดเศษ</td><td class="right">${roundingSatang>0?"+":"-"}${baht2(Math.abs(roundingSatang)/100)}</td></tr></table><div class="line"></div><table class="total">`);
+      write(out);
     };
     return popup;
   };
