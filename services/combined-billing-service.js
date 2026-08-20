@@ -176,22 +176,54 @@ class CombinedBillingService {
     this.billingService.voidBill(bill, "ไม่สามารถสร้างรายการชำระเงินได้ (เช่น ยอดแบ่งชำระไม่ถูกต้อง)", actorId);
   }
 
-  voidCombinedBill(bill, actorId) {
+  // "Put these drinks back on the table's tab" is only meaningful while the tab they came from is
+  // still open. It matches the SESSION, not just the table: once a table closes and reopens for the
+  // next customer there IS an open session again, and moving the previous customer's drinks onto it
+  // would bill the wrong person.
+  canReturnOrdersToTab(bill) {
+    if (!bill?.partialOrdersOnly || !bill.tableSessionId) return false;
+    if (!Array.isArray(bill.posOrderIds) || !bill.posOrderIds.length) return false;
+    const session = this.sessionRepository.findOpenSessionByTable(bill.tableId);
+    return Boolean(session && session.id === bill.tableSessionId && ["ACTIVE", "PAUSED"].includes(session.state));
+  }
+
+  // Three outcomes, because voiding a bill says nothing on its own about where the goods went.
+  // Each combination of (stock, money) is a different real situation:
+  //   CANCEL_RESTORE_STOCK — the sale never happened; goods go back on the shelf, nothing charged.
+  //   RETURN_TO_TAB        — goods were handed over and are still owed; un-bill them so the final
+  //                          checkout picks them up. Stock stays deducted: it left the shelf.
+  //   CANCEL_KEEP_STOCK    — goods were consumed but will not be charged (comp, waste, write-off).
+  //                          Stock stays deducted, nothing collected.
+  // Restoring stock for goods the customer actually drank is the one outcome that silently
+  // corrupts inventory, which is why it is no longer the only option.
+  voidCombinedBill(bill, actorId, voidMode = "CANCEL_RESTORE_STOCK") {
     if (!Array.isArray(bill.posOrderIds) || !bill.posOrderIds.length) return [];
-    const restored = [];
+    if (voidMode === "RETURN_TO_TAB" && !this.canReturnOrdersToTab(bill)) {
+      const error = new Error("ไม่สามารถเอารายการกลับไปรวมบิลโต๊ะได้ เพราะโต๊ะปิดไปแล้วหรือเปิดให้ลูกค้ารายใหม่แล้ว");
+      error.code = "TAB_NO_LONGER_OPEN";
+      throw error;
+    }
+    const affected = [];
     for (const id of bill.posOrderIds) {
       const order = this.posOrderRepository.findById(id);
       if (!order || order.billingStatus !== "BILLED" || order.billedBillId !== bill.id) continue;
-      this.inventoryService.restoreStockForCancelledSale(order.items, { referenceId: order.id, actorId, reason: `Void combined bill ${bill.receiptNumber || bill.number}`, persist: false });
-      order.status = "CANCELLED";
-      order.billingStatus = "VOIDED";
-      order.voidedBillId = bill.id;
-      order.voidedAt = new Date().toISOString();
-      order.voidedBy = actorId;
-      restored.push(order.id);
+      if (voidMode === "RETURN_TO_TAB") {
+        // Un-billed, not cancelled — the order is still a live sale, it just has no bill again.
+        // Same shape as reopenUnpaidBill() above.
+        Object.assign(order, { billingStatus: "UNBILLED", billedBillId: null, billedAt: null, billedBy: null });
+      } else {
+        if (voidMode !== "CANCEL_KEEP_STOCK") this.inventoryService.restoreStockForCancelledSale(order.items, { referenceId: order.id, actorId, reason: `Void combined bill ${bill.receiptNumber || bill.number}`, persist: false });
+        order.status = "CANCELLED";
+        order.billingStatus = "VOIDED";
+        order.voidedBillId = bill.id;
+        order.voidedAt = new Date().toISOString();
+        order.voidedBy = actorId;
+        order.stockRestored = voidMode !== "CANCEL_KEEP_STOCK";
+      }
+      affected.push(order.id);
     }
-    if (restored.length) this.posOrderRepository.persist();
-    return restored;
+    if (affected.length) this.posOrderRepository.persist();
+    return affected;
   }
 
   // "Pay for these drinks now, keep playing" — bills a subset of a table's confirmed, still-unbilled

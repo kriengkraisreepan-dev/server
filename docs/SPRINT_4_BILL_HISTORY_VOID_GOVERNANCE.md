@@ -15,6 +15,27 @@ Selecting **รายละเอียด** shows the receipt number, table, st
 - Pending payments are cancelled before voiding; creating or confirming a payment against a voided bill is rejected.
 - The audit trail receives `BILL_VOIDED` and retains the supplied actor and receipt number.
 
+## Void modes (added later, alongside mid-session split bills)
+
+Voiding a bill that carried products says nothing on its own about where the goods went, so the
+request also carries a `voidMode` and the bill records it. Each mode is a different combination of
+stock and revenue:
+
+| `voidMode` | Stock | Charged | Situation |
+| --- | --- | --- | --- |
+| `CANCEL_RESTORE_STOCK` | returned to the shelf | no | the goods were never handed over |
+| `RETURN_TO_TAB` | stays deducted | on the final bill | goods delivered, billed the wrong way — the orders go back to `UNBILLED` |
+| `CANCEL_KEEP_STOCK` | stays deducted | no | goods consumed but written off (comp, waste) |
+
+`CANCEL_RESTORE_STOCK` is the default and the behaviour every earlier client gets, since `voidMode`
+is optional. `RETURN_TO_TAB` is accepted only while the *session the bill was created from* is still
+open — matching the session and not merely the table, because a table that has closed and reopened
+for the next customer would otherwise absorb the previous customer's drinks. The server rejects it
+with `409 TAB_NO_LONGER_OPEN` before mutating anything; the dialog greys the option out with the
+reason rather than hiding it.
+
+`BILL_VOIDED` carries `voidMode` so reporting can separate an honest mistake from a comp.
+
 ## Accountability
 
 Audit records now contain `actorId`. Until Login is introduced, events default to `SYSTEM`; a missing/blank supplied value resolves to `UNKNOWN`. The Void API accepts an optional `actorId` body property or `x-actor-id` request header for a future user layer.
