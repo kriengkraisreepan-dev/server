@@ -25,3 +25,19 @@
    hidden. The category tabs and the search box were applying .hidden correctly the whole time; the
    cards just kept rendering, which looked like the filters did nothing at all. */
 .hidden{display:none!important}
+
+/* On a phone the POS grid collapses to a single column, which left the cart sitting *below* the
+   entire product grid: staff had to scroll down to create the draft, back up to tap products, then
+   down again to confirm. Ordering the cart first puts the draft/confirm controls where the page
+   already opens, and keeping it stuck to the top of the viewport means "ยืนยัน" stays reachable
+   while scrolling the products instead of forcing a trip back down.
+   Flex, not the collapsed grid: in a one-column grid each section gets its own row, so the cart's
+   containing block is exactly its own box and position:sticky would have nowhere to travel. As a
+   column flex item its containing block is the whole .pos-layout, so it can stay put past the
+   product list. The height caps stop a full cart from swallowing the screen — it scrolls
+   internally beyond them and never takes more than about half the viewport. */
+@media (max-width:900px){
+  .pos-layout{display:flex;flex-direction:column}
+  .pos-cart{order:-1;position:sticky;top:0;z-index:3;max-height:50vh;overflow:auto}
+  .pos-items{max-height:22vh}
+}
