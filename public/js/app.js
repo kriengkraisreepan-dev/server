@@ -32,6 +32,67 @@ function bills(){ const result=billHistory||{items:state.bills,pagination:{page:
 // as the original print, per the Production Acceptance Checklist "reprint uses same number".
 function reprintBillFromHistory(id){ const bill=(billHistory?.items||[]).find(item=>item.id===id)||state.bills.find(item=>item.id===id); if(!bill) return notify("ไม่พบบิลนี้",true); if(!state.bills.some(item=>item.id===id)) state.bills=[...state.bills,bill]; printBill(id); }
 function reports(){ const a=analytics; const periodInput=reportType==="range"?`<input name="from" type="date" value="${reportFrom}" required><input name="to" type="date" value="${reportTo}" required>`:reportType==="year"?`<input name="period" type="number" min="2020" max="2100" value="${reportPeriod}" required>`:reportType==="day"?`<input name="period" type="date" value="${reportPeriod}" required>`:`<input name="period" type="month" value="${reportPeriod}" required>`; if(reportError)return `<div class="card"><h3>โหลดรายงานไม่สำเร็จ</h3><p class="muted">${escapeHtml(reportError)}</p><button id="retryReports">ลองใหม่</button></div>`; if(!a)return `<div class="card">กำลังโหลดรายงาน…</div>`; const hour=a.peakHour.bills?`${String(a.peakHour.hour).padStart(2,"0")}:00–${String(a.peakHour.hour).padStart(2,"0")}:59`:"ยังไม่มีข้อมูล"; const weekday=a.peakWeekday.bills?a.peakWeekday.name:"ยังไม่มีข้อมูล"; const max=Math.max(...a.daily.map(x=>x.revenue),1); return `<div class="card"><form id="reportFilter" class="two"><select name="type" id="reportType"><option value="day" ${reportType==="day"?"selected":""}>รายวัน</option><option value="month" ${reportType==="month"?"selected":""}>รายเดือน</option><option value="year" ${reportType==="year"?"selected":""}>รายปี</option><option value="range" ${reportType==="range"?"selected":""}>กำหนดช่วงวันที่เอง</option></select>${periodInput}<button>แสดงรายงาน</button></form></div><div class="grid" style="margin-top:18px"><div class="card"><div class="muted">รายได้รวม</div><div class="stat">${money(a.revenue)}</div></div><div class="card"><div class="muted">ค่าโต๊ะ / POS</div><div class="stat">${money(a.tableRevenue)} / ${money(a.posRevenue)}</div></div><div class="card"><div class="muted">จำนวนบิล / ยอดเฉลี่ย</div><div class="stat">${a.billCount} / ${money(a.averageBill)}</div></div><div class="card"><div class="muted">ช่วงเวลาลูกค้าเยอะที่สุด</div><div class="stat">${hour}</div><small>${a.peakHour.bills} บิล · ${money(a.peakHour.revenue)}</small></div></div>${profitSection(a)}`; }
+// Axis ticks on round numbers (1/2/2.5/5 × 10^n) covering the data, so the gridlines land on
+// values a person would actually say out loud rather than on 1,337.
+function niceTicks(min,max){
+  const span=(max-min)||Math.abs(max)||1, rough=span/4, magnitude=Math.pow(10,Math.floor(Math.log10(rough)));
+  const step=[1,2,2.5,5,10].map(multiple=>multiple*magnitude).find(candidate=>candidate>=rough)||10*magnitude;
+  const lo=Math.floor(min/step)*step, hi=Math.ceil(max/step)*step, ticks=[];
+  for(let value=lo;value<=hi+step/2;value+=step)ticks.push(Number(value.toFixed(6)));
+  return {ticks,lo,hi:hi===lo?lo+step:hi};
+}
+// Bars are revenue, the line is profit — BOTH in baht on ONE axis. The obvious "combo" here would
+// have been revenue bars against a margin-% line on a second y-scale, and that is deliberately not
+// what this is: with two independent scales the crossings and gaps mean whatever the scales were
+// chosen to make them mean. Same-unit keeps every comparison honest, and it reads better anyway —
+// the gap between a bar's cap and the line IS that product's cost.
+function profitChart(products){
+  if(!products.length)return `<p class="muted">ไม่มีข้อมูลสินค้าในช่วงเวลานี้</p>`;
+  const W=760,H=340,padL=70,padR=18,padT=22,padB=86,plotW=W-padL-padR,plotH=H-padT-padB;
+  const revenues=products.map(item=>Number(item.revenue||0)),profits=products.map(item=>Number(item.profit||0));
+  const {ticks,lo,hi}=niceTicks(Math.min(0,...profits),Math.max(0,...revenues,...profits));
+  const y=value=>padT+plotH-((value-lo)/(hi-lo))*plotH;
+  const band=plotW/products.length,barW=Math.min(24,band*0.5),centre=index=>padL+band*index+band/2;
+  const zero=y(0);
+  const grid=ticks.map(tick=>`<line x1="${padL}" x2="${W-padR}" y1="${y(tick).toFixed(1)}" y2="${y(tick).toFixed(1)}" stroke="var(--chart-grid)" stroke-width="1"/><text x="${padL-10}" y="${(y(tick)+4).toFixed(1)}" text-anchor="end" class="chart-axis-text">${Math.round(tick).toLocaleString("th-TH")}</text>`).join("");
+  // 4px rounded cap, square where it meets the baseline — drawn as a path because rx would round
+  // the foot of the bar too and detach it from the axis it is measured from.
+  const column=(x,top,width,base)=>{const height=Math.abs(base-top),radius=Math.min(4,width/2,height);
+    return `<path d="M${x} ${base} L${x} ${top+radius} Q${x} ${top} ${x+radius} ${top} L${x+width-radius} ${top} Q${x+width} ${top} ${x+width} ${top+radius} L${x+width} ${base} Z" fill="var(--chart-series-1)"/>`;};
+  const bars=products.map((item,index)=>{const value=Number(item.revenue||0);if(!value)return "";return column(centre(index)-barW/2,y(value),barW,zero);}).join("");
+  const line=`<polyline points="${products.map((item,index)=>`${centre(index).toFixed(1)},${y(Number(item.profit||0)).toFixed(1)}`).join(" ")}" fill="none" stroke="var(--chart-series-2)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  const dots=products.map((item,index)=>`<circle cx="${centre(index).toFixed(1)}" cy="${y(Number(item.profit||0)).toFixed(1)}" r="4.5" fill="var(--chart-series-2)" stroke="var(--surface)" stroke-width="2"/>`).join("");
+  // One direct label, on the biggest seller. A number over every bar is noise nobody reads; the
+  // rest of the values live in the tooltip and the table below.
+  const best=revenues.indexOf(Math.max(...revenues));
+  const peak=revenues[best]?`<text x="${centre(best).toFixed(1)}" y="${(y(revenues[best])-10).toFixed(1)}" text-anchor="middle" class="chart-peak-text">${money(revenues[best])}</text>`:"";
+  const labels=products.map((item,index)=>{const name=String(item.name||"");const short=name.length>13?`${name.slice(0,12)}…`:name;const x=centre(index).toFixed(1),ly=(padT+plotH+16).toFixed(1);
+    return `<text x="${x}" y="${ly}" text-anchor="end" transform="rotate(-32 ${x} ${ly})" class="chart-axis-text">${escapeHtml(short)}</text>`;}).join("");
+  const hits=products.map((item,index)=>{const revenue=Number(item.revenue||0),margin=revenue?Math.round(Number(item.profit||0)/revenue*100):0;
+    return `<rect x="${(padL+band*index).toFixed(1)}" y="${padT}" width="${band.toFixed(1)}" height="${plotH}" fill="transparent" data-chart-point="${escapeHtml(item.name||"")}|${item.quantity||0}|${money(revenue)}|${money(Number(item.cost||0))}|${money(Number(item.profit||0))}|${margin}"/>`;}).join("");
+  return `<div class="chart-legend"><span><i style="background:var(--chart-series-1)"></i>ยอดขาย</span><span><i class="line" style="background:var(--chart-series-2)"></i>กำไร</span></div>
+    <div class="chart-scroll"><div class="chart-holder"><svg viewBox="0 0 ${W} ${H}" class="chart-svg" role="img" aria-label="กราฟยอดขายและกำไรรายสินค้า">
+      ${grid}${lo<0?`<line x1="${padL}" x2="${W-padR}" y1="${zero.toFixed(1)}" y2="${zero.toFixed(1)}" stroke="var(--chart-axis)" stroke-width="1"/>`:""}
+      ${bars}${line}${dots}${peak}${labels}${hits}
+    </svg><div id="chartTip" class="chart-tip hidden"></div></div></div>`;
+}
+function bindProfitChart(){
+  const holder=document.querySelector(".chart-holder"),tip=$("#chartTip");
+  if(!holder||!tip)return;
+  holder.querySelectorAll("[data-chart-point]").forEach(hit=>{
+    const show=event=>{const [name,quantity,revenue,cost,profit,margin]=hit.dataset.chartPoint.split("|");
+      tip.innerHTML=`<b>${escapeHtml(name)}</b><br>ขาย ${quantity} ชิ้น<br>ยอดขาย ${revenue}<br>ต้นทุน ${cost}<br>กำไร ${profit} (${margin}%)`;
+      tip.classList.remove("hidden");
+      const box=holder.getBoundingClientRect(),tipBox=tip.getBoundingClientRect();
+      // Clamp inside the chart so a tooltip on the last product doesn't hang off the right edge.
+      const left=Math.min(Math.max(event.clientX-box.left+12,0),Math.max(box.width-tipBox.width,0));
+      tip.style.left=`${left}px`;tip.style.top=`${Math.max(event.clientY-box.top-12,0)}px`;};
+    hit.addEventListener("mouseenter",show);
+    hit.addEventListener("mousemove",show);
+    hit.addEventListener("mouseleave",()=>tip.classList.add("hidden"));
+  });
+  holder.addEventListener("mouseleave",()=>tip.classList.add("hidden"));
+}
 // Profit is revenue minus the cost of goods sold on POS items; table time carries no cost, so it
 // is entirely margin. Shown to OWNER/MANAGER only — cost prices are not staff-facing.
 function profitSection(a){
@@ -45,7 +106,7 @@ function profitSection(a){
     <div class="card"><div class="muted">ต้นทุนสินค้าที่ขาย</div><div class="stat">${money(a.posCost||0)}</div><small>จากยอด POS ${money(a.posRevenue||0)}</small></div>
     <div class="card"><div class="muted">กำไรจาก POS</div><div class="stat" style="color:${Number(a.posProfit||0)<0?"#f87171":"#4ade80"}">${money(a.posProfit||0)}</div><small>อัตรากำไร POS ${a.posMargin||0}%</small></div>
     <div class="card"><div class="muted">กำไรจากค่าโต๊ะ</div><div class="stat" style="color:#4ade80">${money(a.tableRevenue||0)}</div><small>ค่าโต๊ะไม่มีต้นทุนสินค้า</small></div>
-  </div><div class="card" style="margin-top:18px"><h3>กำไรรายสินค้า</h3><table><tr><th>สินค้า</th><th class="right">จำนวน</th><th class="right">ยอดขาย</th><th class="right">ต้นทุน</th><th class="right">กำไร</th></tr>${rows}</table>${note}</div>`;
+  </div><div class="card" style="margin-top:18px"><h3>กำไรรายสินค้า</h3><p class="muted">แท่ง = ยอดขาย · เส้น = กำไร · ระยะห่างระหว่างยอดแท่งกับเส้นคือต้นทุนของสินค้านั้น</p>${profitChart(a.topProducts||[])}<details class="chart-table"><summary>ดูตัวเลขทั้งหมด</summary><table><tr><th>สินค้า</th><th class="right">จำนวน</th><th class="right">ยอดขาย</th><th class="right">ต้นทุน</th><th class="right">กำไร</th></tr>${rows}</table></details>${note}</div>`;
 }
 let settingsTabView="general";
 function settingsGeneralPanel(){ const s=state.settings; return `<div class="card form"><h3>ตั้งค่าร้าน</h3><form id="settingsForm"><label>ชื่อร้าน</label><input name="shopName" value="${s.shopName}"><label>จำนวนโต๊ะ</label><input name="tableCount" type="number" min="1" max="100" step="1" required value="${state.tables.length}"><small class="muted">เมื่อเพิ่ม ระบบจะสร้างโต๊ะใหม่อัตโนมัติ เมื่อลด ระบบจะลบโต๊ะลำดับท้ายที่ว่างเท่านั้นและสร้าง Backup ก่อนเปลี่ยน</small><label>อัตราค่าโต๊ะต่อชั่วโมง</label><input name="hourlyRate" type="number" min="0" value="${s.hourlyRate}"><label>ค่าบริการขั้นต่ำ</label><input name="minimumCharge" type="number" min="0" value="${s.minimumCharge}"><label>PromptPay ID (สำหรับแสดงในขั้นต่อไป)</label><input name="promptPayId" value="${s.promptPayId||""}"><label>โฟลเดอร์สำรองข้อมูลภายนอก (ไม่บังคับ)</label><input name="backupExternalPath" placeholder="เช่น D:\\Backups หรือ \\\\NAS\\backups" value="${escapeHtml(s.backupExternalPath||"")}"><small class="muted">ถ้าระบุ ระบบจะคัดลอกไฟล์สำรองไปที่นี่ด้วยทุกครั้งที่สำรองข้อมูล (เช่น ไดรฟ์ USB ที่เสียบค้างไว้) โดยไม่กระทบการสำรองข้อมูลหลักถ้าไดรฟ์นี้ไม่พร้อมใช้งาน</small><button>บันทึก</button></form><p class="muted">หลังเพิ่มโต๊ะ ให้ไป Hardware Manager เพื่อผูกโต๊ะใหม่กับ Device และช่อง Relay</p></div>${backupSection()}`; }
@@ -856,6 +917,9 @@ const bindOrdersBill9d=bind;bind=function(){bindOrdersBill9d();document.querySel
 // bill correctly counts toward BOTH methods (unlike bill.paymentMethod, which just reads "mixed").
 const METHOD_LABELS9g={cash:"เงินสด",transfer:"โอนเงิน",qr:"QR Payment"};
 const reportsPaymentBreakdown9g=reports;reports=function(){const base=reportsPaymentBreakdown9g();if(!analytics||!analytics.paymentMethodBreakdown?.length)return base;const rows=analytics.paymentMethodBreakdown.map(entry=>`<div class="item"><span>${escapeHtml(METHOD_LABELS9g[entry.method]||entry.method)}</span><span>${money(entry.amount)} · ${entry.count} บิล · ${entry.percent}%</span></div>`).join("");return base+`<div class="card" style="margin-top:18px"><h3>แยกตามวิธีชำระเงิน</h3><div class="movement-list">${rows}</div></div>`;};
+// The reports page rebuilds its chart on every render, so the tooltip handlers have to be re-bound
+// with it — same override pattern every other late feature in this file uses.
+const bindProfitChart11=bind;bind=function(){bindProfitChart11();bindProfitChart();};
 // Column filters are attached after every render because both tables are rebuilt from scratch on
 // each row action; bindColumnFilters also re-applies the remembered values so a filtered view
 // survives editing a member or toggling a product.

@@ -65,3 +65,24 @@ select.col-filter{padding:6px 4px}
 /* The table wrapper already scrolls sideways on a phone; keep the filter controls from collapsing
    to unusable slivers when it does. */
 @media (max-width:750px){ .col-filter-row td{min-width:110px} }
+/* Per-product profit combo chart. Series colours are validated against this app's own dark surface
+   (#172033): worst-pair CVD ΔE 26.8, normal-vision 31.8, both marks over 3:1 contrast — so the two
+   series stay separable for colour-blind readers, and the legend carries identity regardless.
+   Axis and value text deliberately wears the normal text tokens, never a series colour: these hues
+   are picked to read as MARKS on the surface, not as small text. */
+:root{--chart-series-1:#3987e5;--chart-series-2:#d95926;--chart-grid:#243149;--chart-axis:#3d4d6b}
+.chart-legend{display:flex;gap:16px;flex-wrap:wrap;margin:10px 0 4px;color:#b5c0d3;font-size:13px}
+.chart-legend span{display:inline-flex;align-items:center;gap:7px}
+.chart-legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
+.chart-legend i.line{height:3px;border-radius:2px;width:16px}
+/* The chart needs real width to stay legible; on a phone it scrolls sideways inside its own box
+   rather than shrinking the labels into illegibility or forcing the whole page to scroll. */
+.chart-scroll{overflow-x:auto;overflow-y:hidden}
+.chart-holder{position:relative;min-width:640px}
+.chart-svg{width:100%;height:auto;display:block}
+.chart-axis-text{fill:#9aa9bf;font-size:11px}
+.chart-peak-text{fill:#edf2f7;font-size:12px;font-weight:700}
+.chart-tip{position:absolute;pointer-events:none;background:#0c1424;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:12px;line-height:1.55;color:#edf2f7;white-space:nowrap;z-index:4;box-shadow:0 6px 18px #0008}
+.chart-table{margin-top:16px}
+.chart-table summary{cursor:pointer;color:#b5c0d3;padding:6px 0}
+.chart-table table{margin-top:8px}
