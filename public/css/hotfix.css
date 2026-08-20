@@ -86,3 +86,11 @@ select.col-filter{padding:6px 4px}
 .chart-table{margin-top:16px}
 .chart-table summary{cursor:pointer;color:#b5c0d3;padding:6px 0}
 .chart-table table{margin-top:8px}
+
+/* Waiting-reservation banner. Gold border rather than a red alarm: this is an opportunity to seat
+   someone, not a fault — and the POS/table screens already use red for destructive actions. */
+.waiting-reservations{border-color:var(--gold);background:#1e2233;margin-bottom:16px}
+.waiting-reservations h3{color:var(--gold);font-size:1rem}
+.waiting-reservations .item{gap:12px}
+.waiting-reservations .item span:last-child{display:flex;align-items:center;gap:10px;white-space:nowrap}
+@media (max-width:600px){.waiting-reservations .item{flex-direction:column;align-items:flex-start}.waiting-reservations .item span:last-child{width:100%;justify-content:space-between}}
