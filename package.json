@@ -1,6 +1,6 @@
 {
   "name": "server",
-  "version": "1.0.3",
+  "version": "1.0.15",
   "description": "",
   "main": "electron/main.js",
   "scripts": {
