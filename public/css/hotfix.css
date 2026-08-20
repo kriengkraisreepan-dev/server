@@ -41,3 +41,14 @@
   .pos-cart{order:-1;position:sticky;top:0;z-index:3;max-height:50vh;overflow:auto}
   .pos-items{max-height:22vh}
 }
+
+/* Void mode picker: each choice is a different real outcome for stock and money, so the hint under
+   each label matters as much as the label — lay them out as readable rows rather than a cramped
+   radio line, and grey out the tab option rather than hiding it so the reason it is unavailable
+   stays visible. */
+.void-modes{display:grid;gap:8px;margin:6px 0 14px}
+.void-mode{display:flex;gap:10px;align-items:flex-start;margin:0;padding:10px;border:1px solid var(--line);border-radius:9px;cursor:pointer}
+.void-mode input{width:auto;margin:2px 0 0}
+.void-mode small{color:#9aa9bf}
+.void-mode.disabled{opacity:.5;cursor:not-allowed}
+.void-mode:has(input:checked){border-color:var(--gold)}
