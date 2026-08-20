@@ -66,7 +66,7 @@ class CombinedBillingService {
     if (requestedDiscountSatang < 0) { const error = new Error("Discount amount must not be negative"); error.code = "INVALID_DISCOUNT_AMOUNT"; throw error; }
     const orders = this.ordersForSession(session);
     const items = this.itemSnapshot(orders);
-    const rawTableChargeSatang = this.sessionService.previewCharge(session.id);
+    const { chargeSatang: rawTableChargeSatang, segments: rateSegments } = this.sessionService.previewBreakdown(session.id);
     const discountSatang = Math.min(requestedDiscountSatang, rawTableChargeSatang);
     const tableChargeSatang = rawTableChargeSatang - discountSatang;
     const productSatang = items.reduce((sum, item) => sum + item.totalSatang, 0);
@@ -79,6 +79,7 @@ class CombinedBillingService {
       tableName: table.name,
       memberId: table.memberId || null,
       playDurationSeconds: this.sessionService.billableSeconds(session),
+      rateSegments,
       posOrders: orders.map(order => ({ id: order.id, orderNumber: order.orderNumber, total: order.total })),
       items,
       breakdown: {

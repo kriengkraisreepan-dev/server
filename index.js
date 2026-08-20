@@ -313,13 +313,21 @@ function apiBaht(satang) { return Number(satangToBaht(satang)); }
 function enrichTable(table) { const session = sessionRepository.findSessionByTable(table.id); const active = table.status === "playing" || table.status === "paused" || table.status === "awaiting_payment"; return { ...table, ...hardwareService.tableHardware(table), elapsedSeconds: session ? sessionService.billableSeconds(session) : elapsedSeconds(table), currentPrice: active ? apiBaht(tableChargeSatang(table)) : 0, member: memberById(table.memberId) || null, sessionState: session?.state || null }; }
 function createBill(table, closedSession, loggedInActorId = "SYSTEM") { return billingService.createBillDraft({ table, session: closedSession, memberName: memberById(table.memberId)?.name || "ลูกค้าทั่วไป", actorId: loggedInActorId }); }
 // Resolves the pricing profile to snapshot at table-start time: the table's own override
-// (table.pricingProfileId) if set and still valid, else settings.defaultPricingProfileId — then
-// applies any matching Happy Hour rule for "now". Called once per start; never recomputed mid-session.
+// (table.pricingProfileId) if set and still valid, else settings.defaultPricingProfileId.
+//
+// The profile is returned RAW — base rate and Happy Hour rules intact — and snapshotted that way on
+// the session. It used to be passed through resolveEffectiveProfile first, which overwrote the base
+// rate with whichever rule matched at that instant; with segmented billing that base rate is needed
+// later to charge the stretches no rule covers, so collapsing it at open would throw it away.
+// Snapshotting still freezes the profile against edits made mid-session; only the rate that applies
+// within it is now allowed to follow the clock.
 function resolvePricingProfileForTable(table, settings) {
   const profileId = table.pricingProfileId && settings.pricingProfiles.some(p => p.id === table.pricingProfileId) ? table.pricingProfileId : settings.defaultPricingProfileId;
-  const raw = settings.pricingProfiles.find(p => p.id === profileId) || settings.pricingProfiles.find(p => p.id === settings.defaultPricingProfileId);
-  return resolveEffectiveProfile(raw);
+  return settings.pricingProfiles.find(p => p.id === profileId) || settings.pricingProfiles.find(p => p.id === settings.defaultPricingProfileId);
 }
+// Still used to answer "what does this table cost right now" for display, which is a different
+// question from what the session will finally be billed.
+function currentRateForTable(table, settings) { return resolveEffectiveProfile(resolvePricingProfileForTable(table, settings)); }
 const relayService=new RelayService({baseUrl:process.env.ESP32_BASE_URL,logger:(level,event,details)=>operationalLog(level,event,details)});
 async function setRelayState(table,state){try{return await hardwareService.setTableRelay(table,state);}catch(error){operationalLog("ERROR","HARDWARE_RELAY_FAILED",{tableId:table.id,errorCode:error.code||"HARDWARE_ERROR"});return {connected:false,failed:true,code:error.code,message:error.message};}}
 // The manual Relay button (as opposed to the automatic on/off that table start/checkout/cancel
