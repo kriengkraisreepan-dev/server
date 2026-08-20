@@ -78,7 +78,11 @@ function comboChart(rows,{legend=["",""],ariaLabel="กราฟ",emptyText="ไ
   const labels=products.map((item,index)=>{if((products.length-1-index)%labelStep)return "";const name=String(item.label||"");const short=name.length>labelMaxChars?`${name.slice(0,labelMaxChars-1)}…`:name;const x=centre(index).toFixed(1),ly=(padT+plotH+16).toFixed(1);
     return `<text x="${x}" y="${ly}" text-anchor="end" transform="rotate(-32 ${x} ${ly})" class="chart-axis-text">${escapeHtml(short)}</text>`;}).join("");
   const hits=products.map((item,index)=>`<rect x="${(padL+band*index).toFixed(1)}" y="${padT}" width="${band.toFixed(1)}" height="${plotH}" fill="transparent" data-chart-point="${escapeHtml((item.tooltip||[]).join("|"))}"/>`).join("");
-  return `<div class="chart-legend"><span><i style="background:var(--chart-series-1)"></i>${escapeHtml(legend[0]||"")}</span><span><i class="line" style="background:var(--chart-series-2)"></i>${escapeHtml(legend[1]||"")}</span></div>
+  // Two swatches for what is really one measure would invite the reader to look for a difference
+  // between the bars and the line that does not exist. A single-series chart is named by its
+  // heading instead.
+  const legendBox=legend.filter(Boolean).length>1?`<div class="chart-legend"><span><i style="background:var(--chart-series-1)"></i>${escapeHtml(legend[0])}</span><span><i class="line" style="background:var(--chart-series-2)"></i>${escapeHtml(legend[1])}</span></div>`:"";
+  return `${legendBox}
     <div class="chart-scroll"><div class="chart-holder"><svg viewBox="0 0 ${W} ${H}" class="chart-svg" role="img" aria-label="${escapeHtml(ariaLabel)}">
       ${grid}${lo<0?`<line x1="${padL}" x2="${W-padR}" y1="${zero.toFixed(1)}" y2="${zero.toFixed(1)}" stroke="var(--chart-axis)" stroke-width="1"/>`:""}
       ${bars}${line}${dots}${peak}${labels}${hits}
@@ -130,26 +134,74 @@ function fillMissingDays(daily){
     out.push(byDate.get(key)||{date:key,revenue:0,tableRevenue:0,posRevenue:0});
     cursor.setUTCDate(cursor.getUTCDate()+1);
   }
-  // A year view would be 365 columns in a 760-wide chart — unreadable. Past a month, keep the most
-  // recent stretch rather than squeezing everything into slivers; the totals above still cover the
-  // whole period.
-  return out.length>31?out.slice(-31):out;
+  return out;
 }
-// Bars are the day's total takings, the line is the table charge inside it — both baht, one axis,
-// so the gap between them IS that day's product sales. Same reasoning as every other chart here:
-// a second y-scale would let the two series be made to look related in whatever way the scales were
-// chosen to imply.
-function revenueSection(a){
-  const daily=fillMissingDays(a.daily||[]);
-  const rows=daily.map(entry=>({
-    label:new Date(`${entry.date}T00:00:00Z`).toLocaleDateString("th-TH",{day:"numeric",month:"short"}),
-    barValue:Number(entry.revenue||0),
-    lineValue:Number(entry.tableRevenue||0),
-    tooltip:[new Date(`${entry.date}T00:00:00Z`).toLocaleDateString("th-TH",{weekday:"short",day:"numeric",month:"short"}),
-      `รายได้รวม ${money(entry.revenue||0)}`,`ค่าโต๊ะ ${money(entry.tableRevenue||0)}`,`ค่าสินค้า ${money(entry.posRevenue||0)}`]
+// Same interior-only fill as days, one level up: a year with a quiet February should show February
+// as a gap in the trend, not as a line drawn straight over it.
+function fillMissingMonths(months){
+  if(months.length<2)return months;
+  const byKey=new Map(months.map(entry=>[entry.key,entry]));
+  const out=[],cursor=new Date(`${months[0].key}-01T00:00:00Z`),last=new Date(`${months[months.length-1].key}-01T00:00:00Z`);
+  while(cursor<=last){
+    const key=cursor.toISOString().slice(0,7);
+    out.push(byKey.get(key)||{key,revenue:0,tableRevenue:0,posRevenue:0});
+    cursor.setUTCMonth(cursor.getUTCMonth()+1);
+  }
+  return out;
+}
+function monthBuckets(daily){
+  const totals=new Map();
+  for(const entry of daily||[]){
+    const key=String(entry.date).slice(0,7), bucket=totals.get(key)||{key,revenue:0,tableRevenue:0,posRevenue:0};
+    bucket.revenue+=Number(entry.revenue||0);bucket.tableRevenue+=Number(entry.tableRevenue||0);bucket.posRevenue+=Number(entry.posRevenue||0);
+    totals.set(key,bucket);
+  }
+  return fillMissingMonths([...totals.values()].sort((a,b)=>a.key.localeCompare(b.key)));
+}
+// The x-axis follows the period the report is for, because that is the question being asked: a
+// single day is a shape *within* that day, a month is its days, a year is its months.
+function revenueBuckets(a){
+  const asDate=iso=>new Date(`${iso}T00:00:00Z`);
+  const split=entry=>[`ค่าโต๊ะ ${money(entry.tableRevenue||0)}`,`ค่าสินค้า ${money(entry.posRevenue||0)}`];
+  if(reportType==="day"){
+    const hours=a.hours||[], earning=hours.filter(entry=>Number(entry.revenue||0)>0);
+    if(!earning.length)return [];
+    // Trimmed to the hours the shop actually took money in, padded by one either side. A snooker
+    // club is shut through most of the small hours and a dozen empty columns is just dead chart.
+    const from=Math.max(0,earning[0].hour-1), to=Math.min(23,earning[earning.length-1].hour+1);
+    return hours.slice(from,to+1).map(entry=>({
+      label:`${String(entry.hour).padStart(2,"0")}:00`,
+      value:Number(entry.revenue||0),
+      detail:[`${entry.bills||0} บิล`]
+    }));
+  }
+  const daily=a.daily||[];
+  // A year is months. A custom range wider than about two months is too, or the columns become
+  // slivers — days are still what a normal range asks for.
+  if(reportType==="year"||fillMissingDays(daily).length>62){
+    return monthBuckets(daily).map(entry=>({
+      label:new Date(`${entry.key}-01T00:00:00Z`).toLocaleDateString("th-TH",{month:"short",year:"2-digit"}),
+      value:Number(entry.revenue||0), detail:split(entry)
+    }));
+  }
+  return fillMissingDays(daily).map(entry=>({
+    label:asDate(entry.date).toLocaleDateString("th-TH",{day:"numeric",month:"short"}),
+    value:Number(entry.revenue||0), detail:[asDate(entry.date).toLocaleDateString("th-TH",{weekday:"long"}),...split(entry)]
   }));
-  const numbers=daily.length?daily.map(entry=>`<tr><td>${new Date(`${entry.date}T00:00:00Z`).toLocaleDateString("th-TH",{weekday:"short",day:"numeric",month:"short"})}</td><td class="right">${money(entry.tableRevenue||0)}</td><td class="right">${money(entry.posRevenue||0)}</td><td class="right"><b>${money(entry.revenue||0)}</b></td></tr>`).join(""):'<tr><td colspan="4" class="muted">ไม่มีข้อมูล</td></tr>';
-  return `<div class="card" style="margin-top:18px"><h3>รายได้รวม</h3><p class="muted">แท่ง = รายได้รวมของวันนั้น · เส้น = ค่าโต๊ะ · ระยะห่างระหว่างยอดแท่งกับเส้นคือค่าอาหารและเครื่องดื่ม</p>${comboChart(rows,{legend:["รายได้รวม","ค่าโต๊ะ"],ariaLabel:"กราฟรายได้รวมรายวัน",emptyText:"ไม่มีรายได้ในช่วงเวลานี้",labelMaxChars:11})}<details class="chart-table"><summary>ดูตัวเลขทั้งหมด</summary><table><tr><th>วันที่</th><th class="right">ค่าโต๊ะ</th><th class="right">ค่าสินค้า</th><th class="right">รวม</th></tr>${numbers}</table></details></div>`;
+}
+const REVENUE_BUCKET_CAPTION={day:"แบ่งตามชั่วโมงของวันที่เลือก (เฉพาะช่วงที่ร้านมีรายได้)",month:"แบ่งตามวันที่ในเดือนที่เลือก",year:"แบ่งตามเดือนของปีที่เลือก",range:"แบ่งตามวันในช่วงที่เลือก"};
+// One series — total revenue — drawn as columns with a line across their caps, so the size of each
+// period and the shape of the trend between them read at once. There is no second measure here, so
+// there is no legend either: the heading already names what is plotted.
+function revenueSection(a){
+  const buckets=revenueBuckets(a);
+  const rows=buckets.map(entry=>({
+    label:entry.label, barValue:entry.value, lineValue:entry.value,
+    tooltip:[entry.label,`รายได้รวม ${money(entry.value)}`,...(entry.detail||[])]
+  }));
+  const caption=reportType==="range"&&buckets.length&&/\d{2}$/.test(buckets[0].label)?"แบ่งตามเดือน (ช่วงที่เลือกยาวเกินกว่าจะแสดงรายวันได้)":REVENUE_BUCKET_CAPTION[reportType]||"";
+  const numbers=buckets.length?buckets.map(entry=>`<tr><td>${escapeHtml(entry.label)}</td><td class="right"><b>${money(entry.value)}</b></td></tr>`).join(""):'<tr><td colspan="2" class="muted">ไม่มีข้อมูล</td></tr>';
+  return `<div class="card" style="margin-top:18px"><h3>รายได้รวม</h3><p class="muted">${escapeHtml(caption)}</p>${comboChart(rows,{ariaLabel:"กราฟรายได้รวม",emptyText:"ไม่มีรายได้ในช่วงเวลานี้",labelMaxChars:11})}<details class="chart-table"><summary>ดูตัวเลขทั้งหมด</summary><table><tr><th>ช่วงเวลา</th><th class="right">รายได้รวม</th></tr>${numbers}</table></details></div>`;
 }
 let settingsTabView="general";
 function settingsGeneralPanel(){ const s=state.settings; return `<div class="card form"><h3>ตั้งค่าร้าน</h3><form id="settingsForm"><label>ชื่อร้าน</label><input name="shopName" value="${s.shopName}"><label>จำนวนโต๊ะ</label><input name="tableCount" type="number" min="1" max="100" step="1" required value="${state.tables.length}"><small class="muted">เมื่อเพิ่ม ระบบจะสร้างโต๊ะใหม่อัตโนมัติ เมื่อลด ระบบจะลบโต๊ะลำดับท้ายที่ว่างเท่านั้นและสร้าง Backup ก่อนเปลี่ยน</small><label>อัตราค่าโต๊ะต่อชั่วโมง</label><input name="hourlyRate" type="number" min="0" value="${s.hourlyRate}"><label>ค่าบริการขั้นต่ำ</label><input name="minimumCharge" type="number" min="0" value="${s.minimumCharge}"><label>PromptPay ID (สำหรับแสดงในขั้นต่อไป)</label><input name="promptPayId" value="${s.promptPayId||""}"><label>โฟลเดอร์สำรองข้อมูลภายนอก (ไม่บังคับ)</label><input name="backupExternalPath" placeholder="เช่น D:\\Backups หรือ \\\\NAS\\backups" value="${escapeHtml(s.backupExternalPath||"")}"><small class="muted">ถ้าระบุ ระบบจะคัดลอกไฟล์สำรองไปที่นี่ด้วยทุกครั้งที่สำรองข้อมูล (เช่น ไดรฟ์ USB ที่เสียบค้างไว้) โดยไม่กระทบการสำรองข้อมูลหลักถ้าไดรฟ์นี้ไม่พร้อมใช้งาน</small><button>บันทึก</button></form><p class="muted">หลังเพิ่มโต๊ะ ให้ไป Hardware Manager เพื่อผูกโต๊ะใหม่กับ Device และช่อง Relay</p></div>${backupSection()}`; }
