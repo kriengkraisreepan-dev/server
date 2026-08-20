@@ -121,7 +121,7 @@ function pricingProfilesPanel(){
   const profiles=state.settings.pricingProfiles||[], defaultId=state.settings.defaultPricingProfileId;
   const profileCards=profiles.map(p=>`<div class="card"><h3>${escapeHtml(p.name)}${p.id===defaultId?' <span class="badge">ค่าเริ่มต้น</span>':""}</h3><p>อัตรา ${money(p.rateSatang/100)}/ชม. · ขั้นต่ำ ${money(p.minimumChargeSatang/100)}</p>${(p.timeRules||[]).length?`<ul>${(p.timeRules||[]).map(r=>`<li>${pricingProfileRuleSummary(r)}</li>`).join("")}</ul>`:'<p class="muted">ไม่มีกฎราคาพิเศษ</p>'}<div class="actions"><button type="button" class="outline" data-edit-profile="${p.id}">แก้ไข</button>${p.id!==defaultId?`<button type="button" class="danger" data-delete-profile="${p.id}">ลบ</button>`:""}</div></div>`).join("");
   const tableRows=state.tables.map(t=>`<tr><td>${escapeHtml(t.name)}</td><td><select data-table-profile="${t.id}">${profiles.map(p=>`<option value="${p.id}" ${(t.pricingProfileId||defaultId)===p.id?"selected":""}>${escapeHtml(p.name)}${p.id===defaultId?" (ค่าเริ่มต้น)":""}</option>`).join("")}</select></td></tr>`).join("");
-  return `<div class="card"><h3>โปรไฟล์ราคา</h3><p class="muted">แต่ละโปรไฟล์ตั้งอัตราค่าโต๊ะและกฎราคาพิเศษ (Happy Hour) ของตัวเองได้แยกกัน — ราคาที่ใช้จะถูกกำหนดตายตัวตอนกด "เปิดโต๊ะ" เท่านั้น ไม่เปลี่ยนกลางคันถ้ากฎเริ่ม/จบระหว่างเล่นอยู่</p><div class="grid">${profileCards}</div><button type="button" id="addPricingProfile">+ เพิ่มโปรไฟล์</button></div><div class="card form" style="margin-top:18px"><h3>ราคาโต๊ะแยกตามโต๊ะ</h3><p class="muted">เช่น ห้อง VIP ที่ตั้งราคาไม่เหมือนโต๊ะทั่วไป — ไม่เลือกจะใช้โปรไฟล์เริ่มต้น</p><table><tr><th>โต๊ะ</th><th>โปรไฟล์ราคา</th></tr>${tableRows}</table></div>`;
+  return `<div class="card"><h3>โปรไฟล์ราคา</h3><p class="muted">แต่ละโปรไฟล์ตั้งอัตราค่าโต๊ะและกฎราคาพิเศษ (Happy Hour) ของตัวเองได้แยกกัน — โปรไฟล์ราคาถูกล็อกตอนกด "เปิดโต๊ะ" (แก้โปรไฟล์ทีหลังไม่กระทบโต๊ะที่เปิดอยู่) แต่ค่าโต๊ะคิดตามราคาของแต่ละช่วงเวลาจริง — เล่นคร่อม Happy Hour จะถูกแบ่งคิดตามเรตของแต่ละช่วง และใบเสร็จจะแสดงแยกบรรทัดให้เห็นชัด</p><div class="grid">${profileCards}</div><button type="button" id="addPricingProfile">+ เพิ่มโปรไฟล์</button></div><div class="card form" style="margin-top:18px"><h3>ราคาโต๊ะแยกตามโต๊ะ</h3><p class="muted">เช่น ห้อง VIP ที่ตั้งราคาไม่เหมือนโต๊ะทั่วไป — ไม่เลือกจะใช้โปรไฟล์เริ่มต้น</p><table><tr><th>โต๊ะ</th><th>โปรไฟล์ราคา</th></tr>${tableRows}</table></div>`;
 }
 function pricingProfileRuleRowHtml(rule={},index){
   return `<div class="card pricing-rule-row" data-rule-index="${index}" style="margin-top:10px"><div class="two">${PRICING_WEEKDAY_LABELS.map((label,day)=>`<label class="checkbox-line"><input type="checkbox" class="rule-weekday" value="${day}" ${Array.isArray(rule.weekdays)&&rule.weekdays.includes(day)?"checked":""}> ${label}</label>`).join("")}</div><label>เวลาเริ่ม (ว่าง = ทั้งวัน)</label><input type="time" class="rule-start" value="${rule.startTime||""}"><label>เวลาสิ้นสุด</label><input type="time" class="rule-end" value="${rule.endTime||""}"><label>อัตราพิเศษ (บาท/ชม.)</label><input type="number" min="0" step="1" class="rule-rate" required value="${rule.rateSatang!=null?rule.rateSatang/100:""}"><button type="button" class="outline danger" data-remove-rule="${index}">ลบกฎนี้</button></div>`;
@@ -221,7 +221,7 @@ bind = function(){ bindSprint4Controls(); $("#billSearchForm") && ($("#billSearc
 function applyPermissionVisibility(){ if(!state?.user) return; const allowed={OWNER:["start","pause","resume","checkout","void"],MANAGER:["start","pause","resume","checkout","void"],CASHIER:["start","checkout"],STAFF:["start","pause","resume"]}[state.user.role]||[]; [["[data-start]","start"],["[data-pause]","pause"],["[data-resume]","resume"],["[data-checkout]","checkout"],["[data-void-bill]","void"]].forEach(([selector,key])=>{if(!allowed.includes(key)) document.querySelectorAll(selector).forEach(button=>button.remove());}); if(!["OWNER","MANAGER"].includes(state.user.role)) document.querySelector('aside button[data-page="reports"]')?.remove(); }
 async function loadBillHistory(query=""){ try { billHistory=await api(`/api/bills${query?`?${query}`:""}`); } catch(e) { notify(e.message,true); } }
 async function searchBills(event){ event.preventDefault(); const params=new URLSearchParams(Object.fromEntries(new FormData(event.target))); params.set("page", "1"); params.set("pageSize", "50"); await loadBillHistory(params.toString()); render(); }
-async function viewBillDetails(id){ try{ const data=await api(`/api/bills/${id}`); const b=data.bill, snapshot=b.pricingSnapshot||{}; const events=data.auditEvents.map(e=>`<li>${new Date(e.occurredAt).toLocaleString("th-TH")} — ${escapeHtml(e.event)} <small>(${escapeHtml(e.actorId||e.userId||"UNKNOWN")})</small></li>`).join("")||"<li>ไม่มี Audit Event ที่เชื่อมโยง</li>"; const payments=data.payments.map(p=>`${p.method||"qr"}: ${money(p.amount)} (${p.status}) ${p.paidAt?new Date(p.paidAt).toLocaleString("th-TH"):""}`).join("<br>")||"ยังไม่มีข้อมูลการชำระ"; openModal(`<h3>รายละเอียดบิล ${escapeHtml(b.receiptNumber||b.number)}</h3><p>โต๊ะ: <b>${escapeHtml(b.tableName)}</b><br>เริ่ม: ${b.playStartedAt?new Date(b.playStartedAt).toLocaleString("th-TH"):"-"}<br>สิ้นสุด: ${b.playEndedAt?new Date(b.playEndedAt).toLocaleString("th-TH"):"-"}<br>ระยะเวลา: ${Number.isFinite(b.playDurationSeconds)?duration(b.playDurationSeconds):"-"}</p><p>ราคาที่ใช้: ${snapshot.rateSatang?money(snapshot.rateSatang/100)+" / ชั่วโมง":"ไม่มี Snapshot"}<br>ก่อนปัด: ${money(((b.playAmountSatang||0)+(b.foodAmountSatang||0))/100)}<br>ยอดหลังปัด: <b>${money(b.total)}</b></p><p>วิธีชำระ / เวลาได้รับเงิน:<br>${payments}</p>${b.status==="void"?`<p class="danger">Void: ${escapeHtml(b.voidReason||"-")} (${escapeHtml(b.voidedBy||"UNKNOWN")})</p>`:""}<h4>Audit Events</h4><ul>${events}</ul></div>`); }catch(e){notify(e.message,true);} }
+async function viewBillDetails(id){ try{ const data=await api(`/api/bills/${id}`); const b=data.bill, snapshot=b.pricingSnapshot||{}; const events=data.auditEvents.map(e=>`<li>${new Date(e.occurredAt).toLocaleString("th-TH")} — ${escapeHtml(e.event)} <small>(${escapeHtml(e.actorId||e.userId||"UNKNOWN")})</small></li>`).join("")||"<li>ไม่มี Audit Event ที่เชื่อมโยง</li>"; const payments=data.payments.map(p=>`${p.method||"qr"}: ${money(p.amount)} (${p.status}) ${p.paidAt?new Date(p.paidAt).toLocaleString("th-TH"):""}`).join("<br>")||"ยังไม่มีข้อมูลการชำระ"; openModal(`<h3>รายละเอียดบิล ${escapeHtml(b.receiptNumber||b.number)}</h3><p>โต๊ะ: <b>${escapeHtml(b.tableName)}</b><br>เริ่ม: ${b.playStartedAt?new Date(b.playStartedAt).toLocaleString("th-TH"):"-"}<br>สิ้นสุด: ${b.playEndedAt?new Date(b.playEndedAt).toLocaleString("th-TH"):"-"}<br>ระยะเวลา: ${Number.isFinite(b.playDurationSeconds)?duration(b.playDurationSeconds):"-"}</p><p>ราคาที่ใช้: ${Array.isArray(b.rateSegments)&&b.rateSegments.length?b.rateSegments.map(seg=>`${new Date(seg.from).toLocaleTimeString("th-TH",{hour:"2-digit",minute:"2-digit"})}–${new Date(seg.to).toLocaleTimeString("th-TH",{hour:"2-digit",minute:"2-digit"})} · ${money(seg.rateSatang/100)}/ชม. · ${money(seg.satang/100)}${seg.ruleName?" ("+escapeHtml(seg.ruleName)+")":""}`).join("<br>"):(snapshot.rateSatang?money(snapshot.rateSatang/100)+" / ชั่วโมง":"ไม่มี Snapshot")}<br>ก่อนปัด: ${money(((b.playAmountSatang||0)+(b.foodAmountSatang||0))/100)}<br>ยอดหลังปัด: <b>${money(b.total)}</b></p><p>วิธีชำระ / เวลาได้รับเงิน:<br>${payments}</p>${b.status==="void"?`<p class="danger">Void: ${escapeHtml(b.voidReason||"-")} (${escapeHtml(b.voidedBy||"UNKNOWN")})</p>`:""}<h4>Audit Events</h4><ul>${events}</ul></div>`); }catch(e){notify(e.message,true);} }
 // Voiding a bill that carried products has to say what happened to the goods, because "void" alone
 // leaves stock and revenue undecided. The tab option is offered only while the exact session the
 // bill came from is still open — after the table closes, or reopens for the next customer, putting
@@ -924,5 +924,36 @@ const bindProfitChart11=bind;bind=function(){bindProfitChart11();bindProfitChart
 // each row action; bindColumnFilters also re-applies the remembered values so a filtered view
 // survives editing a member or toggling a product.
 const bindColumnFilters11=bind;bind=function(){bindColumnFilters11();bindColumnFilters("#membersTable","members");bindColumnFilters("#productsTable","products");};
+
+// Happy Hour is now billed per time-of-day segment, so "ค่าบริการโต๊ะ" as a single number no longer
+// tells the customer how it was reached. Replace that one row with a line per rate period, each
+// naming its own rate — the point of the change is that the price is explainable at the counter.
+// The lines come from bill.rateSegments, frozen when the session closed, so a reprint months later
+// still shows the rates that were actually charged rather than today's rules.
+function rateSegmentRows9h(bill){
+  const clock=iso=>new Date(iso).toLocaleTimeString("th-TH",{hour:"2-digit",minute:"2-digit"});
+  return (bill.rateSegments||[]).map(segment=>{
+    const minutes=Math.round(segment.seconds/60);
+    const label=segment.ruleName?` · ${escapeHtml(segment.ruleName)}`:"";
+    const paused=segment.pausedSeconds?` · พัก ${Math.round(segment.pausedSeconds/60)} น.`:"";
+    return `<tr><td>${clock(segment.from)}–${clock(segment.to)}<br><small>${money(segment.rateSatang/100)}/ชม. · ${minutes} นาที${paused}${label}</small></td><td class="right">${money(segment.satang/100)}</td></tr>`;
+  }).join("");
+}
+const printBillRates9h=printBill;printBill=function(id){
+  const bill=state.bills.find(item=>item.id===id);
+  if(!bill||!Array.isArray(bill.rateSegments)||!bill.rateSegments.length)return printBillRates9h(id);
+  const open=window.open;
+  window.open=function(...args){
+    const popup=open.apply(window,args);
+    if(!popup)return popup;
+    const write=popup.document.write.bind(popup.document);
+    popup.document.write=html=>{
+      const original=`<tr><td>ค่าบริการโต๊ะ</td><td class="right">${money(bill.playAmount)}</td></tr>`;
+      write(String(html).replace(original,rateSegmentRows9h(bill)));
+    };
+    return popup;
+  };
+  try{return printBillRates9h(id);}finally{window.open=open;}
+};
 
 nav();
