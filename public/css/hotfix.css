@@ -52,3 +52,16 @@
 .void-mode small{color:#9aa9bf}
 .void-mode.disabled{opacity:.5;cursor:not-allowed}
 .void-mode:has(input:checked){border-color:var(--gold)}
+
+/* Per-column filter row. It sits directly under the header so each control is unmistakably tied to
+   its own column — a separate filter bar above the table makes the reader map control to column by
+   memory. Controls are compact and lose the global input margin, which would otherwise make the row
+   taller than the data rows it filters. */
+.col-filter-row td{padding:6px 8px;border-bottom:1px solid var(--line);background:#141d2e;vertical-align:middle}
+.col-filter{margin:0;padding:6px 8px;font-size:12px;width:100%;min-width:0}
+select.col-filter{padding:6px 4px}
+.col-filter-note{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px;color:#9aa9bf;font-size:13px}
+.col-filter-note button{padding:5px 10px;font-size:12px}
+/* The table wrapper already scrolls sideways on a phone; keep the filter controls from collapsing
+   to unusable slivers when it does. */
+@media (max-width:750px){ .col-filter-row td{min-width:110px} }
