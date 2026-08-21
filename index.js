@@ -20,6 +20,8 @@ const { PosOrderService } = require("./services/pos-order-service");
 const { CombinedBillingService } = require("./services/combined-billing-service");
 const { JsonMemberRepository } = require("./repositories/json-member-repository");
 const { MemberService } = require("./services/member-service");
+const { JsonCouponRepository } = require("./repositories/json-coupon-repository");
+const { CouponService } = require("./services/coupon-service");
 const { ReservationRepository } = require("./repositories/reservation-repository");
 const { ReservationDepositRepository } = require("./repositories/reservation-deposit-repository");
 const { ReservationService } = require("./services/reservation-service");
@@ -99,6 +101,8 @@ memberService.normalize();
 // Unconditional sweep at boot (on top of the periodic timer below) so batches that came due while
 // the server sat off for a while are still expired promptly. No-op when pointExpiryMonths=0.
 if (memberService.sweepAllExpiredPoints(settingsService.getSettings()).length) save();
+const couponRepository = new JsonCouponRepository({ getStore: () => store, save });
+const couponService = new CouponService(couponRepository, { audit: (event, actor, data) => billingService.audit(event, { actorId: actor, data }), memberById });
 const paymentService = new PaymentService(billingRepository, billingService);
 const billHistoryService = new BillHistoryService(billingRepository);
 const auditLogService = new AuditLogService(billingRepository);
@@ -428,6 +432,32 @@ app.get("/api/members/:id/points", requireAuth,(req,res)=>res.json({items:member
 app.post("/api/members", requireAuth,requireMemberManage,(req,res)=>{try{res.status(201).json({member:memberService.create(req.body||{},actorId(req))});}catch(error){res.status(409).json({error:error.message});}});
 app.patch("/api/members/:id", requireAuth,requireMemberManage,(req,res)=>{try{res.json({member:memberService.update(req.params.id,req.body||{},actorId(req))});}catch(error){res.status(/not found/i.test(error.message)?404:409).json({error:error.message});}});
 app.patch("/api/members/:id/status", requireAuth,requireMemberManage,(req,res)=>{try{res.json({member:memberService.status(req.params.id,req.body?.status,actorId(req))});}catch(error){res.status(/not found/i.test(error.message)?404:400).json({error:error.message});}});
+// Coupons (Sprint 11.2). Reading and managing are separate permissions so the roles can diverge
+// later, even though both currently land on OWNER/MANAGER. `/validate` is the deliberate exception:
+// any signed-in role may check a code, because the cashier typing it in is the one who needs the
+// answer, and a 403 there would read as "this coupon is broken".
+const COUPON_CONFLICT_CODES = ["COUPON_CODE_EXISTS", "COUPON_IMMUTABLE", "COUPON_STATUS_CONFLICT", "COUPON_ALREADY_RESERVED", "COUPON_REDEMPTION_CONFLICT"];
+const couponError = (res, error) => res.status(["COUPON_NOT_FOUND", "COUPON_REDEMPTION_NOT_FOUND", "COUPON_CODE_NOT_FOUND"].includes(error.code) ? 404 : COUPON_CONFLICT_CODES.includes(error.code) ? 409 : 400).json({ error: error.code || "COUPON_ERROR", message: error.message });
+// The list screen needs the live quota and usage next to each coupon, and both are derived from the
+// ledger rather than stored, so they are attached on the way out instead of being persisted twice.
+const couponView = coupon => ({ ...coupon, remainingQuota: couponService.remainingQuota(coupon), summary: couponService.usageSummary(coupon.id) });
+app.get("/api/coupons", requirePermission(PERMISSIONS.COUPON_VIEW), (req, res) => { try { res.json({ items: couponService.list(req.query).map(couponView) }); } catch (error) { couponError(res, error); } });
+app.post("/api/coupons", requirePermission(PERMISSIONS.COUPON_MANAGE), (req, res) => { try { res.status(201).json({ coupon: couponView(couponService.create(req.body || {}, actorId(req))) }); } catch (error) { couponError(res, error); } });
+app.patch("/api/coupons/:id", requirePermission(PERMISSIONS.COUPON_MANAGE), (req, res) => { try { res.json({ coupon: couponView(couponService.update(req.params.id, req.body || {}, actorId(req))) }); } catch (error) { couponError(res, error); } });
+app.patch("/api/coupons/:id/status", requirePermission(PERMISSIONS.COUPON_MANAGE), (req, res) => { try { res.json({ coupon: couponView(couponService.setStatus(req.params.id, req.body?.status, actorId(req))) }); } catch (error) { couponError(res, error); } });
+app.post("/api/coupons/:id/codes", requirePermission(PERMISSIONS.COUPON_MANAGE), (req, res) => { try { const codes = couponService.generateCodes(req.params.id, req.body?.count, actorId(req)); res.status(201).json({ codes, coupon: couponView(couponService.get(req.params.id)) }); } catch (error) { couponError(res, error); } });
+app.get("/api/coupons/:id/codes", requirePermission(PERMISSIONS.COUPON_VIEW), (req, res) => { try { couponService.get(req.params.id); res.json({ items: couponRepository.codesForCoupon(req.params.id) }); } catch (error) { couponError(res, error); } });
+app.get("/api/coupons/:id/redemptions", requirePermission(PERMISSIONS.COUPON_VIEW), (req, res) => { try { couponService.get(req.params.id); res.json({ items: couponService.redemptions(req.params.id, req.query), summary: couponService.usageSummary(req.params.id) }); } catch (error) { couponError(res, error); } });
+app.post("/api/coupons/validate", (req, res) => {
+  try {
+    const result = couponService.validate({ code: req.body?.code, memberId: req.body?.memberId, channel: req.body?.channel });
+    // The caller may already know what the sale is worth (the open-table dialog does not, a checkout
+    // does), so the exact discount is only computed when a base is supplied.
+    const baseSatang = Number(req.body?.baseSatang);
+    const discountSatang = Number.isInteger(baseSatang) && baseSatang > 0 ? couponService.calculateDiscountSatang(result.rule, baseSatang) : null;
+    res.json({ valid: true, couponId: result.coupon.id, code: result.couponCode?.code || result.coupon.code, channel: result.channel, rule: result.rule, discountSatang });
+  } catch (error) { couponError(res, error); }
+});
 app.get("/api/products", requirePermission(PERMISSIONS.PRODUCT_VIEW), (req, res) => { try { res.json(inventoryService.listProducts(req.query, req.user.role)); } catch (error) { res.status(400).json({ error: error.message }); } });
 app.get("/api/products/:id", requirePermission(PERMISSIONS.PRODUCT_VIEW), (req, res) => { const product = inventoryService.getProduct(req.params.id, req.user.role); if (!product) return res.status(404).json({ error: "ไม่พบสินค้า" }); res.json(product); });
 app.post("/api/products", requirePermission(PERMISSIONS.PRODUCT_MANAGE), (req, res) => { try { res.status(201).json(inventoryService.createProduct(req.body || {}, actorId(req))); } catch (error) { res.status(error.message.includes("already exists") ? 409 : 400).json({ error: error.message }); } });

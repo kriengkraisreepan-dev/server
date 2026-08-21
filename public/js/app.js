@@ -287,6 +287,7 @@ function settings(){
   const tabDefs=[];
   if(role==="OWNER")tabDefs.push(["general","ทั่วไป"]);
   if(role==="OWNER")tabDefs.push(["pricing","ราคาโต๊ะ"]);
+  if(couponAllowed())tabDefs.push(["coupons","คูปอง"]);
   if(role==="OWNER")tabDefs.push(["staff","พนักงาน"]);
   if(["OWNER","MANAGER"].includes(role))tabDefs.push(["sessions","Active Sessions"]);
   tabDefs.push(["account","บัญชีของฉัน"]);
@@ -299,7 +300,7 @@ function settings(){
   // land on "account"), those patches must see the ACTUAL displayed tab, not the stale request.
   settingsTabView=activeTab;
   const tabs=`<div class="page-settings-tabs">${tabDefs.map(([key,label])=>`<button type="button" class="settings-tab-btn ${activeTab===key?"active":""}" data-settings-tab="${key}">${label}</button>`).join("")}</div>`;
-  const panels={general:settingsGeneralPanel,pricing:pricingProfilesPanel,staff,sessions,account,auditlog};
+  const panels={general:settingsGeneralPanel,pricing:pricingProfilesPanel,coupons,staff,sessions,account,auditlog};
   return `${tabs}${panels[activeTab]()}`;
 }
 function backupSection(){ const list=backups||[],health=healthStatus||{},external=health.backup?.externalBackup; const externalNote=!external?"":external.status==="VERIFIED"?`<p class="muted">สำรองภายนอกล่าสุด: <b style="color:#4ade80">✓ สำเร็จ</b> (${escapeHtml(external.path)}, ${new Date(external.checkedAt).toLocaleString("th-TH")})</p>`:`<p class="wizard-status warning">สำรองภายนอกล่าสุด: ✕ ไม่สำเร็จ — ${escapeHtml(external.message||"ตรวจสอบว่าไดรฟ์/โฟลเดอร์เชื่อมต่ออยู่หรือไม่")} (${escapeHtml(external.path)})</p>`; return `<div class="card" style="margin-top:18px"><h3>สถานะระบบ: ${escapeHtml(health.status||"ยังไม่ได้ตรวจ")}</h3><p class="muted">JSON: ${escapeHtml(health.repositories||"-")} · Integrity: ${escapeHtml(health.integrity?.status||"-")} · Recovery รอตรวจ: ${(health.pendingRecoveryItems||[]).length} · Uptime: ${duration(health.uptimeSeconds||0)}</p></div><div class="card" style="margin-top:18px"><h3>สำรองข้อมูล (Backup)</h3><p class="muted">ระบบสำรองข้อมูลอัตโนมัติทุก 24 ชั่วโมง เก็บล่าสุด ${MAX_BACKUPS_LABEL} ชุด และสำรองให้เองก่อนกู้คืนทุกครั้ง</p>${externalNote}<button id="backupNow">สำรองข้อมูลตอนนี้</button><table style="margin-top:14px"><tr><th>วันที่สำรอง</th><th>ขนาดไฟล์</th><th>ตรวจสอบ</th><th></th></tr>${list.length?list.map(b=>`<tr><td>${new Date(b.createdAt).toLocaleString("th-TH")}</td><td>${(b.size/1024).toFixed(1)} KB</td><td>${escapeHtml(b.verificationStatus||"UNKNOWN")}</td><td><div class="actions"><button class="outline" data-backup-download="${b.file}">ดาวน์โหลด</button><button data-backup-restore="${b.file}">กู้คืน</button><button class="danger" data-backup-delete="${b.file}">ลบ</button></div></td></tr>`).join(""):`<tr><td colspan="4" class="muted">ยังไม่มีข้อมูลสำรอง</td></tr>`}</table></div>`; }
@@ -1030,6 +1031,7 @@ const bindSettingsAuditTab1=bind;bind=function(){
   document.querySelectorAll("[data-settings-tab]").forEach(button=>button.onclick=async()=>{
     settingsTabView=button.dataset.settingsTab;
     if(settingsTabView==="auditlog"&&auditLogAllowed()){auditLogFilters={};await Promise.all([loadAuditEventTypes(),loadAuditLog(auditLogQueryString(1))]);}
+    if(settingsTabView==="coupons"&&couponAllowed())await loadCoupons();
     render();
   });
   const form=$("#auditLogFilterForm");if(form)form.onsubmit=searchAuditLog;
@@ -1178,5 +1180,160 @@ const bindWaiting10e=bind;bind=function(){bindWaiting10e();document.querySelecto
     notify(result?.table?`เปิด ${result.table.name} ให้ ${item?.customerName||"ลูกค้า"} แล้ว`:"โต๊ะถูกใช้ไปก่อนแล้ว — การจองถูกตั้งเป็นรอโต๊ะ",!result?.table);
   }catch(error){notify(error.message,true);button.disabled=false;}
 });};
+
+
+// ---- คูปอง (Sprint 11.2) -------------------------------------------------------------------
+// The tab loads its own data on first click, the same way ประวัติการใช้งาน does — most visits to
+// Settings have nothing to do with coupons, so this stays out of the initial Settings load.
+let couponData=null;
+function couponAllowed(){return ["OWNER","MANAGER"].includes(state?.user?.role);}
+async function loadCoupons(){try{couponData=(await api("/api/coupons")).items||[];}catch(error){notify(error.message,true);couponData=couponData||[];}}
+// The whole backend speaks integer satang; the form speaks baht, because that is what the owner
+// types on a voucher. The conversion happens here and nowhere else.
+const toSatang=baht=>Math.round(Number(baht||0)*100);
+const COUPON_SCOPES={TABLE_CHARGE:"ค่าโต๊ะ",PRODUCTS:"อาหาร/เครื่องดื่ม",WHOLE_BILL:"ทั้งบิล"};
+const COUPON_STATUSES={DRAFT:"ร่าง",ACTIVE:"ใช้งานอยู่",PAUSED:"หยุดชั่วคราว",EXPIRED:"หมดอายุ",DEPLETED:"ใช้ครบแล้ว"};
+const COUPON_CHANNELS={TABLE:"โต๊ะ",WALK_IN:"ขายหน้าร้าน"};
+const COUPON_REDEMPTION_STATUSES={RESERVED:"จองสิทธิ์ไว้",APPLIED:"ใช้แล้ว",RELEASED:"คืนสิทธิ์"};
+function couponDiscountLabel(coupon){return coupon.discountType==="PERCENT"?`${coupon.discountValue}%${coupon.maxDiscountSatang?` (ไม่เกิน ${money(coupon.maxDiscountSatang/100)})`:""}`:money(coupon.discountValue/100);}
+function couponQuotaLabel(coupon){return coupon.remainingQuota===null||coupon.remainingQuota===undefined?"ไม่จำกัด":`${coupon.remainingQuota}`;}
+function couponFind(id){return (couponData||[]).find(coupon=>coupon.id===id)||null;}
+// A coupon that has been claimed even once can no longer change what it is worth — past redemptions
+// keep their own snapshot, so repricing it would quietly make one name mean two different things.
+function couponLocked(coupon){return Boolean((coupon.summary?.applied||0)+(coupon.summary?.reserved||0));}
+function couponRow(coupon){
+  const actions=[`<button class="outline" data-coupon-edit="${coupon.id}">แก้ไข</button>`];
+  if(coupon.status==="ACTIVE")actions.push(`<button class="outline" data-coupon-pause="${coupon.id}">หยุดชั่วคราว</button>`);
+  if(["DRAFT","PAUSED"].includes(coupon.status))actions.push(`<button data-coupon-activate="${coupon.id}">เปิดใช้งาน</button>`);
+  if(coupon.codeMode==="UNIQUE")actions.push(`<button class="outline" data-coupon-codes="${coupon.id}">ใบคูปอง</button>`);
+  actions.push(`<button class="outline" data-coupon-usage="${coupon.id}">การใช้งาน</button>`);
+  return `<tr><td>${escapeHtml(coupon.name)}</td><td>${coupon.codeMode==="UNIQUE"?`<small class="muted">ใบต่อใบ</small>`:`<code>${escapeHtml(coupon.code||"-")}</code>`}</td><td>${couponDiscountLabel(coupon)}</td><td>${COUPON_SCOPES[coupon.scope]||coupon.scope}</td><td>${(coupon.channels||[]).map(channel=>COUPON_CHANNELS[channel]||channel).join(" + ")}</td><td><small>${escapeHtml(coupon.startsAt||"-")} → ${escapeHtml(coupon.endsAt||"ไม่กำหนด")}</small></td><td>${couponQuotaLabel(coupon)}</td><td>${coupon.summary?.applied||0}${coupon.summary?.reserved?` <small class="muted">(+${coupon.summary.reserved} จองไว้)</small>`:""}</td><td><span class="badge ${coupon.status==="ACTIVE"?"playing":"free"}">${COUPON_STATUSES[coupon.status]||coupon.status}</span></td><td><div class="actions">${actions.join("")}</div></td></tr>`;
+}
+function coupons(){
+  const items=couponData||[];
+  const given=items.reduce((sum,coupon)=>sum+Number(coupon.summary?.discountSatang||0),0);
+  return `<div class="card"><h3>คูปองส่วนลด</h3>
+<p class="muted">คูปองใช้ได้เฉพาะสมาชิกเท่านั้น และใช้ร่วมกับการแลกแต้มในบิลเดียวกันไม่ได้ · สิทธิ์จะถูกจองตั้งแต่ตอนเปิดโต๊ะหรือเริ่มบิลขายหน้าร้าน แล้วตัดจริงเมื่อชำระเงิน ถ้ายกเลิกบิลสิทธิ์จะคืนอัตโนมัติ</p>
+<div class="actions"><button id="couponCreate">+ สร้างคูปอง</button><button class="outline" id="couponReload">↻ โหลดใหม่</button></div>
+<p class="muted" style="margin-top:12px">ทั้งหมด ${items.length} คูปอง · ส่วนลดที่ให้ไปแล้วรวม ${money(given/100)}</p>
+<table><tr><th>ชื่อ</th><th>โค้ด</th><th>ส่วนลด</th><th>ใช้กับ</th><th>ใช้ได้ที่</th><th>ช่วงเวลา</th><th>คงเหลือ</th><th>ใช้แล้ว</th><th>สถานะ</th><th></th></tr>${items.map(couponRow).join("")||`<tr><td colspan="10" class="muted">ยังไม่มีคูปอง — กด "สร้างคูปอง" เพื่อเริ่ม</td></tr>`}</table></div>`;
+}
+function couponFormHtml(coupon){
+  const editing=Boolean(coupon),data=coupon||{},locked=editing&&couponLocked(data);
+  const channels=data.channels||["TABLE"];
+  const option=(value,label,selected)=>`<option value="${value}" ${selected===value?"selected":""}>${label}</option>`;
+  return `<h3>${editing?"แก้ไขคูปอง":"สร้างคูปอง"}</h3>
+${locked?`<p class="muted">คูปองนี้ถูกใช้ไปแล้ว — แก้ชื่อ ช่วงเวลา และเงื่อนไขการใช้ได้ แต่เปลี่ยนมูลค่าส่วนลดหรือขอบเขตไม่ได้ เพราะบิลเก่าจะกลายเป็นคนละความหมาย</p>`:""}
+<form id="couponForm" class="form">
+<label>ชื่อคูปอง (ชื่อนี้จะขึ้นบนใบเสร็จ)</label><input name="name" required value="${escapeHtml(data.name||"")}">
+${editing?"":`<label>รูปแบบโค้ด</label><select name="codeMode" id="couponCodeMode">${option("SHARED","โค้ดเดียว ใช้ร่วมกันทุกคน","SHARED")}${option("UNIQUE","คูปองใบต่อใบ (สุ่มโค้ดแยกแต่ละใบ)","SHARED")}</select>`}
+<div id="couponSharedFields" ${editing&&data.codeMode==="UNIQUE"?'style="display:none"':""}><label>โค้ด${editing?"":" (เว้นว่างไว้ให้ระบบสุ่มให้)"}</label><input name="code" ${editing?"disabled":""} value="${escapeHtml(data.code||"")}" placeholder="เช่น SNK2026"></div>
+${editing?"":`<div id="couponUniqueFields" style="display:none"><label>จำนวนใบคูปองที่จะพิมพ์</label><input name="codeCount" type="number" min="0" max="2000" value="0"><small class="muted">สร้างเพิ่มทีหลังได้จากปุ่ม "ใบคูปอง" · จำนวนใบคือโควตาของคูปองแบบนี้</small></div>`}
+<label>ประเภทส่วนลด</label><select name="discountType" id="couponDiscountType" ${locked?"disabled":""}>${option("FIXED","ลดเป็นจำนวนเงิน (บาท)",data.discountType||"FIXED")}${option("PERCENT","ลดเป็นเปอร์เซ็นต์",data.discountType||"FIXED")}</select>
+<label id="couponValueLabel">มูลค่าส่วนลด</label><input name="discountValue" type="number" min="1" step="1" required ${locked?"disabled":""} value="${data.discountType==="PERCENT"?(data.discountValue||""):(data.discountValue?data.discountValue/100:"")}">
+<div id="couponMaxField" ${data.discountType==="PERCENT"?"":'style="display:none"'}><label>ส่วนลดสูงสุด (บาท)</label><input name="maxDiscount" type="number" min="1" step="1" ${locked?"disabled":""} value="${data.maxDiscountSatang?data.maxDiscountSatang/100:""}"><small class="muted">จำเป็นสำหรับส่วนลดแบบเปอร์เซ็นต์ — กันไม่ให้บิลยาว ๆ ลดเกินที่ตั้งใจ</small></div>
+<label>ใช้ลดกับ</label><select name="scope" id="couponScope" ${locked?"disabled":""}>${option("TABLE_CHARGE","ค่าโต๊ะ",data.scope||"WHOLE_BILL")}${option("PRODUCTS","อาหาร/เครื่องดื่ม",data.scope||"WHOLE_BILL")}${option("WHOLE_BILL","ทั้งบิล",data.scope||"WHOLE_BILL")}</select>
+<label>ใช้ได้ที่</label>
+<label class="checkbox-line"><input type="checkbox" name="channels" value="TABLE" ${channels.includes("TABLE")?"checked":""}> โต๊ะสนุกเกอร์</label>
+<label class="checkbox-line"><input type="checkbox" name="channels" value="WALK_IN" id="couponChannelWalkIn" ${channels.includes("WALK_IN")?"checked":""}> ขายหน้าร้าน (ไม่ได้เปิดโต๊ะ)</label>
+<small class="muted" id="couponChannelNote">คูปองที่ลด "ค่าโต๊ะ" ใช้กับการขายหน้าร้านไม่ได้ เพราะบิลหน้าร้านไม่มีค่าโต๊ะให้ลด</small>
+<label>ยอดขั้นต่ำ (บาท)</label><input name="minSpend" type="number" min="0" step="1" value="${data.minSpendSatang?data.minSpendSatang/100:0}"><small class="muted">ถ้ายอดไม่ถึงตอนคิดเงิน ระบบจะคืนคูปองให้ลูกค้าและปล่อยบิลผ่านตามปกติ ไม่บล็อกการชำระเงิน</small>
+<label>วันเริ่มใช้</label><input name="startsAt" type="date" value="${escapeHtml(data.startsAt||"")}">
+<label>วันสุดท้ายที่ใช้ได้</label><input name="endsAt" type="date" value="${escapeHtml(data.endsAt||"")}"><small class="muted">ใช้ได้ถึงสิ้นวันนั้น · เว้นว่าง = ไม่มีวันหมดอายุ</small>
+<div id="couponQuotaField" ${(editing?data.codeMode:"SHARED")==="UNIQUE"?'style="display:none"':""}><label>โควตารวม (สิทธิ์)</label><input name="totalQuota" type="number" min="0" step="1" value="${data.totalQuota||0}"><small class="muted">0 = ไม่จำกัด</small></div>
+<label>จำกัดต่อสมาชิก (ครั้ง)</label><input name="perMemberLimit" type="number" min="0" step="1" ${editing?"":'data-auto-default="1"'} value="${data.perMemberLimit??1}"><small class="muted">0 = ไม่จำกัด · โค้ดที่ใช้ร่วมกันเริ่มต้นที่ 1 ครั้ง คูปองใบต่อใบเริ่มต้นที่ไม่จำกัด เพราะแต่ละใบใช้ได้ครั้งเดียวอยู่แล้ว</small>
+${editing?"":`<label>สถานะเริ่มต้น</label><select name="status">${option("DRAFT","ร่าง (ยังใช้ไม่ได้)","DRAFT")}${option("ACTIVE","เปิดใช้งานทันที","DRAFT")}</select>`}
+<button>${editing?"บันทึกการแก้ไข":"สร้างคูปอง"}</button></form>`;
+}
+// Keeps the form honest about the three combinations the service refuses outright, so the owner
+// finds out while filling the form in rather than on submit.
+function bindCouponForm(coupon){
+  const form=$("#couponForm"),editing=Boolean(coupon);
+  const codeMode=()=>editing?(coupon.codeMode||"SHARED"):($("#couponCodeMode")?.value||"SHARED");
+  const sync=()=>{
+    const unique=codeMode()==="UNIQUE";
+    if($("#couponSharedFields"))$("#couponSharedFields").style.display=unique?"none":"";
+    if($("#couponUniqueFields"))$("#couponUniqueFields").style.display=unique?"":"none";
+    if($("#couponQuotaField"))$("#couponQuotaField").style.display=unique?"none":"";
+    const percent=$("#couponDiscountType").value==="PERCENT";
+    $("#couponMaxField").style.display=percent?"":"none";
+    $("#couponValueLabel").textContent=percent?"ส่วนลด (%)":"มูลค่าส่วนลด (บาท)";
+    // A table-charge coupon on a walk-in sale could only ever discount zero, so the two controls
+    // lock each other out instead of letting the owner build a coupon that does nothing.
+    const walkIn=$("#couponChannelWalkIn").checked,scope=$("#couponScope");
+    const tableChargeOption=[...scope.options].find(entry=>entry.value==="TABLE_CHARGE");
+    if(tableChargeOption){tableChargeOption.disabled=walkIn;if(walkIn&&scope.value==="TABLE_CHARGE")scope.value="WHOLE_BILL";}
+    $("#couponChannelNote").style.color=walkIn&&scope.value==="TABLE_CHARGE"?"#f87171":"";
+    // Follow the service's own per-member default as the code mode changes, until the owner types
+    // their own number — otherwise a unique-voucher coupon would silently be created with the
+    // shared-code default of 1, which means something quite different.
+    const limit=form.querySelector('[data-auto-default]');
+    if(limit)limit.value=unique?"0":"1";
+  };
+  ["#couponCodeMode","#couponDiscountType","#couponScope","#couponChannelWalkIn"].forEach(selector=>{const element=$(selector);if(element)element.onchange=sync;});
+  const limitInput=form.querySelector('[data-auto-default]');
+  if(limitInput)limitInput.oninput=()=>limitInput.removeAttribute("data-auto-default");
+  sync();
+  form.onsubmit=async event=>{
+    event.preventDefault();
+    const data=Object.fromEntries(new FormData(form));
+    const channels=[...form.querySelectorAll('input[name="channels"]:checked')].map(input=>input.value);
+    if(!channels.length)return notify("เลือกอย่างน้อยหนึ่งช่องทางที่ใช้คูปองได้",true);
+    const percent=data.discountType==="PERCENT";
+    const payload={name:data.name,scope:data.scope,channels,minSpendSatang:toSatang(data.minSpend),startsAt:data.startsAt||undefined,endsAt:data.endsAt||"",perMemberLimit:Number(data.perMemberLimit||0)};
+    if(codeMode()!=="UNIQUE")payload.totalQuota=Number(data.totalQuota||0);
+    // Locked coupons keep their frozen rule: sending it back at all would only risk a rounding
+    // round-trip disagreeing with what is stored and being refused as an edit.
+    if(!(editing&&couponLocked(coupon)))Object.assign(payload,{discountType:data.discountType,discountValue:percent?Number(data.discountValue):toSatang(data.discountValue),maxDiscountSatang:percent?toSatang(data.maxDiscount):null});
+    if(!editing)Object.assign(payload,{codeMode:data.codeMode,code:data.code||"",codeCount:Number(data.codeCount||0),status:data.status});
+    try{
+      await api(editing?`/api/coupons/${coupon.id}`:"/api/coupons",{method:editing?"PATCH":"POST",body:JSON.stringify(payload)});
+      closeModal();await loadCoupons();render();notify(editing?"บันทึกคูปองแล้ว":"สร้างคูปองแล้ว");
+    }catch(error){notify(error.message,true);}
+  };
+}
+function openCouponForm(coupon){openModal(couponFormHtml(coupon));bindCouponForm(coupon);}
+async function openCouponCodes(couponId){
+  const coupon=couponFind(couponId);
+  try{
+    const result=await api(`/api/coupons/${couponId}/codes`);
+    const labels={UNUSED:"ยังไม่ใช้",RESERVED:"จองไว้",USED:"ใช้แล้ว",VOID:"ยกเลิก"};
+    const rows=result.items.map(entry=>`<tr><td><code>${escapeHtml(entry.code)}</code></td><td>${labels[entry.status]||entry.status}</td><td><small>${new Date(entry.createdAt).toLocaleDateString("th-TH")}</small></td></tr>`).join("");
+    openModal(`<h3>ใบคูปอง — ${escapeHtml(coupon?.name||"")}</h3><p class="muted">ทั้งหมด ${result.items.length} ใบ · เหลือใช้ได้ ${result.items.filter(entry=>entry.status==="UNUSED").length} ใบ</p>
+<form id="couponCodeBatchForm" class="two"><input name="count" type="number" min="1" max="2000" placeholder="จำนวนใบที่จะสร้างเพิ่ม" required><button>สร้างเพิ่ม</button></form>
+<p class="muted">โค้ดที่สร้างแล้วจะไม่ถูกสร้างซ้ำ — พิมพ์ใบใหม่ได้โดยไม่ต้องกลัวโค้ดชนกับใบที่แจกไปแล้ว</p>
+<div style="max-height:45vh;overflow:auto"><table><tr><th>โค้ด</th><th>สถานะ</th><th>สร้างเมื่อ</th></tr>${rows||`<tr><td colspan="3" class="muted">ยังไม่มีใบคูปอง</td></tr>`}</table></div>`);
+    $("#couponCodeBatchForm").onsubmit=async event=>{
+      event.preventDefault();
+      try{await api(`/api/coupons/${couponId}/codes`,{method:"POST",body:JSON.stringify({count:Number(new FormData(event.target).get("count"))})});await loadCoupons();await openCouponCodes(couponId);notify("สร้างใบคูปองเพิ่มแล้ว");render();}catch(error){notify(error.message,true);}
+    };
+  }catch(error){notify(error.message,true);}
+}
+async function openCouponUsage(couponId){
+  const coupon=couponFind(couponId);
+  try{
+    const result=await api(`/api/coupons/${couponId}/redemptions`);
+    const rows=result.items.map(entry=>{
+      const member=state.members.find(item=>item.id===entry.memberId);
+      return `<tr><td><small>${new Date(entry.reservedAt).toLocaleString("th-TH")}</small></td><td>${escapeHtml(member?.displayName||member?.name||entry.memberId||"-")}</td><td><code>${escapeHtml(entry.code||"-")}</code></td><td>${COUPON_CHANNELS[entry.channel]||entry.channel||"-"}</td><td>${entry.status==="APPLIED"?money(entry.discountSatang/100):"-"}</td><td>${COUPON_REDEMPTION_STATUSES[entry.status]||entry.status}${entry.releaseReason?`<br><small class="muted">${escapeHtml(entry.releaseReason)}</small>`:""}</td></tr>`;
+    }).join("");
+    openModal(`<h3>การใช้งาน — ${escapeHtml(coupon?.name||"")}</h3>
+<p class="muted">ใช้จริง ${result.summary.applied} ครั้ง · จองไว้ ${result.summary.reserved} · คืนสิทธิ์ ${result.summary.released} · สมาชิก ${result.summary.members} คน · ส่วนลดรวม ${money(result.summary.discountSatang/100)}</p>
+<div style="max-height:45vh;overflow:auto"><table><tr><th>เวลา</th><th>สมาชิก</th><th>โค้ด</th><th>ช่องทาง</th><th>ส่วนลด</th><th>สถานะ</th></tr>${rows||`<tr><td colspan="6" class="muted">ยังไม่มีการใช้งาน</td></tr>`}</table></div>`);
+  }catch(error){notify(error.message,true);}
+}
+async function setCouponStatus(couponId,status){
+  try{await api(`/api/coupons/${couponId}/status`,{method:"PATCH",body:JSON.stringify({status})});await loadCoupons();render();notify(status==="ACTIVE"?"เปิดใช้งานคูปองแล้ว":"หยุดคูปองชั่วคราวแล้ว");}catch(error){notify(error.message,true);}
+}
+const bindCouponTab=bind;bind=function(){
+  bindCouponTab();
+  if($("#couponCreate"))$("#couponCreate").onclick=()=>openCouponForm(null);
+  if($("#couponReload"))$("#couponReload").onclick=async()=>{await loadCoupons();render();};
+  document.querySelectorAll("[data-coupon-edit]").forEach(button=>button.onclick=()=>openCouponForm(couponFind(button.dataset.couponEdit)));
+  document.querySelectorAll("[data-coupon-pause]").forEach(button=>button.onclick=()=>setCouponStatus(button.dataset.couponPause,"PAUSED"));
+  document.querySelectorAll("[data-coupon-activate]").forEach(button=>button.onclick=()=>setCouponStatus(button.dataset.couponActivate,"ACTIVE"));
+  document.querySelectorAll("[data-coupon-codes]").forEach(button=>button.onclick=()=>openCouponCodes(button.dataset.couponCodes));
+  document.querySelectorAll("[data-coupon-usage]").forEach(button=>button.onclick=()=>openCouponUsage(button.dataset.couponUsage));
+};
 
 nav();
