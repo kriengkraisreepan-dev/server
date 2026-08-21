@@ -2,13 +2,13 @@
 
 ## Scope of this sprint
 
-Members-only coupons that are claimed **when a table is opened**, not at checkout. A coupon reserves its quota for the duration of play and is consumed when the bill is paid. Coupons never combine with loyalty point redemption.
+Members-only coupons that are claimed **when the sale starts** — at table open, or when a walk-in POS sale is rung up — not at checkout. A coupon reserves its quota from that moment and is consumed when the bill is paid. Coupons never combine with loyalty point redemption.
 
-Walk-in POS sales are **out of scope** for Sprint 11: they have no "open table" moment to attach a coupon to. See *Deferred*.
+**Which channels a coupon works on is chosen at creation** (owner's decision, 2026-08-21): a `channels` array of `TABLE`, `WALK_IN`, or both. This is the same vocabulary bills already use as `saleSource`, so the rule is checked directly against the sale. A `TABLE_CHARGE`-scope coupon may not be offered on `WALK_IN` — a walk-in bill has no table time on it, so the combination could only ever discount zero, and refusing it at creation beats printing vouchers that silently do nothing at the counter.
 
 ## Architecture and lifecycle
 
-`Route → permission middleware → CouponService → JsonCouponRepository → store.json`, with `TableSessionService` reserving at open and `CombinedBillingService` applying at checkout.
+`Route → permission middleware → CouponService → JsonCouponRepository → store.json`, with `TableSessionService` reserving at open (or `PosOrderService` on a walk-in sale) and `CombinedBillingService` applying at checkout.
 
 Two independent lifecycles:
 
@@ -43,11 +43,12 @@ This mirrors the proven `selectRedeem → redeemPoints → rollbackRedeem` flow 
 | `discountValue` | Percent (1–100) or satang |
 | `maxDiscountSatang` | Ceiling for `PERCENT`. **Required** when `discountType === "PERCENT"` |
 | `scope` | `TABLE_CHARGE`, `PRODUCTS`, or `WHOLE_BILL` |
+| `channels` | Subset of `TABLE`, `WALK_IN`. At least one. `TABLE_CHARGE` scope cannot include `WALK_IN` |
 | `minSpendSatang` | Checked against the scope base at checkout, not at open |
-| `startsAt`, `endsAt` | ISO. `endsAt` is inclusive to end-of-day |
+| `startsAt`, `endsAt` | `YYYY-MM-DD`, inclusive at both ends, in **Bangkok days** — a coupon printed "ใช้ได้ถึง 31 ส.ค." still works at 23:00 on the 31st, which is already 1 September in UTC |
 | `totalQuota` | `0` = unlimited. `SHARED` only — for `UNIQUE` the quota *is* the number of codes |
 | `usedCount`, `reservedCount` | Denormalised counters; `couponRedemptions[]` remains the source of truth |
-| `perMemberLimit` | `0` = unlimited |
+| `perMemberLimit` | `0` = unlimited. Defaults to `1` for `SHARED` (a shared code with no limit is one member's licence to use it forever) and to `0` for `UNIQUE` (a printed voucher is already one-use) |
 | `status` | `DRAFT`/`ACTIVE`/`PAUSED`/`EXPIRED`/`DEPLETED` |
 | `createdAt`, `createdBy`, `updatedAt`, `updatedBy`, `version` | Standard |
 
@@ -59,7 +60,9 @@ Generated as a batch at creation time; the operator enters how many vouchers to 
 
 ### couponRedemptions[] — the ledger
 
-`{ id, couponId, couponCodeId, code, memberId, tableSessionId, billId, status, discountSatang, scopeSnapshot, couponSnapshot, reservedAt, reservedBy, appliedAt, appliedBy, releasedAt, releasedBy, releaseReason }`
+`{ id, couponId, couponCodeId, code, memberId, channel, tableSessionId, posOrderId, billId, status, discountSatang, scopeSnapshot, couponSnapshot, reservedAt, reservedBy, appliedAt, appliedBy, releasedAt, releasedBy, releaseReason }`
+
+Exactly one of `tableSessionId` / `posOrderId` is set, depending on `channel`. Both are used to look up "does this sale already carry a coupon?", which is how a second code on the same sale is refused.
 
 One row per attempt. `couponSnapshot` freezes the rule as it was at reservation so a receipt reprinted months later still shows what was actually given — the same reason `rewardPolicySnapshot` and `pricingSnapshot` exist.
 
@@ -73,20 +76,26 @@ Input is upper-cased and stripped of spaces and dashes before lookup, so `abcd-2
 
 Validation is deliberately split, because half the facts do not exist yet when the table opens.
 
-**At table open** (`POST /api/tables/:id/start` with `couponCode`):
+**At the claim** — table open (`POST /api/tables/:id/start` with `couponCode`) or a walk-in POS sale:
 
 1. Code resolves to a coupon (shared code, or an `UNUSED` unique code).
-2. Coupon `status === "ACTIVE"` and now is within `[startsAt, endsAt]`.
-3. Quota remains: `usedCount + reservedCount < totalQuota` (or unlimited / an unused code exists).
-4. **A member is bound to the session, and that member is `ACTIVE`.** No member → refuse.
-5. `perMemberLimit` not already reached by that member's `APPLIED` + `RESERVED` rows.
+2. Coupon `status === "ACTIVE"` and today (Bangkok) is within `[startsAt, endsAt]`.
+3. The sale's channel is in the coupon's `channels`.
+4. Quota remains: `usedCount + reservedCount < totalQuota` (or unlimited / an unused code exists).
+5. **A member is bound to the sale, and that member is `ACTIVE`.** No member → refuse.
+6. `perMemberLimit` not already reached by that member's `APPLIED` + `RESERVED` rows.
+7. The sale does not already carry a coupon.
+
+Each dead end returns its own error code (`COUPON_EXPIRED`, `COUPON_DEPLETED`, `COUPON_CHANNEL_NOT_ALLOWED`, `COUPON_MEMBER_REQUIRED`, `COUPON_MEMBER_LIMIT`, …) rather than one generic refusal, because the cashier's next move differs in each case.
 
 **At checkout** (bill creation):
 
-6. `minSpendSatang` is met by the scope base.
-7. No point redemption is selected on this bill.
+8. `minSpendSatang` is met by the scope base.
+9. No point redemption is selected on this bill.
 
-A coupon that fails step 6 at checkout does **not** block the sale. The redemption is `RELEASED` with reason `MIN_SPEND_NOT_MET`, the bill proceeds without it, and the cashier is told plainly. Blocking payment over a promotion is the wrong trade at a counter with a queue.
+A coupon that fails step 8 at checkout does **not** block the sale. The redemption is `RELEASED` with reason `MIN_SPEND_NOT_MET`, the bill proceeds without it, and the cashier is told plainly. Blocking payment over a promotion is the wrong trade at a counter with a queue. The same applies when the scope base has nothing left to discount (`NO_DISCOUNT_AVAILABLE`) — handing the voucher back beats burning it for ฿0.
+
+Step 9 is the exception: a genuine conflict between two discounts is not something to resolve silently, so it refuses (`COUPON_POINTS_CONFLICT`) and leaves the reservation intact for the cashier to decide.
 
 ### Members only
 
@@ -131,15 +140,19 @@ None. `calculateTablePoints()` earns from **play time**, not from money, so a co
 | `PATCH` | `/api/coupons/:id/status` | OWNER, MANAGER |
 | `POST` | `/api/coupons/:id/codes` | OWNER, MANAGER — generate a voucher batch |
 | `GET` | `/api/coupons/:id/redemptions` | OWNER, MANAGER |
-| `POST` | `/api/coupons/validate` | all roles — preview a code against a member before opening |
+| `POST` | `/api/coupons/validate` | all roles — preview a code against a member and a channel before the sale starts |
 
-Reserve and apply are not standalone endpoints; they happen inside table start and bill creation so a coupon can never be reserved against a session that failed to open.
+Reserve and apply are not standalone endpoints; they happen inside table start, walk-in order creation and bill creation, so a coupon can never be reserved against a sale that failed to open.
 
 Editing a coupon that already has redemptions may change presentation fields (`name`) and limits going forward, but never `discountType`, `discountValue`, or `scope` — past redemptions keep their snapshot and future ones would silently mean something different.
 
 ## UI
 
 **Open-table dialog** — below the existing member search: a coupon input plus an "ตรวจสอบ" button that calls `/api/coupons/validate` and shows the resolved discount in words before the table is opened. Disabled, with an explanatory line, until a member is selected.
+
+**Walk-in POS sale** — the same input and the same rule, on the walk-in order. A coupon whose `channels` exclude `WALK_IN` is refused there with a message that says so, rather than silently doing nothing.
+
+**Coupon form** — a "ใช้ได้ที่" checkbox pair (โต๊ะ / ขายหน้าร้าน) sets `channels`. Ticking ขายหน้าร้าน disables the `TABLE_CHARGE` scope option, since the two cannot be combined.
 
 **Checkout dialog** — the reserved coupon is shown as a read-only line with its computed discount, and a "นำคูปองออก" action that releases it. The points-redemption control is disabled while a coupon is attached, with the reason stated.
 
@@ -157,15 +170,13 @@ All carry the actor, coupon and redemption references, member and bill where app
 
 | Phase | Deliverable |
 | --- | --- |
-| 11.1 | `CouponService` + `JsonCouponRepository` + code generation + validation rules + unit tests. No UI, no wiring. |
-| 11.2 | Settings → คูปอง tab: create, edit, pause, generate batches, usage summary. |
-| 11.3 | Reserve at table open; apply/release at checkout; points mutual exclusion; receipt line. |
+| 11.1 | **Done.** `CouponService` + `JsonCouponRepository` + code generation + validation rules + the reserve/apply/release ledger + unit tests. No UI, no routes, no wiring. |
+| 11.2 | Settings → คูปอง tab: create, edit, pause, generate batches, usage summary. Routes and permissions land here. |
+| 11.3 | Reserve at table open and on a walk-in POS sale; apply/release at checkout; points mutual exclusion; receipt line. |
 | 11.4 | Reporting: redemptions per coupon, total discount given, per-member usage. |
 
 Each phase ships as its own branch and PR.
 
 ## Deferred
 
-Free-item and buy-one-get-one coupons (needs a cart-level rule engine), automatic promotions with no code (needs promotion precedence), customer segment targeting, stacking combinations, and coupons on walk-in POS sales.
-
-Walk-in is the most likely first follow-up: a `PRODUCTS`-scope coupon is a natural fit for a drink sale, and the only missing piece is a claim moment equivalent to opening a table.
+Free-item and buy-one-get-one coupons (needs a cart-level rule engine), automatic promotions with no code (needs promotion precedence), customer segment targeting, and stacking combinations.
