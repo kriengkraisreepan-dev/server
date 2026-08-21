@@ -48,7 +48,11 @@ test("a bill opened before midnight and closed after it reports under the openin
   let report = await response.json();
   assert.equal(report.billCount, 1);
   assert.equal(report.revenue, 100);
-  assert.deepEqual(report.daily, [{ date: "2026-08-13", revenue: 100 }]);
+  // Asserts the reporting DATE and the amount, not the row's whole shape — daily rows also carry a
+  // table/product split for the revenue chart, and this test has no opinion about that.
+  assert.equal(report.daily.length, 1);
+  assert.equal(report.daily[0].date, "2026-08-13");
+  assert.equal(report.daily[0].revenue, 100);
 
   // The closing day (Aug 14, Thai time) must NOT double-count it.
   response = await fetch(`${base}/api/reports/analytics?type=day&period=2026-08-14`, { headers });

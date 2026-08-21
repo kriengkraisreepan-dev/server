@@ -46,10 +46,14 @@ function niceTicks(min,max){
 // what this is: with two independent scales the crossings and gaps mean whatever the scales were
 // chosen to make them mean. Same-unit keeps every comparison honest, and it reads better anyway —
 // the gap between a bar's cap and the line IS that product's cost.
-function profitChart(products){
-  if(!products.length)return `<p class="muted">ไม่มีข้อมูลสินค้าในช่วงเวลานี้</p>`;
+// Rows arrive already shaped as {label, barValue, lineValue, tooltip[]}: the chart knows nothing
+// about what they mean, so the same validated geometry, colours and one-axis rule serve the revenue
+// view and would serve any other. The mapping from domain fields lives at each call site.
+function comboChart(rows,{legend=["",""],ariaLabel="กราฟ",emptyText="ไม่มีข้อมูลในช่วงเวลานี้",labelMaxChars=13}={}){
+  const products=rows;
+  if(!products.length)return `<p class="muted">${escapeHtml(emptyText)}</p>`;
   const W=760,H=340,padL=70,padR=18,padT=22,padB=86,plotW=W-padL-padR,plotH=H-padT-padB;
-  const revenues=products.map(item=>Number(item.revenue||0)),profits=products.map(item=>Number(item.profit||0));
+  const revenues=products.map(item=>Number(item.barValue||0)),profits=products.map(item=>Number(item.lineValue||0));
   const {ticks,lo,hi}=niceTicks(Math.min(0,...profits),Math.max(0,...revenues,...profits));
   const y=value=>padT+plotH-((value-lo)/(hi-lo))*plotH;
   const band=plotW/products.length,barW=Math.min(24,band*0.5),centre=index=>padL+band*index+band/2;
@@ -59,19 +63,27 @@ function profitChart(products){
   // the foot of the bar too and detach it from the axis it is measured from.
   const column=(x,top,width,base)=>{const height=Math.abs(base-top),radius=Math.min(4,width/2,height);
     return `<path d="M${x} ${base} L${x} ${top+radius} Q${x} ${top} ${x+radius} ${top} L${x+width-radius} ${top} Q${x+width} ${top} ${x+width} ${top+radius} L${x+width} ${base} Z" fill="var(--chart-series-1)"/>`;};
-  const bars=products.map((item,index)=>{const value=Number(item.revenue||0);if(!value)return "";return column(centre(index)-barW/2,y(value),barW,zero);}).join("");
-  const line=`<polyline points="${products.map((item,index)=>`${centre(index).toFixed(1)},${y(Number(item.profit||0)).toFixed(1)}`).join(" ")}" fill="none" stroke="var(--chart-series-2)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
-  const dots=products.map((item,index)=>`<circle cx="${centre(index).toFixed(1)}" cy="${y(Number(item.profit||0)).toFixed(1)}" r="4.5" fill="var(--chart-series-2)" stroke="var(--surface)" stroke-width="2"/>`).join("");
-  // One direct label, on the biggest seller. A number over every bar is noise nobody reads; the
-  // rest of the values live in the tooltip and the table below.
+  const bars=products.map((item,index)=>{const value=Number(item.barValue||0);if(!value)return "";return column(centre(index)-barW/2,y(value),barW,zero);}).join("");
+  const line=`<polyline points="${products.map((item,index)=>`${centre(index).toFixed(1)},${y(Number(item.lineValue||0)).toFixed(1)}`).join(" ")}" fill="none" stroke="var(--chart-series-2)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`;
+  const dots=products.map((item,index)=>`<circle cx="${centre(index).toFixed(1)}" cy="${y(Number(item.lineValue||0)).toFixed(1)}" r="4.5" fill="var(--chart-series-2)" stroke="var(--surface)" stroke-width="2"/>`).join("");
+  // One direct label, on the tallest bar. A number over every bar is noise nobody reads; the rest of
+  // the values live in the tooltip and the table below.
   const best=revenues.indexOf(Math.max(...revenues));
   const peak=revenues[best]?`<text x="${centre(best).toFixed(1)}" y="${(y(revenues[best])-10).toFixed(1)}" text-anchor="middle" class="chart-peak-text">${money(revenues[best])}</text>`:"";
-  const labels=products.map((item,index)=>{const name=String(item.name||"");const short=name.length>13?`${name.slice(0,12)}…`:name;const x=centre(index).toFixed(1),ly=(padT+plotH+16).toFixed(1);
+  // Past a dozen or so columns the rotated labels are wider than their own band and overlap into an
+  // unreadable smear — a month of daily bars collided on every adjacent pair. Thin them to roughly
+  // ten, counted back from the most recent column so the newest is always the one that keeps its
+  // label. Every column still names itself in the tooltip, so no date is actually lost.
+  const labelStep=Math.max(1,Math.ceil(products.length/10));
+  const labels=products.map((item,index)=>{if((products.length-1-index)%labelStep)return "";const name=String(item.label||"");const short=name.length>labelMaxChars?`${name.slice(0,labelMaxChars-1)}…`:name;const x=centre(index).toFixed(1),ly=(padT+plotH+16).toFixed(1);
     return `<text x="${x}" y="${ly}" text-anchor="end" transform="rotate(-32 ${x} ${ly})" class="chart-axis-text">${escapeHtml(short)}</text>`;}).join("");
-  const hits=products.map((item,index)=>{const revenue=Number(item.revenue||0),margin=revenue?Math.round(Number(item.profit||0)/revenue*100):0;
-    return `<rect x="${(padL+band*index).toFixed(1)}" y="${padT}" width="${band.toFixed(1)}" height="${plotH}" fill="transparent" data-chart-point="${escapeHtml(item.name||"")}|${item.quantity||0}|${money(revenue)}|${money(Number(item.cost||0))}|${money(Number(item.profit||0))}|${margin}"/>`;}).join("");
-  return `<div class="chart-legend"><span><i style="background:var(--chart-series-1)"></i>ยอดขาย</span><span><i class="line" style="background:var(--chart-series-2)"></i>กำไร</span></div>
-    <div class="chart-scroll"><div class="chart-holder"><svg viewBox="0 0 ${W} ${H}" class="chart-svg" role="img" aria-label="กราฟยอดขายและกำไรรายสินค้า">
+  const hits=products.map((item,index)=>`<rect x="${(padL+band*index).toFixed(1)}" y="${padT}" width="${band.toFixed(1)}" height="${plotH}" fill="transparent" data-chart-point="${escapeHtml((item.tooltip||[]).join("|"))}"/>`).join("");
+  // Two swatches for what is really one measure would invite the reader to look for a difference
+  // between the bars and the line that does not exist. A single-series chart is named by its
+  // heading instead.
+  const legendBox=legend.filter(Boolean).length>1?`<div class="chart-legend"><span><i style="background:var(--chart-series-1)"></i>${escapeHtml(legend[0])}</span><span><i class="line" style="background:var(--chart-series-2)"></i>${escapeHtml(legend[1])}</span></div>`:"";
+  return `${legendBox}
+    <div class="chart-scroll"><div class="chart-holder"><svg viewBox="0 0 ${W} ${H}" class="chart-svg" role="img" aria-label="${escapeHtml(ariaLabel)}">
       ${grid}${lo<0?`<line x1="${padL}" x2="${W-padR}" y1="${zero.toFixed(1)}" y2="${zero.toFixed(1)}" stroke="var(--chart-axis)" stroke-width="1"/>`:""}
       ${bars}${line}${dots}${peak}${labels}${hits}
     </svg><div id="chartTip" class="chart-tip hidden"></div></div></div>`;
@@ -80,8 +92,9 @@ function bindProfitChart(){
   const holder=document.querySelector(".chart-holder"),tip=$("#chartTip");
   if(!holder||!tip)return;
   holder.querySelectorAll("[data-chart-point]").forEach(hit=>{
-    const show=event=>{const [name,quantity,revenue,cost,profit,margin]=hit.dataset.chartPoint.split("|");
-      tip.innerHTML=`<b>${escapeHtml(name)}</b><br>ขาย ${quantity} ชิ้น<br>ยอดขาย ${revenue}<br>ต้นทุน ${cost}<br>กำไร ${profit} (${margin}%)`;
+    // The caller decides what a point says; the first line is its heading, the rest are detail.
+    const show=event=>{const parts=hit.dataset.chartPoint.split("|");
+      tip.innerHTML=`<b>${escapeHtml(parts[0]||"")}</b>${parts.slice(1).map(part=>`<br>${escapeHtml(part)}`).join("")}`;
       tip.classList.remove("hidden");
       const box=holder.getBoundingClientRect(),tipBox=tip.getBoundingClientRect();
       // Clamp inside the chart so a tooltip on the last product doesn't hang off the right edge.
@@ -106,7 +119,89 @@ function profitSection(a){
     <div class="card"><div class="muted">ต้นทุนสินค้าที่ขาย</div><div class="stat">${money(a.posCost||0)}</div><small>จากยอด POS ${money(a.posRevenue||0)}</small></div>
     <div class="card"><div class="muted">กำไรจาก POS</div><div class="stat" style="color:${Number(a.posProfit||0)<0?"#f87171":"#4ade80"}">${money(a.posProfit||0)}</div><small>อัตรากำไร POS ${a.posMargin||0}%</small></div>
     <div class="card"><div class="muted">กำไรจากค่าโต๊ะ</div><div class="stat" style="color:#4ade80">${money(a.tableRevenue||0)}</div><small>ค่าโต๊ะไม่มีต้นทุนสินค้า</small></div>
-  </div><div class="card" style="margin-top:18px"><h3>กำไรรายสินค้า</h3><p class="muted">แท่ง = ยอดขาย · เส้น = กำไร · ระยะห่างระหว่างยอดแท่งกับเส้นคือต้นทุนของสินค้านั้น</p>${profitChart(a.topProducts||[])}<details class="chart-table"><summary>ดูตัวเลขทั้งหมด</summary><table><tr><th>สินค้า</th><th class="right">จำนวน</th><th class="right">ยอดขาย</th><th class="right">ต้นทุน</th><th class="right">กำไร</th></tr>${rows}</table></details>${note}</div>`;
+  </div>${revenueSection(a)}<div class="card" style="margin-top:18px"><h3>กำไรรายสินค้า</h3><table><tr><th>สินค้า</th><th class="right">จำนวน</th><th class="right">ยอดขาย</th><th class="right">ต้นทุน</th><th class="right">กำไร</th></tr>${rows}</table>${note}</div>`;
+}
+// Days with no bills are absent from a.daily entirely. Left as-is the line would run straight from
+// one trading day to the next across the gap, drawing a slope through days that simply had no
+// sales; filling them with zero says what actually happened. Only the interior is filled — the
+// range is whatever the period actually returned, not invented either side of it.
+function fillMissingDays(daily){
+  if(daily.length<2)return daily;
+  const byDate=new Map(daily.map(entry=>[entry.date,entry]));
+  const out=[],cursor=new Date(`${daily[0].date}T00:00:00Z`),last=new Date(`${daily[daily.length-1].date}T00:00:00Z`);
+  while(cursor<=last){
+    const key=cursor.toISOString().slice(0,10);
+    out.push(byDate.get(key)||{date:key,revenue:0,tableRevenue:0,posRevenue:0});
+    cursor.setUTCDate(cursor.getUTCDate()+1);
+  }
+  return out;
+}
+// Same interior-only fill as days, one level up: a year with a quiet February should show February
+// as a gap in the trend, not as a line drawn straight over it.
+function fillMissingMonths(months){
+  if(months.length<2)return months;
+  const byKey=new Map(months.map(entry=>[entry.key,entry]));
+  const out=[],cursor=new Date(`${months[0].key}-01T00:00:00Z`),last=new Date(`${months[months.length-1].key}-01T00:00:00Z`);
+  while(cursor<=last){
+    const key=cursor.toISOString().slice(0,7);
+    out.push(byKey.get(key)||{key,revenue:0,tableRevenue:0,posRevenue:0});
+    cursor.setUTCMonth(cursor.getUTCMonth()+1);
+  }
+  return out;
+}
+function monthBuckets(daily){
+  const totals=new Map();
+  for(const entry of daily||[]){
+    const key=String(entry.date).slice(0,7), bucket=totals.get(key)||{key,revenue:0,tableRevenue:0,posRevenue:0};
+    bucket.revenue+=Number(entry.revenue||0);bucket.tableRevenue+=Number(entry.tableRevenue||0);bucket.posRevenue+=Number(entry.posRevenue||0);
+    totals.set(key,bucket);
+  }
+  return fillMissingMonths([...totals.values()].sort((a,b)=>a.key.localeCompare(b.key)));
+}
+// The x-axis follows the period the report is for, because that is the question being asked: a
+// single day is a shape *within* that day, a month is its days, a year is its months.
+function revenueBuckets(a){
+  const asDate=iso=>new Date(`${iso}T00:00:00Z`);
+  const split=entry=>[`ค่าโต๊ะ ${money(entry.tableRevenue||0)}`,`ค่าสินค้า ${money(entry.posRevenue||0)}`];
+  if(reportType==="day"){
+    const hours=a.hours||[], earning=hours.filter(entry=>Number(entry.revenue||0)>0);
+    if(!earning.length)return [];
+    // Trimmed to the hours the shop actually took money in, padded by one either side. A snooker
+    // club is shut through most of the small hours and a dozen empty columns is just dead chart.
+    const from=Math.max(0,earning[0].hour-1), to=Math.min(23,earning[earning.length-1].hour+1);
+    return hours.slice(from,to+1).map(entry=>({
+      label:`${String(entry.hour).padStart(2,"0")}:00`,
+      value:Number(entry.revenue||0),
+      detail:[`${entry.bills||0} บิล`]
+    }));
+  }
+  const daily=a.daily||[];
+  // A year is months. A custom range wider than about two months is too, or the columns become
+  // slivers — days are still what a normal range asks for.
+  if(reportType==="year"||fillMissingDays(daily).length>62){
+    return monthBuckets(daily).map(entry=>({
+      label:new Date(`${entry.key}-01T00:00:00Z`).toLocaleDateString("th-TH",{month:"short",year:"2-digit"}),
+      value:Number(entry.revenue||0), detail:split(entry)
+    }));
+  }
+  return fillMissingDays(daily).map(entry=>({
+    label:asDate(entry.date).toLocaleDateString("th-TH",{day:"numeric",month:"short"}),
+    value:Number(entry.revenue||0), detail:[asDate(entry.date).toLocaleDateString("th-TH",{weekday:"long"}),...split(entry)]
+  }));
+}
+const REVENUE_BUCKET_CAPTION={day:"แบ่งตามชั่วโมงของวันที่เลือก (เฉพาะช่วงที่ร้านมีรายได้)",month:"แบ่งตามวันที่ในเดือนที่เลือก",year:"แบ่งตามเดือนของปีที่เลือก",range:"แบ่งตามวันในช่วงที่เลือก"};
+// One series — total revenue — drawn as columns with a line across their caps, so the size of each
+// period and the shape of the trend between them read at once. There is no second measure here, so
+// there is no legend either: the heading already names what is plotted.
+function revenueSection(a){
+  const buckets=revenueBuckets(a);
+  const rows=buckets.map(entry=>({
+    label:entry.label, barValue:entry.value, lineValue:entry.value,
+    tooltip:[entry.label,`รายได้รวม ${money(entry.value)}`,...(entry.detail||[])]
+  }));
+  const caption=reportType==="range"&&buckets.length&&/\d{2}$/.test(buckets[0].label)?"แบ่งตามเดือน (ช่วงที่เลือกยาวเกินกว่าจะแสดงรายวันได้)":REVENUE_BUCKET_CAPTION[reportType]||"";
+  const numbers=buckets.length?buckets.map(entry=>`<tr><td>${escapeHtml(entry.label)}</td><td class="right"><b>${money(entry.value)}</b></td></tr>`).join(""):'<tr><td colspan="2" class="muted">ไม่มีข้อมูล</td></tr>';
+  return `<div class="card" style="margin-top:18px"><h3>รายได้รวม</h3><p class="muted">${escapeHtml(caption)}</p>${comboChart(rows,{ariaLabel:"กราฟรายได้รวม",emptyText:"ไม่มีรายได้ในช่วงเวลานี้",labelMaxChars:11})}<details class="chart-table"><summary>ดูตัวเลขทั้งหมด</summary><table><tr><th>ช่วงเวลา</th><th class="right">รายได้รวม</th></tr>${numbers}</table></details></div>`;
 }
 let settingsTabView="general";
 function settingsGeneralPanel(){ const s=state.settings; return `<div class="card form"><h3>ตั้งค่าร้าน</h3><form id="settingsForm"><label>ชื่อร้าน</label><input name="shopName" value="${s.shopName}"><label>จำนวนโต๊ะ</label><input name="tableCount" type="number" min="1" max="100" step="1" required value="${state.tables.length}"><small class="muted">เมื่อเพิ่ม ระบบจะสร้างโต๊ะใหม่อัตโนมัติ เมื่อลด ระบบจะลบโต๊ะลำดับท้ายที่ว่างเท่านั้นและสร้าง Backup ก่อนเปลี่ยน</small><label>อัตราค่าโต๊ะต่อชั่วโมง</label><input name="hourlyRate" type="number" min="0" value="${s.hourlyRate}"><label>ค่าบริการขั้นต่ำ</label><input name="minimumCharge" type="number" min="0" value="${s.minimumCharge}"><label>PromptPay ID (สำหรับแสดงในขั้นต่อไป)</label><input name="promptPayId" value="${s.promptPayId||""}"><label>โฟลเดอร์สำรองข้อมูลภายนอก (ไม่บังคับ)</label><input name="backupExternalPath" placeholder="เช่น D:\\Backups หรือ \\\\NAS\\backups" value="${escapeHtml(s.backupExternalPath||"")}"><small class="muted">ถ้าระบุ ระบบจะคัดลอกไฟล์สำรองไปที่นี่ด้วยทุกครั้งที่สำรองข้อมูล (เช่น ไดรฟ์ USB ที่เสียบค้างไว้) โดยไม่กระทบการสำรองข้อมูลหลักถ้าไดรฟ์นี้ไม่พร้อมใช้งาน</small><button>บันทึก</button></form><p class="muted">หลังเพิ่มโต๊ะ ให้ไป Hardware Manager เพื่อผูกโต๊ะใหม่กับ Device และช่อง Relay</p></div>${backupSection()}`; }
