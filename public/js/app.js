@@ -1336,4 +1336,151 @@ const bindCouponTab=bind;bind=function(){
   document.querySelectorAll("[data-coupon-usage]").forEach(button=>button.onclick=()=>openCouponUsage(button.dataset.couponUsage));
 };
 
+
+// ---- คูปองในการขายจริง (Sprint 11.3) ---------------------------------------------------------
+// A coupon is claimed when the table opens, not at checkout, so the quota is held for the whole
+// session. The field stays disabled until a member is chosen — coupons are members-only, and the
+// service refuses a non-member anyway; this is the usability half of the same rule.
+const startDialogCoupon11=startDialog;startDialog=function(id){
+  startDialogCoupon11(id);
+  const confirmButton=$("#confirmStart");
+  if(!confirmButton)return;
+  confirmButton.insertAdjacentHTML("beforebegin",`<label>คูปองส่วนลด (ไม่บังคับ)</label><input id="tableCouponCode" placeholder="กรอกโค้ดคูปอง" autocomplete="off" disabled><div class="actions"><button type="button" class="outline" id="tableCouponCheck" disabled>ตรวจสอบคูปอง</button></div><p class="muted" id="tableCouponNote">เลือกสมาชิกก่อนจึงจะใช้คูปองได้ — คูปองใช้ได้เฉพาะสมาชิกเท่านั้น</p>`);
+  const codeInput=$("#tableCouponCode"),checkButton=$("#tableCouponCheck"),note=$("#tableCouponNote");
+  const memberId=()=>$("#tableMemberId").value||"";
+  const syncEnabled=()=>{const has=Boolean(memberId());codeInput.disabled=!has;checkButton.disabled=!has;if(has&&note.textContent.startsWith("เลือกสมาชิกก่อน"))note.textContent="กรอกโค้ดแล้วกด \"ตรวจสอบคูปอง\" เพื่อดูส่วนลดก่อนเปิดโต๊ะ";};
+  // Delegated, so it runs after the member-search dialog's own click handler has set the hidden
+  // field — rather than duplicating that search here just to hook into it.
+  $("#tableMemberResults").addEventListener("click",()=>setTimeout(syncEnabled,0));
+  syncEnabled();
+  checkButton.onclick=async()=>{
+    const code=codeInput.value.trim();
+    if(!code)return notify("กรอกโค้ดคูปองก่อน",true);
+    checkButton.disabled=true;
+    try{
+      const result=await api("/api/coupons/validate",{method:"POST",body:JSON.stringify({code,memberId:memberId(),channel:"TABLE"})});
+      note.style.color="#4ade80";
+      note.textContent=`ใช้ได้: ${result.rule.name} — ${couponRuleInWords(result.rule)}`;
+    }catch(error){note.style.color="#f87171";note.textContent=couponMessage(error);}
+    checkButton.disabled=false;
+  };
+  confirmButton.onclick=async()=>{
+    confirmButton.disabled=true;
+    try{
+      const code=codeInput.value.trim();
+      const data=await api(`/api/tables/${id}/start`,{method:"POST",body:JSON.stringify({memberId:memberId()||null,couponCode:code||undefined})});
+      closeModal();await refresh();
+      notify(data.warning||(data.coupon?`เปิดโต๊ะแล้ว · รับคูปอง ${data.coupon.couponSnapshot.name} ไว้แล้ว`:"เปิดโต๊ะแล้ว"),!!data.warning);
+    }catch(error){notify(couponMessage(error),true);confirmButton.disabled=false;}
+  };
+};
+// "20% ไม่เกิน ฿100 จากทั้งบิล" — the resolved rule in words, so the cashier can read it back to the
+// customer before anything is committed.
+function couponRuleInWords(rule){
+  const amount=rule.discountType==="PERCENT"?`${rule.discountValue}%${rule.maxDiscountSatang?` ไม่เกิน ${money(rule.maxDiscountSatang/100)}`:""}`:money(rule.discountValue/100);
+  const scope={TABLE_CHARGE:"ค่าโต๊ะ",PRODUCTS:"อาหาร/เครื่องดื่ม",WHOLE_BILL:"ทั้งบิล"}[rule.scope]||rule.scope;
+  return `ลด ${amount} จาก${scope}${rule.minSpendSatang?` · ยอดขั้นต่ำ ${money(rule.minSpendSatang/100)}`:""}`;
+}
+
+// The checkout dialog shows the reserved coupon where the points panel would be, and says plainly
+// why points are unavailable rather than silently dropping one of the two.
+const rewardPanelCoupon11=rewardPanel;rewardPanel=function(preview){
+  const coupon=preview?.coupon;
+  if(!coupon)return rewardPanelCoupon11(preview);
+  const shortfall=coupon.meetsMinSpend?"":`<br><span class="muted">ยอดที่คูปองนี้ลดได้คือ ${money(coupon.baseSatang/100)} ยังไม่ถึงขั้นต่ำ ${money(coupon.minSpendSatang/100)} — ระบบจะคืนคูปองให้ลูกค้าและปล่อยบิลผ่านตามปกติ</span>`;
+  return `<div class="card" id="checkoutCouponPanel"><h3>คูปอง</h3><p>${escapeHtml(coupon.name)} · <code>${escapeHtml(coupon.code||"")}</code><br>ส่วนลด <b id="checkoutCouponAmount">-${money(coupon.discountSatang/100)}</b>${shortfall}</p><p class="muted">ใช้แต้มสมาชิกร่วมกับคูปองในบิลเดียวกันไม่ได้ — ถ้าลูกค้าอยากใช้แต้มแทน ให้นำคูปองออกก่อน</p><div class="actions"><button type="button" class="outline" id="removeCheckoutCoupon">นำคูปองออก</button></div></div>`;
+};
+// Also the refresh hook: the manual ฿ discount changes the scope base, so the coupon's own figure
+// has to follow it. bindRewardPanel is called with a freshly fetched preview each time.
+const bindRewardPanelCoupon11=bindRewardPanel;bindRewardPanel=async function(preview){
+  const amount=$("#checkoutCouponAmount");
+  if(amount&&preview?.coupon)amount.textContent=`-${money(preview.coupon.discountSatang/100)}`;
+  const removeButton=$("#removeCheckoutCoupon");
+  if(removeButton)removeButton.onclick=async()=>{
+    removeButton.disabled=true;
+    try{
+      await api(`/api/table-sessions/${preview.tableSessionId}/coupon`,{method:"DELETE"});
+      notify("นำคูปองออกแล้ว — สิทธิ์ถูกคืนให้ลูกค้า");
+      closeModal();
+      await checkoutDialog(preview.tableId);
+    }catch(error){notify(error.message,true);removeButton.disabled=false;}
+  };
+  return bindRewardPanelCoupon11(preview);
+};
+
+// Receipt line, itemising the coupon's share of the ส่วนลด total — the same convention the
+// point-redemption line already follows.
+const printBillCoupon11=printBill;printBill=function(id){
+  const bill=state.bills.find(item=>item.id===id);
+  if(!bill||!Number(bill.couponDiscountSatang))return printBillCoupon11(id);
+  const open=window.open;
+  window.open=function(...args){
+    const popup=open.apply(window,args);
+    if(!popup)return popup;
+    const write=popup.document.write.bind(popup.document);
+    popup.document.write=html=>{
+      const line=`<div class="line"></div><table><tr><td>ส่วนลดจากคูปอง<br><span style="font-size:10px">${escapeHtml(bill.couponName||"")}${bill.couponCode?` · ${escapeHtml(bill.couponCode)}`:""}</span></td><td class="right">-${money(bill.couponDiscountSatang/100)}</td></tr></table>`;
+      write(String(html).replace('<div id="receiptExtensionPoint"></div>',`${line}<div id="receiptExtensionPoint"></div>`));
+    };
+    return popup;
+  };
+  try{return printBillCoupon11(id);}finally{window.open=open;}
+};
+
+
+// The service speaks English and returns a distinct code for every dead end; the counter speaks
+// Thai and needs to know what to do next. Falls back to the server's own message for anything not
+// listed, so a new code never shows up as a blank error.
+const COUPON_ERROR_MESSAGES={
+  COUPON_CODE_NOT_FOUND:"ไม่พบโค้ดคูปองนี้ ลองตรวจตัวอักษรอีกครั้ง",
+  COUPON_EXPIRED:"คูปองนี้หมดอายุแล้ว",
+  COUPON_NOT_STARTED:"คูปองนี้ยังไม่ถึงวันเริ่มใช้",
+  COUPON_DEPLETED:"คูปองนี้ถูกใช้ครบจำนวนแล้ว",
+  COUPON_NOT_ACTIVE:"คูปองนี้ยังไม่เปิดใช้งาน",
+  COUPON_CODE_USED:"คูปองใบนี้ถูกใช้ไปแล้ว",
+  COUPON_CHANNEL_NOT_ALLOWED:"คูปองนี้ใช้กับการขายแบบนี้ไม่ได้",
+  COUPON_MEMBER_REQUIRED:"คูปองใช้ได้เฉพาะสมาชิกที่ยังใช้งานอยู่",
+  COUPON_MEMBER_LIMIT:"สมาชิกรายนี้ใช้คูปองนี้ครบจำนวนครั้งที่กำหนดแล้ว",
+  COUPON_ALREADY_RESERVED:"บิลนี้มีคูปองติดอยู่แล้ว",
+  COUPON_POINTS_CONFLICT:"ใช้แต้มร่วมกับคูปองในบิลเดียวกันไม่ได้"
+};
+const couponMessage=error=>COUPON_ERROR_MESSAGES[error?.code]||error?.message||"ใช้คูปองไม่สำเร็จ";
+
+// The same coupon field on a walk-in sale. A walk-in has no interval to protect — the claim and the
+// payment are the same moment — so the code goes in here, at the till, rather than earlier.
+const walkInCheckoutCoupon11=walkInCheckout;walkInCheckout=async function(orderId){
+  await walkInCheckoutCoupon11(orderId);
+  const confirmButton=$("#createWalkInBill");
+  if(!confirmButton)return;
+  let preview;
+  try{preview=await api(`/api/pos-orders/${orderId}/billing-preview`);}catch{return;}
+  const actions=confirmButton.parentElement;
+  actions.insertAdjacentHTML("beforebegin",preview.memberId
+    ?`<label>คูปองส่วนลด (ไม่บังคับ)</label><input id="walkInCouponCode" placeholder="กรอกโค้ดคูปอง" autocomplete="off"><div class="actions"><button type="button" class="outline" id="walkInCouponCheck">ตรวจสอบคูปอง</button></div><p class="muted" id="walkInCouponNote">คูปองที่ตั้งไว้ว่าใช้กับ "ขายหน้าร้าน" เท่านั้นจึงจะใช้ที่นี่ได้</p>`
+    :`<p class="muted">ใช้คูปองกับรายการนี้ไม่ได้ เพราะยังไม่ได้ผูกสมาชิก — คูปองใช้ได้เฉพาะสมาชิก</p>`);
+  const note=$("#walkInCouponNote"),codeInput=$("#walkInCouponCode");
+  if($("#walkInCouponCheck"))$("#walkInCouponCheck").onclick=async()=>{
+    const code=codeInput.value.trim();
+    if(!code)return notify("กรอกโค้ดคูปองก่อน",true);
+    try{
+      const result=await api("/api/coupons/validate",{method:"POST",body:JSON.stringify({code,memberId:preview.memberId,channel:"WALK_IN",baseSatang:preview.totalSatang})});
+      note.style.color="#4ade80";
+      note.textContent=`ใช้ได้: ${result.rule.name} — ลดจริง ${money((result.discountSatang||0)/100)}`;
+    }catch(error){note.style.color="#f87171";note.textContent=couponMessage(error);}
+  };
+  confirmButton.onclick=async()=>{
+    confirmButton.disabled=true;
+    try{
+      const code=codeInput?.value.trim()||"";
+      const created=await api(`/api/pos-orders/${orderId}/create-bill`,{method:"POST",body:JSON.stringify({...paymentPanelPayload(),...normalizedRewardPayload(preview),couponCode:code||undefined})});
+      closeModal();await refresh();
+      // The bill still went through — say so plainly rather than letting the cashier discover the
+      // missing discount on the printed receipt.
+      if(created.coupon?.released==="MIN_SPEND_NOT_MET")notify("ยอดไม่ถึงขั้นต่ำของคูปอง — คืนคูปองให้ลูกค้าและออกบิลตามปกติ",true);
+      else if(created.coupon?.discountSatang)notify(`ใช้คูปองแล้ว ลด ${money(created.coupon.discountSatang/100)}`);
+      openWalkInPaymentConfirmation(created.bill,created.payments||[created.payment],orderId);
+    }catch(error){notify(couponMessage(error),true);confirmButton.disabled=false;}
+  };
+};
+
 nav();

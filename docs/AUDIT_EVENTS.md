@@ -33,3 +33,8 @@ Events use the existing JSON `auditLogs[]` structure and include the actor, POS 
 `DEPLETED` is a fact about the ledger rather than a decision, so it is derived on every count and is
 deliberately not a `COUPON_STATUS_CHANGED` event. Coupon codes themselves are recorded (staff need to
 trace a specific voucher); no member personal data beyond the member id is written.
+
+`COUPON_UNAPPLIED` was added in Sprint 11.3: a bill was created and the coupon consumed, but no valid
+payment could be attached and the sale was reopened. The claim goes back to `RESERVED` against the
+same session rather than being released, so the customer does not quietly lose their coupon on a sale
+that is still in progress.

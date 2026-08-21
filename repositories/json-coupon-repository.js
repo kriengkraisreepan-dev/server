@@ -23,6 +23,8 @@ class JsonCouponRepository {
   redemptionsForMember(couponId, memberId) { return this.redemptions().filter(entry => entry.couponId === couponId && entry.memberId === memberId); }
   findReservedBySession(tableSessionId) { return this.redemptions().find(entry => entry.status === "RESERVED" && entry.tableSessionId && entry.tableSessionId === tableSessionId) || null; }
   findReservedByPosOrder(posOrderId) { return this.redemptions().find(entry => entry.status === "RESERVED" && entry.posOrderId && entry.posOrderId === posOrderId) || null; }
+  // Used when a bill is voided or reopened, where the bill is all the caller has to go on.
+  findLiveByBill(billId) { return this.redemptions().find(entry => entry.billId && entry.billId === billId && entry.status !== "RELEASED") || null; }
 
   saveCoupon(coupon) { const items = this.coupons(); const index = items.findIndex(item => item.id === coupon.id); if (index < 0) items.unshift(coupon); else items[index] = coupon; this.save(); return coupon; }
   saveCode(code) { const items = this.codes(); const index = items.findIndex(item => item.id === code.id); if (index < 0) items.push(code); else items[index] = code; this.save(); return code; }
