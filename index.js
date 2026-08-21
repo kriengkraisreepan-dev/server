@@ -644,7 +644,14 @@ app.get("/api/reports/analytics", (req, res) => {
   const requestedFrom = isoDay(req.query.from) || now.toISOString().slice(0, 10);
   const requestedTo = isoDay(req.query.to) || requestedFrom;
   const [rangeFrom, rangeTo] = requestedFrom <= requestedTo ? [requestedFrom, requestedTo] : [requestedTo, requestedFrom];
-  const partCache=new Map(),part=date=>{const key=String(date);if(partCache.has(key))return partCache.get(key);const shifted=new Date(new Date(date).getTime()+7*60*60*1000),value={year:String(shifted.getUTCFullYear()),month:String(shifted.getUTCMonth()+1).padStart(2,"0"),day:String(shifted.getUTCDate()).padStart(2,"0"),hour:String(shifted.getUTCHours()).padStart(2,"0")};partCache.set(key,value);return value;};
+  // year/month/day are the BUSINESS day and hour is the real clock hour, and they deliberately come
+  // from different shifts. Trading runs past midnight, so the business day rolls at
+  // businessDayStartHour (06:00 by default) and a 02:00 bill belongs to the night before. The hour
+  // must not move with it: a bill taken at 02:00 was taken at 02:00, and shifting it would put the
+  // peak-hour figure and the hourly revenue chart an hour or six out of step with the clock on the
+  // wall.
+  const dayShiftMs=(7-Number(settingsService.getSettings().businessDayStartHour ?? 6))*60*60*1000;
+  const partCache=new Map(),part=date=>{const key=String(date);if(partCache.has(key))return partCache.get(key);const clock=new Date(new Date(date).getTime()+7*60*60*1000),business=new Date(new Date(date).getTime()+dayShiftMs),value={year:String(business.getUTCFullYear()),month:String(business.getUTCMonth()+1).padStart(2,"0"),day:String(business.getUTCDate()).padStart(2,"0"),hour:String(clock.getUTCHours()).padStart(2,"0")};partCache.set(key,value);return value;};
   const dateKey = bill => { const p = part(billReportingTimestamp(bill)); return `${p.year}-${p.month}-${p.day}`; };
   const periodKey = bill => { const p = part(billReportingTimestamp(bill)); return type === "year" ? p.year : type === "day" ? `${p.year}-${p.month}-${p.day}` : `${p.year}-${p.month}`; };
   // Single membership test for every series on this endpoint (bills, point transactions, new
