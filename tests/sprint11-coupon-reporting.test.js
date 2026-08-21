@@ -1,7 +1,7 @@
 const assert = require("assert");
 const fs = require("fs"), os = require("os"), path = require("path");
 const { spawn } = require("child_process");
-const root = path.resolve(__dirname, ".."), dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "lucky-coupon-report-")), port = 38500 + Math.floor(Math.random() * 400), base = `http://127.0.0.1:${port}`;
+const root = path.resolve(__dirname, ".."), dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "lucky-coupon-report-")), port = 39000 + Math.floor(Math.random() * 400), base = `http://127.0.0.1:${port}`;
 const child = spawn(process.execPath, ["index.js"], { cwd: root, env: { ...process.env, PORT: String(port), LUCKY_DATA_DIR: dataDir }, stdio: "ignore" });
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function wait(){for(let i=0;i<40;i+=1){try{if((await fetch(`${base}/api/state`)).status===401)return;}catch{}await pause(100);}throw new Error("test server did not start");}
@@ -15,8 +15,12 @@ async function body(response){assert.match(response.headers.get("content-type")|
   const post=(url,payload)=>fetch(`${base}${url}`,{method:"POST",headers,body:JSON.stringify(payload||{})});
   const del=(url,payload)=>fetch(`${base}${url}`,{method:"DELETE",headers,body:JSON.stringify(payload||{})});
   const sessionOf=async tableId=>((await body(await get("/api/state"))).tables.find(table=>String(table.id)===String(tableId))).runtimeSessionId;
-  const today=new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Bangkok",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date());
-  const analytics=async()=>body(await get(`/api/reports/analytics?type=day&period=${today}`));
+  // The reporting day is the BUSINESS day, which rolls at 06:00 — between midnight and 06:00 the
+  // Bangkok calendar date is already tomorrow while the night's takings still belong to yesterday.
+  // Bucketing this test by the calendar date passed all day and failed every night, which is the one
+  // stretch the shop is actually busy. Mirrors dayShiftMs in index.js.
+  const businessDay=()=>new Date(Date.now()+(7-6)*60*60*1000).toISOString().slice(0,10);
+  const analytics=async()=>body(await get(`/api/reports/analytics?type=day&period=${businessDay()}`));
 
   // Nothing has happened yet, so the report must be honestly empty rather than absent.
   let report=await analytics();
