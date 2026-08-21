@@ -1483,4 +1483,26 @@ const walkInCheckoutCoupon11=walkInCheckout;walkInCheckout=async function(orderI
   };
 };
 
+
+// ---- รายงานคูปอง (Sprint 11.4) ---------------------------------------------------------------
+// Hidden entirely until coupons are actually in use — a shop that never runs a promotion should not
+// carry a permanent "฿0" block on its reports page.
+const reportsCoupons11=reports;reports=function(){
+  const base=reportsCoupons11();
+  if(!analytics||!["OWNER","MANAGER"].includes(state.user.role))return base;
+  if(!analytics.couponRedemptions&&!analytics.outstandingCouponReservations)return base;
+  const scopes={TABLE_CHARGE:"ค่าโต๊ะ",PRODUCTS:"อาหาร/เครื่องดื่ม",WHOLE_BILL:"ทั้งบิล"};
+  const channelLabel=channels=>Object.entries(channels||{}).map(([key,count])=>`${key==="WALK_IN"?"หน้าร้าน":"โต๊ะ"} ${count}`).join(" · ")||"-";
+  const couponRows=(analytics.topCoupons||[]).map(row=>`<tr><td>${escapeHtml(row.name)}${row.code?`<br><small class="muted">${escapeHtml(row.code)}</small>`:`<br><small class="muted">ใบต่อใบ</small>`}</td><td>${scopes[row.scope]||row.scope||"-"}</td><td>${row.redemptions}</td><td><small>${escapeHtml(channelLabel(row.channels))}</small></td><td>${row.members}</td><td>${money(row.discount)}</td></tr>`).join("")||`<tr><td colspan="6" class="muted">ยังไม่มีการใช้คูปองในช่วงนี้</td></tr>`;
+  const memberRows=(analytics.topCouponMembers||[]).map(row=>`<li>${escapeHtml(row.memberCode||"-")} ${escapeHtml(row.name||"-")} — ${row.redemptions} ครั้ง · ${money(row.discount)}</li>`).join("")||'<li class="muted">ไม่มีข้อมูล</li>';
+  return base+`<h3 style="margin-top:25px">คูปองส่วนลด</h3><div class="grid">`
+    +`<div class="card"><div class="muted">ส่วนลดจากคูปอง</div><div class="stat">${money(analytics.couponDiscount||0)}</div></div>`
+    +`<div class="card"><div class="muted">จำนวนครั้งที่ใช้</div><div class="stat">${analytics.couponRedemptions||0}</div></div>`
+    +`<div class="card"><div class="muted">คูปองที่ถูกใช้ / สมาชิก</div><div class="stat">${analytics.couponsUsed||0} / ${analytics.couponMembers||0}</div></div>`
+    // Claimed but not yet paid for: quota that is spoken for and has not cost the shop anything yet.
+    +`<div class="card"><div class="muted">จองสิทธิ์ไว้ ยังไม่ชำระ</div><div class="stat">${analytics.outstandingCouponReservations||0}</div></div></div>`
+    +`<div class="grid" style="margin-top:18px"><div class="card"><h3>คูปองที่ให้ส่วนลดมากที่สุด</h3><table><tr><th>คูปอง</th><th>ลดกับ</th><th>ใช้</th><th>ช่องทาง</th><th>สมาชิก</th><th>ส่วนลดรวม</th></tr>${couponRows}</table></div>`
+    +`<div class="card"><h3>สมาชิกที่ใช้คูปองมากที่สุด</h3><ol>${memberRows}</ol></div></div>`;
+};
+
 nav();

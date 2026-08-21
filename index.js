@@ -818,11 +818,40 @@ app.get("/api/reports/analytics", (req, res) => {
   const paymentMethodTotals={};paidPayments.forEach(p=>{const key=p.method||"cash";const entry=paymentMethodTotals[key]||{method:key,amount:0,count:0};entry.amount+=Number(p.amount||0);entry.count+=1;paymentMethodTotals[key]=entry;});
   const paymentMethodTotalAmount=Object.values(paymentMethodTotals).reduce((total,entry)=>total+entry.amount,0);
   const paymentMethodBreakdown=Object.values(paymentMethodTotals).map(entry=>({...entry,percent:paymentMethodTotalAmount?Number((entry.amount/paymentMethodTotalAmount*100).toFixed(1)):0})).sort((a,b)=>b.amount-a.amount);
+  // Coupons are counted through their bill rather than by their own timestamp, so the discount
+  // given always lines up with the revenue reported for the same period — including the 06:00
+  // business-day roll and the "a table counts on the night it opened" rule. Only APPLIED rows on a
+  // paid bill count: a reservation is not a giveaway until somebody actually pays.
+  const billById=new Map(bills.map(bill=>[bill.id,bill]));
+  const couponRows=(store.couponRedemptions||[]).filter(entry=>entry.status==="APPLIED"&&billIds.has(entry.billId));
+  const couponsById=new Map((store.coupons||[]).map(coupon=>[coupon.id,coupon]));
+  const couponTotals={},couponMemberTotals={};
+  couponRows.forEach(entry=>{
+    const coupon=couponsById.get(entry.couponId),discount=Number(entry.discountSatang||0)/100,bill=billById.get(entry.billId);
+    const row=couponTotals[entry.couponId]||{couponId:entry.couponId,name:entry.couponSnapshot?.name||coupon?.name||"-",code:coupon?.code||null,codeMode:coupon?.codeMode||"SHARED",scope:entry.scopeSnapshot||coupon?.scope||null,channels:{},redemptions:0,discount:0,memberIds:new Set()};
+    row.redemptions+=1;row.discount+=discount;row.memberIds.add(entry.memberId);row.channels[entry.channel||"TABLE"]=(row.channels[entry.channel||"TABLE"]||0)+1;
+    couponTotals[entry.couponId]=row;
+    // Member identity comes off the bill, which snapshotted it at the time — editing a member
+    // profile later must not rewrite what past reports say.
+    const member=couponMemberTotals[entry.memberId]||{memberId:entry.memberId,memberCode:bill?.memberCode||null,name:bill?.memberName||"-",redemptions:0,discount:0};
+    member.redemptions+=1;member.discount+=discount;couponMemberTotals[entry.memberId]=member;
+  });
+  const couponReport={
+    couponDiscount:Number(couponRows.reduce((total,entry)=>total+Number(entry.discountSatang||0)/100,0).toFixed(2)),
+    couponRedemptions:couponRows.length,
+    couponsUsed:Object.keys(couponTotals).length,
+    couponMembers:Object.keys(couponMemberTotals).length,
+    topCoupons:Object.values(couponTotals).map(({memberIds,...row})=>({...row,members:memberIds.size,discount:Number(row.discount.toFixed(2))})).sort((a,b)=>b.discount-a.discount||b.redemptions-a.redemptions).slice(0,10),
+    topCouponMembers:Object.values(couponMemberTotals).map(row=>({...row,discount:Number(row.discount.toFixed(2))})).sort((a,b)=>b.discount-a.discount).slice(0,10),
+    // Live, not period-scoped — the same way outstandingPoints is. This is what has been claimed and
+    // not yet paid for: quota that is spoken for but has not cost the shop anything yet.
+    outstandingCouponReservations:(store.couponRedemptions||[]).filter(entry=>entry.status==="RESERVED").length
+  };
   // Table time has no cost of goods, so all of it is margin; only POS items carry a cost basis.
   const posCost = Number(bills.reduce((total, b) => total + (b.items || []).reduce((s, i) => s + itemCost(i), 0), 0).toFixed(2));
   const grossProfit = Number((sum("total") - posCost).toFixed(2));
   const posProfit = Number((sum("foodAmount") - posCost).toFixed(2));
-  res.json({ type, period, from: type === "range" ? rangeFrom : null, to: type === "range" ? rangeTo : null, billCount: bills.length, revenue: sum("total"), tableRevenue: sum("playAmount"), posRevenue: sum("foodAmount"), posCost, grossProfit, posProfit, profitMargin: sum("total") ? Number((grossProfit / sum("total") * 100).toFixed(1)) : 0, posMargin: sum("foodAmount") ? Number((posProfit / sum("foodAmount") * 100).toFixed(1)) : 0, estimatedCostItems, averageBill: bills.length ? Number((sum("total") / bills.length).toFixed(2)) : 0, peakHour: top(hours), peakWeekday: top(weekdays), hours, weekdays, daily: Object.entries(daily).sort(([a], [b]) => a.localeCompare(b)).map(([date, totals]) => ({ date, revenue: Number(totals.revenue.toFixed(2)), tableRevenue: Number(totals.tableRevenue.toFixed(2)), posRevenue: Number(totals.posRevenue.toFixed(2)) })), topProducts: Object.values(products).map(item => ({ ...item, cost: Number(item.cost.toFixed(2)), profit: Number((item.revenue - item.cost).toFixed(2)) })).sort((a, b) => b.revenue - a.revenue).slice(0, 10), memberRevenue, nonMemberRevenue:Number((sum("total")-memberRevenue).toFixed(2)), topMembersBySpend:Object.values(members).sort((a,b)=>b.revenue-a.revenue).slice(0,10), topMembersByVisit:Object.values(members).sort((a,b)=>b.visits-a.visits).slice(0,10), pointsEarned:points.filter(tx=>tx.type==="EARN").reduce((total,tx)=>total+Number(tx.points||0),0), pointsVoided:Math.abs(points.filter(tx=>tx.type==="VOID").reduce((total,tx)=>total+Number(tx.points||0),0)), pointsExpired:Math.abs(points.filter(tx=>tx.type==="EXPIRE").reduce((total,tx)=>total+Number(tx.points||0),0)), redeemedPoints:bills.reduce((total,b)=>total+Number(b.redeemedPoints||0),0), rewardDiscount:bills.reduce((total,b)=>total+Number(b.redeemValue||0),0), outstandingPoints:(store.members||[]).reduce((total,m)=>total+Number(m.points||0),0), topRedeemers:Object.values(redeemers).sort((a,b)=>b.points-a.points).slice(0,10), newMembers, paymentMethodBreakdown });
+  res.json({ type, period, from: type === "range" ? rangeFrom : null, to: type === "range" ? rangeTo : null, billCount: bills.length, revenue: sum("total"), tableRevenue: sum("playAmount"), posRevenue: sum("foodAmount"), posCost, grossProfit, posProfit, profitMargin: sum("total") ? Number((grossProfit / sum("total") * 100).toFixed(1)) : 0, posMargin: sum("foodAmount") ? Number((posProfit / sum("foodAmount") * 100).toFixed(1)) : 0, estimatedCostItems, averageBill: bills.length ? Number((sum("total") / bills.length).toFixed(2)) : 0, peakHour: top(hours), peakWeekday: top(weekdays), hours, weekdays, daily: Object.entries(daily).sort(([a], [b]) => a.localeCompare(b)).map(([date, totals]) => ({ date, revenue: Number(totals.revenue.toFixed(2)), tableRevenue: Number(totals.tableRevenue.toFixed(2)), posRevenue: Number(totals.posRevenue.toFixed(2)) })), topProducts: Object.values(products).map(item => ({ ...item, cost: Number(item.cost.toFixed(2)), profit: Number((item.revenue - item.cost).toFixed(2)) })).sort((a, b) => b.revenue - a.revenue).slice(0, 10), memberRevenue, nonMemberRevenue:Number((sum("total")-memberRevenue).toFixed(2)), topMembersBySpend:Object.values(members).sort((a,b)=>b.revenue-a.revenue).slice(0,10), topMembersByVisit:Object.values(members).sort((a,b)=>b.visits-a.visits).slice(0,10), pointsEarned:points.filter(tx=>tx.type==="EARN").reduce((total,tx)=>total+Number(tx.points||0),0), pointsVoided:Math.abs(points.filter(tx=>tx.type==="VOID").reduce((total,tx)=>total+Number(tx.points||0),0)), pointsExpired:Math.abs(points.filter(tx=>tx.type==="EXPIRE").reduce((total,tx)=>total+Number(tx.points||0),0)), redeemedPoints:bills.reduce((total,b)=>total+Number(b.redeemedPoints||0),0), rewardDiscount:bills.reduce((total,b)=>total+Number(b.redeemValue||0),0), outstandingPoints:(store.members||[]).reduce((total,m)=>total+Number(m.points||0),0), topRedeemers:Object.values(redeemers).sort((a,b)=>b.points-a.points).slice(0,10), newMembers, paymentMethodBreakdown, ...couponReport });
 });
 app.get("/api/integrity", requirePermission(PERMISSIONS.SETTINGS_MANAGE), (req,res)=>res.json(integrityCheckService.run()));
 app.get("/api/health", requirePermission(PERMISSIONS.SETTINGS_MANAGE), (req,res)=>res.json(healthService.status()));
