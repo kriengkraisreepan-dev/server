@@ -14,7 +14,7 @@ Two independent lifecycles:
 
 **The coupon (the campaign)** — `DRAFT → ACTIVE → PAUSED → ACTIVE → EXPIRED | DEPLETED`. A coupon that has ever been redeemed is never deleted, only paused or expired.
 
-**A redemption** — `RESERVED → APPLIED` or `RESERVED → RELEASED`.
+**A redemption** — `RESERVED → APPLIED` or `RESERVED → RELEASED`, plus one way back: `APPLIED → RESERVED` when a bill was created but no valid payment could be attached and the sale was reopened. Releasing there would quietly cost the customer their coupon on a sale that is still in progress.
 
 ```
 open table  ──► RESERVED   (quota held, code locked, member recorded)
@@ -172,7 +172,7 @@ All carry the actor, coupon and redemption references, member and bill where app
 | --- | --- |
 | 11.1 | **Done.** `CouponService` + `JsonCouponRepository` + code generation + validation rules + the reserve/apply/release ledger + unit tests. No UI, no routes, no wiring. |
 | 11.2 | **Done.** Settings → คูปอง tab: create, edit, pause, generate batches, usage summary. Routes and the `coupon.view` / `coupon.manage` permissions land here. |
-| 11.3 | Reserve at table open and on a walk-in POS sale; apply/release at checkout; points mutual exclusion; receipt line. |
+| 11.3 | **Done.** Reserve at table open and on a walk-in POS sale; apply/release at checkout; release on cancel and void; points mutual exclusion; receipt line. |
 | 11.4 | Reporting: redemptions per coupon, total discount given, per-member usage. |
 
 Each phase ships as its own branch and PR.

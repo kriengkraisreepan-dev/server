@@ -136,3 +136,16 @@ Points are deducted only by payment confirmation, not by preview or bill creatio
 | POST | `/api/coupons/validate` | Any signed-in role | Check a code against a member and a channel; returns the exact discount when `baseSatang` is supplied |
 
 `/api/coupons/validate` is deliberately open to every role: the cashier typing the code in is the one who needs the answer, and a 403 there would read as a broken coupon. Reserve and apply are not endpoints of their own — they happen inside table start, walk-in order creation and bill creation (Sprint 11.3).
+
+### Sprint 11.3 — coupons on the sale
+
+| Method | Path | Change |
+|---|---|---|
+| POST | `/api/tables/:id/start` | Optional `couponCode`. Validated before the session exists; if the reservation itself fails the session is cancelled, so a refused coupon never leaves a half-open table. Returns the redemption as `coupon` |
+| GET | `/api/table-sessions/:id/billing-preview` | Adds `preview.coupon` (resolved discount, `meetsMinSpend`, the scope base) and `preview.netTotalSatang`. The deposit is measured against the post-coupon total |
+| DELETE | `/api/table-sessions/:id/coupon` | Take the coupon off at the counter; the quota is returned and a printed voucher goes back in circulation |
+| POST | `/api/table-sessions/:id/create-bill` | Applies the reserved coupon before the deposit. Refuses with `COUPON_POINTS_CONFLICT` (409) if points are also requested |
+| POST | `/api/pos-orders/:id/create-bill` | Optional `couponCode` — a walk-in claims and consumes in the one request |
+| DELETE | `/api/bills/:id` | Voiding releases the coupon (`BILL_VOIDED`) |
+
+Bills carry `couponRedemptionId`, `couponId`, `couponCode`, `couponName`, `couponScope`, `couponDiscountSatang` and `couponDiscount`. The discount is taken off the part of the bill the scope names and the total is rebuilt from the parts, so `tableChargeSatang + foodAmountSatang === totalSatang` still holds. It is also folded into `bill.discount`, the same way point redemption is, because reporting asks how much was given away rather than by which mechanism.

@@ -319,6 +319,26 @@ class CouponService {
     return { redemption, discountSatang, released: null, baseSatang: base };
   }
 
+  liveForBill(billId) { return billId ? this.repository.findLiveByBill(billId) : null; }
+
+  // The one way back out of APPLIED that is not a release: a bill was created and the coupon
+  // consumed, but no valid payment could be attached and the table was reopened. Releasing there
+  // would quietly cost the customer their coupon on a sale that is still in progress, so the
+  // reservation goes back to being held against the same session and re-applies at the next
+  // checkout attempt. See CombinedBillingService#reopenUnpaidBill.
+  unapply(redemptionId, reason, actor) {
+    const redemption = this.repository.findRedemption(redemptionId);
+    if (!redemption) this.fail("COUPON_REDEMPTION_NOT_FOUND", "Coupon redemption not found");
+    if (redemption.status !== APPLIED) return redemption;
+    Object.assign(redemption, { status: RESERVED, billId: null, discountSatang: 0, appliedAt: null, appliedBy: null });
+    this.repository.saveRedemption(redemption);
+    const couponCode = redemption.couponCodeId ? this.repository.findCodeById(redemption.couponCodeId) : null;
+    if (couponCode) { couponCode.status = RESERVED; this.repository.saveCode(couponCode); }
+    this.recount(this.get(redemption.couponId));
+    this.audit("COUPON_UNAPPLIED", actor, { couponId: redemption.couponId, redemptionId: redemption.id, memberId: redemption.memberId, reason: text(reason) || "BILL_REOPENED" });
+    return redemption;
+  }
+
   // Returns the quota and, for a unique voucher, puts the code back in circulation. Reachable from
   // both RESERVED (table cancelled, coupon removed at checkout) and APPLIED (the bill was voided).
   release(redemptionId, reason, actor) {

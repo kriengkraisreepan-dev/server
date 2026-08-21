@@ -489,20 +489,91 @@ function discountFromBody(body={}) {
 }
 function shouldRedeem(reward, saleSource="TABLE") { if(!reward.redeemedPoints)return false; if(saleSource==="WALK_IN") throw rewardError("REDEEM_NOT_ALLOWED","Walk-in sales cannot redeem points"); if(!reward.memberId) throw rewardError("MEMBER_REQUIRED","A member is required to redeem points"); return true; }
 function selectBillRewards(bill, reward, actor) { if (!shouldRedeem(reward)) return null; const result = memberService.selectRedeem(bill, reward.redeemedPoints, settingsService.getSettings(), actor); billingRepository.saveBill(bill); return result; }
+// ---- coupons on a bill (Sprint 11.3) --------------------------------------------------------
+// The coupon was claimed when the sale started; here is where it is spent, against the bill that
+// actually exists. A table sale carries its reservation on the session, a walk-in on its POS order.
+function couponForBill(bill) {
+  if (bill.tableSessionId) { const reserved = couponService.reservedForSession(bill.tableSessionId); if (reserved) return reserved; }
+  for (const orderId of bill.posOrderIds || []) { const reserved = couponService.reservedForPosOrder(orderId); if (reserved) return reserved; }
+  return null;
+}
+// The discount comes off the part of the bill the coupon's scope names, and the total is rebuilt
+// from those parts rather than adjusted — a receipt whose lines do not add up is worse than one
+// that is a baht off. Same shape as MemberService#selectRedeem, deliberately.
+function foldCouponDiscount(bill, redemption, discountSatang) {
+  const scope = redemption.scopeSnapshot;
+  let remaining = discountSatang;
+  if (scope !== "PRODUCTS") {
+    const off = Math.min(remaining, Number(bill.tableChargeSatang) || 0);
+    bill.tableChargeSatang = (Number(bill.tableChargeSatang) || 0) - off;
+    bill.playAmountSatang = bill.tableChargeSatang;
+    bill.playAmount = Number(satangToBaht(bill.tableChargeSatang));
+    remaining -= off;
+  }
+  if (scope !== "TABLE_CHARGE") {
+    const off = Math.min(remaining, Number(bill.foodAmountSatang) || 0);
+    bill.foodAmountSatang = (Number(bill.foodAmountSatang) || 0) - off;
+    bill.foodAmount = Number(satangToBaht(bill.foodAmountSatang));
+    remaining -= off;
+  }
+  bill.totalSatang = bill.tableChargeSatang + bill.foodAmountSatang;
+  bill.total = Number(satangToBaht(bill.totalSatang));
+  // Folded into bill.discount for the same reason point redemption is: reporting asks "how much was
+  // given away on this bill", not "by which mechanism".
+  bill.discount = Number((Number(bill.discount || 0) + discountSatang / 100).toFixed(2));
+  Object.assign(bill, { couponRedemptionId: redemption.id, couponId: redemption.couponId, couponCode: redemption.code, couponName: redemption.couponSnapshot.name, couponScope: scope, couponDiscountSatang: discountSatang, couponDiscount: Number(satangToBaht(discountSatang)) });
+  if (bill.breakdown) Object.assign(bill.breakdown, { tableChargeSatang: bill.tableChargeSatang, productSatang: bill.foodAmountSatang, totalSatang: bill.totalSatang, tableCharge: bill.playAmount, products: bill.foodAmount, total: bill.total, discount: bill.discount, couponDiscountSatang: discountSatang });
+  return bill;
+}
+// The bill was created and the coupon consumed, but no valid payment could be attached and the sale
+// is being reopened. Releasing here would cost the customer their coupon on a sale still in
+// progress, so the claim goes back to being held and re-applies at the next attempt.
+function reopenCouponForBill(bill, actor) {
+  const live = couponService.liveForBill(bill.id);
+  if (!live) return null;
+  const restored = couponService.unapply(live.id, "BILL_REOPENED", actor);
+  for (const field of ["couponRedemptionId", "couponId", "couponCode", "couponName", "couponScope", "couponDiscountSatang", "couponDiscount"]) delete bill[field];
+  return restored;
+}
+function applyCouponToBill(bill, actor) {
+  const reserved = couponForBill(bill);
+  if (!reserved) return null;
+  const result = couponService.apply(reserved.id, bill, actor);
+  if (result.discountSatang) foldCouponDiscount(bill, result.redemption, result.discountSatang);
+  else bill.couponReleasedReason = result.released;
+  billingRepository.saveBill(bill);
+  return result;
+}
 function sendRewardError(res,error,fallback="VALIDATION_ERROR"){const code=error.code||fallback;const status=["INVALID_REDEEM_POINTS","MEMBER_REQUIRED","VALIDATION_ERROR","INVALID_DISCOUNT_AMOUNT","SPLIT_PAYMENT_TOO_FEW","INVALID_SPLIT_AMOUNT","SPLIT_PAYMENT_MISMATCH"].includes(code)?400:409;res.status(status).json({error:code,message:error.message});}
 app.post("/api/rewards/preview", requirePermission(PERMISSIONS.REWARD_REDEEM), (req,res)=>{try{const reward=normalizeRewardRequest(req.body);const bill=rewardPreviewInput(req.body);if(!shouldRedeem(reward,bill.saleSource))return res.json({points:0,discount:0,discountSatang:0,netTotal:Number((bill.totalSatang/100).toFixed(2)),netTotalSatang:bill.totalSatang,maximumPoints:0,maximumValue:0,memberBalance:null,policy:settingsService.getSettings().rewards});const preview=memberService.previewRedeem(bill,reward.redeemedPoints,settingsService.getSettings());res.json({points:preview.points,discount:preview.valueSatang/100,discountSatang:preview.valueSatang,netTotal:preview.netTotalSatang/100,netTotalSatang:preview.netTotalSatang,maximumPoints:preview.maximumPoints,maximumValue:preview.maximumValueSatang/100,memberBalance:preview.member.points,policy:preview.policy});}catch(error){sendRewardError(res,error);}});
 app.get("/api/pos-orders/:id/billing-preview", requirePermission(PERMISSIONS.TABLE_CLOSE), (req, res) => { try { res.json(combinedBillingService.previewWalkInBilling(req.params.id)); } catch (error) { const status = error.code === "ORDER_ALREADY_BILLED" ? 409 : error.code === "ORDER_NOT_FOUND" ? 404 : 400; res.status(status).json({ error: error.code || "WALK_IN_PREVIEW_ERROR", message: error.message, details: error.details }); } });
-app.post("/api/pos-orders/:id/create-bill", requirePermission(PERMISSIONS.TABLE_CLOSE), (req, res) => { let createdBill=null; try { const preview=combinedBillingService.previewWalkInBilling(req.params.id), reward=normalizeRewardRequest({...req.body,memberId:req.body?.memberId??preview.memberId}); if(shouldRedeem(reward,"WALK_IN")) memberService.previewRedeem(rewardPreviewInput({memberId:reward.memberId,totalSatang:preview.totalSatang,saleSource:"WALK_IN"}),reward.redeemedPoints,settingsService.getSettings()); const result = combinedBillingService.createWalkInBill(req.params.id, actorId(req)); createdBill=result.bill; const { payment, payments } = createBillPayments(result.bill, req.body?.paymentMethod, req.body?.splitPayments, actorId(req)); res.json({ ...result, payment, payments }); } catch (error) { if(createdBill&&createdBill.status==="awaiting_payment")combinedBillingService.reopenUnpaidBill(createdBill,actorId(req)); if(error.code&&error.code!=="ORDER_ALREADY_BILLED"&&error.code!=="ORDER_NOT_FOUND")return sendRewardError(res,error); const status = error.code === "ORDER_ALREADY_BILLED" ? 409 : error.code === "ORDER_NOT_FOUND" ? 404 : 400; res.status(status).json({ error: error.code || "WALK_IN_BILL_ERROR", message: error.message, details: error.details }); } });
+app.post("/api/pos-orders/:id/create-bill", requirePermission(PERMISSIONS.TABLE_CLOSE), (req, res) => { let createdBill=null; try { const preview=combinedBillingService.previewWalkInBilling(req.params.id), reward=normalizeRewardRequest({...req.body,memberId:req.body?.memberId??preview.memberId}); if(shouldRedeem(reward,"WALK_IN")) memberService.previewRedeem(rewardPreviewInput({memberId:reward.memberId,totalSatang:preview.totalSatang,saleSource:"WALK_IN"}),reward.redeemedPoints,settingsService.getSettings());
+  // A walk-in sale has no interval to protect — the claim and the payment are the same moment — so
+  // the coupon is reserved and consumed in this one request. The ledger still records both steps,
+  // which is what makes a later void able to hand the coupon back.
+  const couponCode=String(req.body?.couponCode||"").trim();
+  if(couponCode&&!couponService.reservedForPosOrder(req.params.id))couponService.reserve({code:couponCode,memberId:req.body?.memberId??preview.memberId,channel:"WALK_IN",posOrderId:req.params.id},actorId(req));
+  const result = combinedBillingService.createWalkInBill(req.params.id, actorId(req)); createdBill=result.bill; const coupon=applyCouponToBill(result.bill, actorId(req)); const { payment, payments } = createBillPayments(result.bill, req.body?.paymentMethod, req.body?.splitPayments, actorId(req)); res.json({ ...result, payment, payments, coupon }); } catch (error) { if(createdBill&&createdBill.status==="awaiting_payment"){reopenCouponForBill(createdBill,actorId(req));combinedBillingService.reopenUnpaidBill(createdBill,actorId(req));} if(String(error.code||"").startsWith("COUPON_"))return couponError(res,error); if(error.code&&error.code!=="ORDER_ALREADY_BILLED"&&error.code!=="ORDER_NOT_FOUND")return sendRewardError(res,error); const status = error.code === "ORDER_ALREADY_BILLED" ? 409 : error.code === "ORDER_NOT_FOUND" ? 404 : 400; res.status(status).json({ error: error.code || "WALK_IN_BILL_ERROR", message: error.message, details: error.details }); } });
 app.post("/api/pos-orders/:id/items", requirePermission(PERMISSIONS.POS_ORDER_EDIT), (req, res) => { try { res.json({ order: posOrderService.addItem(req.params.id, req.body || {}, req.user) }); } catch (error) { posOrderError(res, error); } });
 app.patch("/api/pos-orders/:id/items/:itemId", requirePermission(PERMISSIONS.POS_ORDER_EDIT), (req, res) => { try { res.json({ order: posOrderService.updateItemQuantity(req.params.id, req.params.itemId, req.body || {}, req.user) }); } catch (error) { posOrderError(res, error); } });
 app.delete("/api/pos-orders/:id/items/:itemId", requirePermission(PERMISSIONS.POS_ORDER_EDIT), (req, res) => { try { res.json({ order: posOrderService.removeItem(req.params.id, req.params.itemId, req.user) }); } catch (error) { posOrderError(res, error); } });
 app.patch("/api/pos-orders/:id", requirePermission(PERMISSIONS.POS_ORDER_EDIT), (req, res) => { try { res.json({ order: posOrderService.updateOrderMetadata(req.params.id, req.body || {}, req.user) }); } catch (error) { posOrderError(res, error); } });
 app.post("/api/pos-orders/:id/confirm", requirePermission(PERMISSIONS.POS_ORDER_CONFIRM), async (req, res) => { try { res.json({ order: await posOrderService.confirmOrder(req.params.id, req.user) }); } catch (error) { posOrderError(res, error); } });
 app.post("/api/pos-orders/:id/cancel", requirePermission(PERMISSIONS.POS_ORDER_CANCEL_DRAFT), async (req, res) => { try { res.json({ order: await posOrderService.cancelOrder(req.params.id, req.body || {}, req.user) }); } catch (error) { posOrderError(res, error); } });
-app.post("/api/tables/:id/start", requirePermission(PERMISSIONS.TABLE_OPEN), async (req, res) => { try { const table = tableById(req.params.id); if (!table) return res.status(404).json({ error: "ไม่พบโต๊ะ" }); if (req.body.memberId && memberById(req.body.memberId)?.status !== "ACTIVE") return res.status(400).json({ error: "ไม่พบสมาชิกที่ใช้งานอยู่" }); const settings = settingsService.getSettings(); const profile = resolvePricingProfileForTable(table, settings); const session = sessionService.openSession({ tableId: table.id, memberId: req.body.memberId || null, pricingProfile: profile }); billingService.audit("TABLE_OPENED", { tableId: table.id, sessionId: session.id, actorId: actorId(req) }); const relay = await setRelayState(table, "on"); save(); res.json({ ...enrichTable(table), warning: relay.failed ? "เปิดโต๊ะแล้ว แต่ติดต่อ ESP32 เพื่อเปิด Relay ไม่สำเร็จ" : undefined }); } catch (error) { res.status(409).json({ error: error.message }); } });
+app.post("/api/tables/:id/start", requirePermission(PERMISSIONS.TABLE_OPEN), async (req, res) => { try { const table = tableById(req.params.id); if (!table) return res.status(404).json({ error: "ไม่พบโต๊ะ" }); if (req.body.memberId && memberById(req.body.memberId)?.status !== "ACTIVE") return res.status(400).json({ error: "ไม่พบสมาชิกที่ใช้งานอยู่" });
+  // A coupon is claimed the moment the table opens, so the quota is held for the whole session
+  // rather than being counted at payment — otherwise two staff can open two tables on the last
+  // remaining voucher and both succeed. Checked BEFORE the session exists so the common failure
+  // (wrong code, no member, expired) never opens and then cancels a table.
+  const couponCode = String(req.body?.couponCode || "").trim();
+  if (couponCode) couponService.validate({ code: couponCode, memberId: req.body.memberId || null, channel: "TABLE" });
+  const settings = settingsService.getSettings(); const profile = resolvePricingProfileForTable(table, settings); const session = sessionService.openSession({ tableId: table.id, memberId: req.body.memberId || null, pricingProfile: profile });
+  let coupon = null;
+  if (couponCode) { try { coupon = couponService.reserve({ code: couponCode, memberId: req.body.memberId || null, channel: "TABLE", tableSessionId: session.id }, actorId(req)); } catch (error) { sessionService.cancelSession(session.id); save(); throw error; } }
+  billingService.audit("TABLE_OPENED", { tableId: table.id, sessionId: session.id, actorId: actorId(req) }); const relay = await setRelayState(table, "on"); save(); res.json({ ...enrichTable(table), coupon, warning: relay.failed ? "เปิดโต๊ะแล้ว แต่ติดต่อ ESP32 เพื่อเปิด Relay ไม่สำเร็จ" : undefined }); } catch (error) { if (String(error.code || "").startsWith("COUPON_")) return couponError(res, error); res.status(409).json({ error: error.message }); } });
 app.post("/api/tables/:id/pause", requirePermission(PERMISSIONS.TABLE_PAUSE), (req, res) => { try { const session = sessionRepository.findOpenSessionByTable(req.params.id); if (!session) return res.status(409).json({ error: "โต๊ะยังไม่ได้เปิดใช้งาน" }); sessionService.pauseSession(session.id); billingService.audit("TABLE_PAUSED", { tableId: Number(req.params.id), sessionId: session.id, actorId: actorId(req) }); res.json(enrichTable(tableById(req.params.id))); } catch (error) { res.status(409).json({ error: error.message }); } });
 app.post("/api/tables/:id/resume", requirePermission(PERMISSIONS.TABLE_RESUME), (req, res) => { try { const session = sessionRepository.findOpenSessionByTable(req.params.id); if (!session) return res.status(409).json({ error: "โต๊ะยังไม่ได้เปิดใช้งาน" }); sessionService.resumeSession(session.id); billingService.audit("TABLE_RESUMED", { tableId: Number(req.params.id), sessionId: session.id, actorId: actorId(req) }); res.json(enrichTable(tableById(req.params.id))); } catch (error) { res.status(409).json({ error: error.message }); } });
-app.post("/api/tables/:id/cancel", async (req, res) => { try { const table = tableById(req.params.id), session = sessionRepository.findOpenSessionByTable(req.params.id); if (!table || !session) return res.status(409).json({ error: "ไม่มี Session ที่ยกเลิกได้" }); sessionService.cancelSession(session.id); billingService.audit("SESSION_CANCELLED", { tableId: table.id, sessionId: session.id }); const relay = await setRelayState(table, "off"); save(); res.json({ table: enrichTable(table), warning: relay.failed ? "ยกเลิก Session แล้ว แต่ติดต่อ ESP32 เพื่อปิด Relay ไม่สำเร็จ" : undefined }); } catch (error) { res.status(409).json({ error: error.message }); } });
+app.post("/api/tables/:id/cancel", async (req, res) => { try { const table = tableById(req.params.id), session = sessionRepository.findOpenSessionByTable(req.params.id); if (!table || !session) return res.status(409).json({ error: "ไม่มี Session ที่ยกเลิกได้" }); sessionService.cancelSession(session.id); const reservedCoupon = couponService.reservedForSession(session.id); if (reservedCoupon) couponService.release(reservedCoupon.id, "SESSION_CANCELLED", actorId(req)); billingService.audit("SESSION_CANCELLED", { tableId: table.id, sessionId: session.id }); const relay = await setRelayState(table, "off"); save(); res.json({ table: enrichTable(table), warning: relay.failed ? "ยกเลิก Session แล้ว แต่ติดต่อ ESP32 เพื่อปิด Relay ไม่สำเร็จ" : undefined }); } catch (error) { res.status(409).json({ error: error.message }); } });
 app.post("/api/tables/:id/items", (req, res) => { const table = tableById(req.params.id); const product = store.products.find(p => p.id === req.body.productId); if (!table || table.status !== "playing") return res.status(400).json({ error: "โต๊ะยังไม่เปิดใช้งาน" }); if (!product) return res.status(404).json({ error: "ไม่พบสินค้า" }); const existing = table.items.find(i => i.productId === product.id); if (existing) existing.quantity += Number(req.body.quantity) || 1; else table.items.push({ productId: product.id, name: product.name, price: product.price, quantity: Number(req.body.quantity) || 1 }); save(); res.json(enrichTable(table)); });
 // Per-table pricing-profile override (e.g. a VIP room billed differently from the standard tables).
 // null clears the override, falling back to settings.defaultPricingProfileId.
@@ -533,6 +604,10 @@ function createBillPayments(bill, paymentMethod, splitPayments, requestActorId) 
 function createCombinedCheckout(sessionId, paymentMethod, requestActorId, rewardInput={}) {
   const discount=discountFromBody(rewardInput);
   const preview=combinedBillingService.buildPreview(sessionId,{manualDiscountSatang:discount.manualDiscountSatang}), session=sessionRepository.findSession(sessionId), reward=normalizeRewardRequest({...rewardInput,memberId:rewardInput.memberId??preview.memberId});
+  // Neither discount silently drops the other, in either direction — refused before the session is
+  // closed to await payment, so the cashier can take the coupon off and try again.
+  const reservedCoupon=couponService.reservedForSession(sessionId);
+  if(reservedCoupon&&shouldRedeem(reward))throw rewardError("COUPON_POINTS_CONFLICT",`ใช้แต้มร่วมกับคูปอง "${reservedCoupon.couponSnapshot.name}" ในบิลเดียวกันไม่ได้ — เอาคูปองออกก่อนถ้าต้องการใช้แต้ม`);
   if(shouldRedeem(reward))memberService.previewRedeem(rewardPreviewInput({memberId:reward.memberId,totalSatang:preview.breakdown.totalSatang,tableChargeSatang:preview.breakdown.tableChargeSatang,saleSource:"TABLE"}),reward.redeemedPoints,settingsService.getSettings());
   let locked=null, createdBill=null;
   try {
@@ -540,20 +615,42 @@ function createCombinedCheckout(sessionId, paymentMethod, requestActorId, reward
     locked=depositSettlementService.prepareForSession(session,requestActorId,reservationConfig.autoApplyDeposit&&!manualRemoval);
     const result=combinedBillingService.createBill(sessionId,requestActorId,discount);
     createdBill=result.bill;
+    // Before the deposit, so a reservation deposit is measured against what is actually left to pay.
+    const coupon=applyCouponToBill(result.bill,requestActorId);
     selectBillRewards(result.bill,reward,requestActorId);
     if(locked) depositSettlementService.applyToBill(result.bill,locked,requestActorId);
     const {payment,payments}=createBillPayments(result.bill,paymentMethod,rewardInput.splitPayments,requestActorId);
-    return {...result,payment,payments,deposit:locked};
+    return {...result,payment,payments,deposit:locked,coupon};
   } catch(error) {
     if(locked){const current=reservationDepositRepository.findById(locked.id);if(current?.status==="LOCKED")depositSettlementService.unlock(locked.id,requestActorId,current.version,current.lockToken);}
     // The bill was created (and the session closed to await payment) but no valid payment ever got
     // attached to it — e.g. a malformed split payment. Reopen the table rather than leaving it
     // stuck "awaiting payment" for a bill nobody can ever actually pay.
-    if(createdBill&&createdBill.status==="awaiting_payment")combinedBillingService.reopenUnpaidBill(createdBill,requestActorId);
+    if(createdBill&&createdBill.status==="awaiting_payment"){reopenCouponForBill(createdBill,requestActorId);combinedBillingService.reopenUnpaidBill(createdBill,requestActorId);}
     throw error;
   }
 }
-app.get("/api/table-sessions/:id/billing-preview", requirePermission(PERMISSIONS.TABLE_CLOSE), (req, res) => { try { const discount=discountFromBody(req.query), preview=combinedBillingService.buildPreview(req.params.id,{manualDiscountSatang:discount.manualDiscountSatang}), session=sessionRepository.findSession(req.params.id), deposit=session?.reservationId?reservationDepositRepository.findByReservationId(session.reservationId):null, applicable=settingsService.getSettings().reservation.autoApplyDeposit&&deposit?.status==="AVAILABLE"?Math.min(deposit.amountSatang,preview.breakdown.totalSatang):0; preview.deposit={reservationId:session?.reservationId||null,depositId:deposit?.id||null,status:deposit?.status||null,depositAppliedSatang:applicable,remainingPaymentSatang:preview.breakdown.totalSatang-applicable}; res.json({preview}); } catch (error) { res.status(error.code === "DUPLICATE_BILL" ? 409 : 400).json({ error: error.code || "BILLING_PREVIEW_ERROR", message: error.message }); } });
+// What the reserved coupon is worth against this preview, without consuming it — the checkout
+// dialog needs to show the deduction (and whether the minimum spend is met) before anything is
+// committed. The real arithmetic still happens once, at #apply, against the bill that exists.
+function couponPreviewFor(sessionId, breakdown) {
+  const reserved = couponService.reservedForSession(sessionId);
+  if (!reserved) return null;
+  const rule = reserved.couponSnapshot;
+  const baseSatang = couponService.scopeBaseSatang(rule, { breakdown });
+  const meetsMinSpend = !rule.minSpendSatang || baseSatang >= rule.minSpendSatang;
+  return { redemptionId: reserved.id, code: reserved.code, name: rule.name, scope: rule.scope, minSpendSatang: rule.minSpendSatang || 0, baseSatang, meetsMinSpend, discountSatang: meetsMinSpend ? couponService.calculateDiscountSatang(rule, baseSatang) : 0 };
+}
+app.get("/api/table-sessions/:id/billing-preview", requirePermission(PERMISSIONS.TABLE_CLOSE), (req, res) => { try { const discount=discountFromBody(req.query), preview=combinedBillingService.buildPreview(req.params.id,{manualDiscountSatang:discount.manualDiscountSatang}), session=sessionRepository.findSession(req.params.id), deposit=session?.reservationId?reservationDepositRepository.findByReservationId(session.reservationId):null;
+  // Coupon first, then deposit: a reservation deposit covers what is genuinely left to pay.
+  preview.coupon=couponPreviewFor(req.params.id,preview.breakdown);
+  const netTotalSatang=Math.max(0,preview.breakdown.totalSatang-(preview.coupon?.discountSatang||0));
+  const applicable=settingsService.getSettings().reservation.autoApplyDeposit&&deposit?.status==="AVAILABLE"?Math.min(deposit.amountSatang,netTotalSatang):0;
+  preview.netTotalSatang=netTotalSatang;
+  preview.deposit={reservationId:session?.reservationId||null,depositId:deposit?.id||null,status:deposit?.status||null,depositAppliedSatang:applicable,remainingPaymentSatang:netTotalSatang-applicable}; res.json({preview}); } catch (error) { res.status(error.code === "DUPLICATE_BILL" ? 409 : 400).json({ error: error.code || "BILLING_PREVIEW_ERROR", message: error.message }); } });
+// Taking the coupon off at the counter hands the quota straight back, and puts a printed voucher
+// back in circulation, so the customer can still use it on their next visit.
+app.delete("/api/table-sessions/:id/coupon", requirePermission(PERMISSIONS.TABLE_CLOSE), (req, res) => { try { const reserved=couponService.reservedForSession(req.params.id); if(!reserved)return res.status(404).json({error:"COUPON_NOT_RESERVED",message:"บิลนี้ไม่มีคูปองติดอยู่"}); couponService.release(reserved.id,"REMOVED_AT_CHECKOUT",actorId(req)); res.json({removed:true}); } catch (error) { couponError(res,error); } });
 app.post("/api/table-sessions/:id/create-bill", requirePermission(PERMISSIONS.TABLE_CLOSE), (req, res) => { try { res.json(createCombinedCheckout(req.params.id, req.body?.paymentMethod, actorId(req), req.body||{})); } catch (error) { if(error.code&&error.code!=="DUPLICATE_BILL")return sendRewardError(res,error); res.status(error.code === "DUPLICATE_BILL" ? 409 : 400).json({ error: error.code || "COMBINED_BILL_ERROR", message: error.message }); } });
 app.post("/api/tables/:id/checkout", requirePermission(PERMISSIONS.TABLE_CLOSE), (req, res) => { try { const session = sessionRepository.findOpenSessionByTable(req.params.id); if (!session || !["ACTIVE", "PAUSED"].includes(session.state)) return res.status(400).json({ error: "โต๊ะไม่ได้อยู่ในสถานะที่คิดเงินได้" }); res.json(createCombinedCheckout(session.id, req.body?.paymentMethod, actorId(req), req.body||{})); } catch (error) { if(error.code&&error.code!=="DUPLICATE_BILL")return sendRewardError(res,error); res.status(error.code === "DUPLICATE_BILL" ? 409 : 400).json({ error: error.code || "COMBINED_BILL_ERROR", message: error.message }); } });
 function tableOrdersErrorStatus(code) { return code === "ORDER_NOT_AVAILABLE" ? 409 : code === "SESSION_NOT_ACTIVE" || code === "NO_ORDERS_SELECTED" ? 400 : 400; }
@@ -575,7 +672,10 @@ app.delete("/api/bills/:id", requirePermission(PERMISSIONS.BILL_VOID), (req, res
   // Checked before anything is mutated: voidBill() below is not undoable, so a stale dialog whose
   // table has since closed must be rejected while the bill is still intact.
   if (voidMode === "RETURN_TO_TAB" && !combinedBillingService.canReturnOrdersToTab(bill)) return res.status(409).json({ error: "TAB_NO_LONGER_OPEN", message: "ไม่สามารถเอารายการกลับไปรวมบิลโต๊ะได้ เพราะโต๊ะปิดไปแล้วหรือเปิดให้ลูกค้ารายใหม่แล้ว" });
-  billingRepository.payments().filter(payment => payment.billId === bill.id && payment.status === "pending").forEach(payment => paymentService.cancelPayment(payment.id)); billingService.voidBill(bill, req.body?.reason, actorId(req), voidMode); memberService.rollbackRedeem(bill,actorId(req)); memberService.void(bill,actorId(req)); const restoredPosOrderIds = combinedBillingService.voidCombinedBill(bill, actorId(req), voidMode);
+  billingRepository.payments().filter(payment => payment.billId === bill.id && payment.status === "pending").forEach(payment => paymentService.cancelPayment(payment.id)); billingService.voidBill(bill, req.body?.reason, actorId(req), voidMode); memberService.rollbackRedeem(bill,actorId(req)); memberService.void(bill,actorId(req));
+  // The customer never got the sale, so they get their coupon back — quota returned and, for a
+  // printed voucher, the code put back in circulation.
+  { const liveCoupon = couponService.liveForBill(bill.id); if (liveCoupon) couponService.release(liveCoupon.id, "BILL_VOIDED", actorId(req)); } const restoredPosOrderIds = combinedBillingService.voidCombinedBill(bill, actorId(req), voidMode);
   // A partial "pay for these drinks now, keep playing" bill is not the table's final bill — the
   // session is still running and the customers are still on the table. Voiding one must undo the
   // bill and hand its POS orders back, and nothing more: cancelSession() zeroes finalChargeSatang
