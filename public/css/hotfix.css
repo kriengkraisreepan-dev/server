@@ -100,3 +100,11 @@ select.col-filter{padding:6px 4px}
 .waiting-reservations .item{gap:12px}
 .waiting-reservations .item span:last-child{display:flex;align-items:center;gap:10px;white-space:nowrap}
 @media (max-width:600px){.waiting-reservations .item{flex-direction:column;align-items:flex-start}.waiting-reservations .item span:last-child{width:100%;justify-content:space-between}}
+
+/* Column sort control. Off it is a bare ⇅ that stays out of the way; the one active column spells
+   its direction out in words, because an arrow alone is a convention the reader has to already
+   know and "มาก→น้อย" cannot be misread. Only one column is ever active, so only one cell grows. */
+.col-sort{width:100%;background:transparent;border:1px solid var(--line);color:#9aa9bf;border-radius:7px;padding:6px 8px;font:inherit;font-size:12px;line-height:1.2;white-space:nowrap;text-align:center}
+.col-sort:hover{border-color:var(--gold);color:#edf2f7}
+.col-sort.active{background:var(--gold);border-color:var(--gold);color:#1a1a1a;font-weight:600}
+.col-sort span{font-size:11px}
