@@ -66,3 +66,13 @@ Sprint 9A.1 additionally snapshots `memberCode` and `memberName` on new walk-in 
 Sprint 9B adds reward settings under `settings.rewards` and additive bill fields `redeemedPoints`, `redeemValue`, `redeemValueSatang`, `rewardPolicySnapshot`, `memberBalanceBeforeRedeem`, and `memberBalanceAfterRedeem`. Point transactions additionally use `REDEEM` and `REDEEM_ROLLBACK`; all values are retained by the existing JSON backup/restore flow.
 
 The Sprint 9B table-time loyalty hotfix adds `settings.loyalty` and bill snapshots `tablePointsEarned`, `tablePlaySecondsSnapshot`, `tablePlayHoursSnapshot`, and `loyaltyPolicySnapshot`. New EARN/VOID ledger rows use reason `TABLE_TIME`. Walk-in bills neither earn nor redeem points.
+
+## Sprint 11 coupons
+
+Sprint 11 adds three additive top-level collections: `coupons[]` (the campaign — code mode, discount rule, scope, allowed `channels`, validity dates, quota and per-member limit), `couponCodes[]` (the printed vouchers of a `UNIQUE`-mode campaign, each `UNUSED`/`RESERVED`/`USED`/`VOID`), and `couponRedemptions[]` (the ledger, one row per claim, `RESERVED` → `APPLIED` | `RELEASED`).
+
+The ledger is the source of truth for quota; `usedCount`/`reservedCount` on the coupon are a denormalised cache recomputed from it. Each redemption freezes a `couponSnapshot` of the rule it was claimed under, so a receipt reprinted after the coupon has been edited still shows what was actually given — the same approach as `rewardPolicySnapshot` and `pricingSnapshot`.
+
+`channels` holds `TABLE`, `WALK_IN`, or both, matching the `saleSource` values bills already carry. A redemption records which one it was claimed on and references either `tableSessionId` or `posOrderId` accordingly.
+
+Coupons are configuration and redemptions are transactional; `scripts/pre-production-data-reset.js` predates them and clears neither, which only matters if that one-time pre-go-live tool is ever run again.
