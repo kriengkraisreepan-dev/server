@@ -171,7 +171,7 @@ All carry the actor, coupon and redemption references, member and bill where app
 | Phase | Deliverable |
 | --- | --- |
 | 11.1 | **Done.** `CouponService` + `JsonCouponRepository` + code generation + validation rules + the reserve/apply/release ledger + unit tests. No UI, no routes, no wiring. |
-| 11.2 | Settings → คูปอง tab: create, edit, pause, generate batches, usage summary. Routes and permissions land here. |
+| 11.2 | **Done.** Settings → คูปอง tab: create, edit, pause, generate batches, usage summary. Routes and the `coupon.view` / `coupon.manage` permissions land here. |
 | 11.3 | Reserve at table open and on a walk-in POS sale; apply/release at checkout; points mutual exclusion; receipt line. |
 | 11.4 | Reporting: redemptions per coupon, total discount given, per-member usage. |
 

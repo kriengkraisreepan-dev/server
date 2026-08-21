@@ -122,3 +122,17 @@ Walk-in `POST /api/pos-orders` accepts an optional active `memberId`; the server
 | POST | existing table/walk-in create-bill APIs | OWNER, MANAGER, CASHIER | Optional `redeemedPoints`; validation occurs before creating the bill |
 
 Points are deducted only by payment confirmation, not by preview or bill creation.
+
+## Sprint 11 coupons
+
+| Method | Path | Access | Description |
+|---|---|---|---|
+| GET | `/api/coupons` | OWNER, MANAGER (`coupon.view`) | Campaign list with live remaining quota and usage summary |
+| POST | `/api/coupons` | OWNER, MANAGER (`coupon.manage`) | Create a campaign; `codeCount` also generates the first voucher batch |
+| PATCH | `/api/coupons/:id` | OWNER, MANAGER (`coupon.manage`) | Edit; the discount rule and scope are locked once the coupon has been claimed |
+| PATCH | `/api/coupons/:id/status` | OWNER, MANAGER (`coupon.manage`) | DRAFT/ACTIVE/PAUSED/EXPIRED. `DEPLETED` is derived and cannot be set by hand |
+| GET / POST | `/api/coupons/:id/codes` | `coupon.view` / `coupon.manage` | List or add printed vouchers (UNIQUE mode only) |
+| GET | `/api/coupons/:id/redemptions` | OWNER, MANAGER (`coupon.view`) | The redemption ledger for one campaign, plus its summary |
+| POST | `/api/coupons/validate` | Any signed-in role | Check a code against a member and a channel; returns the exact discount when `baseSatang` is supplied |
+
+`/api/coupons/validate` is deliberately open to every role: the cashier typing the code in is the one who needs the answer, and a 403 there would read as a broken coupon. Reserve and apply are not endpoints of their own — they happen inside table start, walk-in order creation and bill creation (Sprint 11.3).

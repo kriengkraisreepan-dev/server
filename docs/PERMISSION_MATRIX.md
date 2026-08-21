@@ -19,3 +19,6 @@
 | Create/edit/enable/disable members | Yes | Yes | No | No |
 | View member point history | Yes | Yes | Yes | ACTIVE members only |
 | Preview/use member reward points | Yes | Yes | Yes | No |
+| View coupons and their redemption history | Yes | Yes | No | No |
+| Create/edit/pause coupons, print voucher batches | Yes | Yes | No | No |
+| Check a coupon code against a member (`/api/coupons/validate`) | Yes | Yes | Yes | Yes |
