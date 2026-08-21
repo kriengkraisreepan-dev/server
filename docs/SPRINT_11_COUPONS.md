@@ -173,9 +173,11 @@ All carry the actor, coupon and redemption references, member and bill where app
 | 11.1 | **Done.** `CouponService` + `JsonCouponRepository` + code generation + validation rules + the reserve/apply/release ledger + unit tests. No UI, no routes, no wiring. |
 | 11.2 | **Done.** Settings → คูปอง tab: create, edit, pause, generate batches, usage summary. Routes and the `coupon.view` / `coupon.manage` permissions land here. |
 | 11.3 | **Done.** Reserve at table open and on a walk-in POS sale; apply/release at checkout; release on cancel and void; points mutual exclusion; receipt line. |
-| 11.4 | Reporting: redemptions per coupon, total discount given, per-member usage. |
+| 11.4 | **Done.** Reporting: redemptions per coupon, total discount given, per-member usage, and outstanding claims. |
 
-Each phase ships as its own branch and PR.
+Each phase ships as its own branch and PR. **Sprint 11 is complete.**
+
+Coupon figures on the reports page are counted through their bill rather than by their own timestamp, so the discount given reconciles exactly with the revenue reported for the same period. The section stays hidden until coupons are actually in use — a shop that never runs a promotion should not carry a permanent "฿0" block on its reports page.
 
 ## Deferred
 

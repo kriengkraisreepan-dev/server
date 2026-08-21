@@ -149,3 +149,11 @@ Points are deducted only by payment confirmation, not by preview or bill creatio
 | DELETE | `/api/bills/:id` | Voiding releases the coupon (`BILL_VOIDED`) |
 
 Bills carry `couponRedemptionId`, `couponId`, `couponCode`, `couponName`, `couponScope`, `couponDiscountSatang` and `couponDiscount`. The discount is taken off the part of the bill the scope names and the total is rebuilt from the parts, so `tableChargeSatang + foodAmountSatang === totalSatang` still holds. It is also folded into `bill.discount`, the same way point redemption is, because reporting asks how much was given away rather than by which mechanism.
+
+### Sprint 11.4 — coupon reporting
+
+`GET /api/reports/analytics` gains `couponDiscount`, `couponRedemptions`, `couponsUsed`, `couponMembers`, `topCoupons[]` (name, code, scope, per-channel counts, distinct members, discount given), `topCouponMembers[]`, and `outstandingCouponReservations`.
+
+Coupons are counted **through their bill**, not by their own timestamp: only `APPLIED` redemptions whose bill is in the period's paid-bill set are included. That makes the discount given reconcile exactly with the revenue reported for the same period, including the 06:00 business-day roll and the rule that a table counts on the night it opened. Voiding a paid bill therefore takes its discount back out of the report, because the redemption is released and the bill is no longer paid.
+
+`outstandingCouponReservations` is deliberately **live rather than period-scoped**, the same way `outstandingPoints` is — it answers "what has been claimed and not yet paid for", which is a fact about now, not about the reporting window.
