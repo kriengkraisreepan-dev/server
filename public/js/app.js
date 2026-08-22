@@ -1579,4 +1579,106 @@ const bindMoveTable=bind;bind=function(){
   document.querySelectorAll("[data-move]").forEach(button=>button.onclick=()=>moveTableDialog(button.dataset.move));
 };
 
+
+// ---- การ์ดการจอง: เปิดทันที / เลือกโต๊ะ / ยกเลิกพร้อมจัดการมัดจำ ------------------------------------
+// Every state a booking can be in before its table is opened. It is the same set the service treats
+// as cancellable, which is what "แสดงตลอดจนกว่าจะเปิดโต๊ะ" means in practice.
+const RESERVATION_OPEN_STATUSES=["BOOKED","DUE","AWAITING_DECISION","DEFERRED","WAITING_TABLE"];
+reservationCardsHtml=function(){
+  const canManage=["OWNER","MANAGER","CASHIER"].includes(state.user.role),canAdjust=["OWNER","MANAGER"].includes(state.user.role),deposits=state.reservationDeposits||[];
+  return (state.reservations||[]).map(item=>{
+    const deposit=deposits.find(entry=>entry.reservationId===item.id),table=state.tables.find(entry=>String(entry.id)===String(item.assignedTableId));
+    const open=canManage&&RESERVATION_OPEN_STATUSES.includes(item.status);
+    const actions=[];
+    if(open)actions.push(`<button class="success" data-res-open="${item.id}">เปิดโต๊ะทันที</button>`);
+    // The old card looked for the long-dead "READY" status, so the check-in button never appeared on
+    // a booking that had actually had its table opened.
+    if(canManage&&item.status==="OPENED_WAITING_CHECK_IN")actions.push(`<button class="success" data-res-checkin="${item.id}">CHECK-IN</button>`);
+    if(open)actions.push(`<button class="danger" data-res-cancel="${item.id}">ยกเลิกการจอง</button>`);
+    if(canAdjust&&deposit?.status==="AVAILABLE")actions.push(`<button class="outline" data-deposit-action="refund" data-deposit-id="${deposit.id}">คืนมัดจำ</button><button class="outline" data-deposit-action="void" data-deposit-id="${deposit.id}">Void</button>`);
+    return `<div class="card"><h3>${escapeHtml(item.reservationNumber)}</h3><p><b>${escapeHtml(item.customerName)}</b><br>${escapeHtml(item.phone)}<br>${new Date(item.reservedAt).toLocaleString("th-TH")}<br>มัดจำ: ${money((deposit?.amountSatang||0)/100)} (${escapeHtml(deposit?.status||"-")})<br>โต๊ะ: ${escapeHtml(table?.name||"-")}</p><span class="badge">${escapeHtml(item.status)}</span><div class="actions">${actions.join("")}</div></div>`;
+  }).join("")||'<div class="card muted">ยังไม่มีรายการจอง</div>';
+};
+function freeTablesNow(){return state.tables.filter(table=>table.status==="free");}
+// Opening a booking's table, whether its time has come or the customer simply walked in early.
+// Staff pick the table when there is a choice to make; with one free table there is nothing to ask.
+function openReservationDialog(id){
+  const item=(state.reservations||[]).find(entry=>entry.id===id);
+  if(!item)return;
+  const free=freeTablesNow();
+  if(!free.length)return notify("ยังไม่มีโต๊ะว่าง — กดเปิดอีกครั้งเมื่อมีโต๊ะว่าง",true);
+  const bookedFor=new Date(item.effectiveReservationAt||item.reservedAt);
+  const early=bookedFor>new Date();
+  openModal(`<h3>เปิดโต๊ะให้ ${escapeHtml(item.customerName)}</h3>`
+    +(early?`<p class="muted">ลูกค้ามาก่อนเวลาจอง (จองไว้ ${bookedFor.toLocaleString("th-TH")}) — เปิดให้เลยได้ เวลาเริ่มนับจากตอนนี้</p>`:"")
+    +(free.length>1
+      ?`<label>เลือกโต๊ะ (ว่าง ${free.length} โต๊ะ)</label><select id="reservationTableChoice">${free.map(table=>`<option value="${table.id}">${escapeHtml(table.name)}</option>`).join("")}</select>`
+      :`<p class="muted">มีโต๊ะว่างโต๊ะเดียว: <b>${escapeHtml(free[0].name)}</b></p>`)
+    +`<div class="actions"><button class="outline" id="cancelOpenReservation">กลับ</button><button class="success" id="confirmOpenReservation">เปิดโต๊ะ</button></div>`);
+  $("#cancelOpenReservation").onclick=closeModal;
+  $("#confirmOpenReservation").onclick=async()=>{
+    const button=$("#confirmOpenReservation");button.disabled=true;
+    try{
+      const tableId=$("#reservationTableChoice")?.value||free[0].id;
+      const result=await api(`/api/reservations/${id}/open-now`,{method:"POST",body:JSON.stringify({tableId,expectedVersion:item.version})});
+      closeModal();await refresh();
+      notify(result.table?`เปิด ${result.table.name} ให้ ${escapeHtml(item.customerName)} แล้ว`:"โต๊ะถูกใช้ไปก่อนแล้ว — การจองถูกตั้งเป็นรอโต๊ะ",!result.table);
+    }catch(error){notify(error.message,true);button.disabled=false;}
+  };
+}
+// Cancelling is where the deposit is decided, and the two answers do opposite things to the shop's
+// books, so they are two labelled buttons rather than one cancel and a follow-up question.
+function cancelReservationDialog(id){
+  const item=(state.reservations||[]).find(entry=>entry.id===id);
+  if(!item)return;
+  const deposit=(state.reservationDeposits||[]).find(entry=>entry.reservationId===id);
+  const live=deposit&&deposit.status==="AVAILABLE";
+  const amount=money((deposit?.amountSatang||0)/100);
+  const canRefund=["OWNER","MANAGER"].includes(state.user.role);
+  openModal(`<h3>ยกเลิกการจอง ${escapeHtml(item.reservationNumber)}</h3><p><b>${escapeHtml(item.customerName)}</b> · ${escapeHtml(item.phone)}<br>มัดจำ ${amount}</p>`
+    +(live
+      ?`<p class="muted">เลือกว่าจะทำอย่างไรกับเงินมัดจำ — เลือกแล้วแก้เองไม่ได้</p>`
+        +`<div class="actions"><button class="danger" id="cancelForfeit">ไม่คืนเงิน — ตัดเข้ารายได้ร้าน ${amount}</button></div>`
+        +(canRefund
+          ?`<div class="actions"><button class="outline" id="cancelRefund">คืนเงินให้ลูกค้า ${amount}</button></div><p class="muted">เงินที่คืนจะไม่ถูกนับเป็นรายได้ของร้าน</p>`
+          :`<p class="muted">การคืนเงินต้องให้เจ้าของร้านหรือผู้จัดการเป็นคนกด</p>`)
+      :`<p class="muted">การจองนี้ไม่มีมัดจำที่ยังใช้ได้ (${escapeHtml(deposit?.status||"ไม่มีมัดจำ")})</p><div class="actions"><button class="danger" id="cancelPlain">ยกเลิกการจอง</button></div>`)
+    +`<div class="actions"><button class="outline" id="cancelCancelReservation">กลับ</button></div>`);
+  $("#cancelCancelReservation").onclick=closeModal;
+  const send=async(depositAction,button)=>{
+    button.disabled=true;
+    try{
+      await api(`/api/reservations/${id}/cancel`,{method:"PATCH",body:JSON.stringify({depositAction})});
+      closeModal();await refresh();
+      notify(depositAction==="FORFEIT"?`ยกเลิกการจองแล้ว · ตัดมัดจำ ${amount} เข้ารายได้ร้าน`:depositAction==="REFUND"?`ยกเลิกการจองแล้ว · คืนมัดจำ ${amount} ให้ลูกค้า`:"ยกเลิกการจองแล้ว");
+    }catch(error){notify(error.message,true);button.disabled=false;}
+  };
+  if($("#cancelForfeit"))$("#cancelForfeit").onclick=()=>send("FORFEIT",$("#cancelForfeit"));
+  if($("#cancelRefund"))$("#cancelRefund").onclick=()=>send("REFUND",$("#cancelRefund"));
+  if($("#cancelPlain"))$("#cancelPlain").onclick=()=>send("KEEP",$("#cancelPlain"));
+}
+const bindReservationCard=bind;bind=function(){
+  bindReservationCard();
+  document.querySelectorAll("[data-res-open]").forEach(button=>button.onclick=()=>openReservationDialog(button.dataset.resOpen));
+  // Replaces the older confirm()-and-cancel handler, which left the deposit sitting AVAILABLE with
+  // nobody having decided anything about it.
+  document.querySelectorAll("[data-res-cancel]").forEach(button=>button.onclick=()=>cancelReservationDialog(button.dataset.resCancel));
+};
+// มัดจำที่ยึดไว้คือรายได้ของร้าน และต้องเห็นได้ตั้งแต่วันที่ยึด — ส่วนมัดจำที่คืนลูกค้าไปแล้วต้องไม่ถูกนับเป็นรายได้เด็ดขาด
+const dashboardForfeit=dashboard;dashboard=function(){
+  const base=dashboardForfeit(),data=state.reservationDashboard||{};
+  if(!data.todayForfeitedDepositSatang)return base;
+  return base.replace('<h3 style="margin-top:25px">Smart Reservation</h3>',`<h3 style="margin-top:25px">Smart Reservation</h3>`)
+    +`<div class="grid" style="margin-top:12px"><div class="card"><div class="muted">มัดจำที่ยึดวันนี้ (เข้ารายได้)</div><div class="stat">${money(data.todayForfeitedDepositSatang/100)}</div></div></div>`;
+};
+const reportsForfeit=reports;reports=function(){
+  const base=reportsForfeit();
+  if(!analytics||!["OWNER","MANAGER"].includes(state.user.role))return base;
+  if(!analytics.forfeitedDepositSatang&&!analytics.refundedDepositSatang)return base;
+  return base+`<h3 style="margin-top:25px">มัดจำที่ยกเลิก</h3><div class="grid">`
+    +`<div class="card"><div class="muted">มัดจำที่ยึด (นับเป็นรายได้)</div><div class="stat">${money((analytics.forfeitedDepositSatang||0)/100)}</div><small class="muted">${analytics.forfeitedDepositCount||0} รายการ</small></div>`
+    +`<div class="card"><div class="muted">มัดจำที่คืนลูกค้า (ไม่นับเป็นรายได้)</div><div class="stat">${money((analytics.refundedDepositSatang||0)/100)}</div><small class="muted">${analytics.refundedDepositCount||0} รายการ</small></div>`
+    +`<div class="card"><div class="muted">รายได้รวม (บิล + มัดจำที่ยึด)</div><div class="stat">${money(analytics.totalIncome||0)}</div><small class="muted">ยอดจากบิล ${money(analytics.revenue||0)}</small></div></div>`;
+};
+
 nav();
