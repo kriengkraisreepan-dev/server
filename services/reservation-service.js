@@ -26,7 +26,40 @@ class ReservationService {
     // rule lives here and not only in the dialog, which is a usability aid.
     const value=this.validate({...input, customerName:text(input.customerName)||text(member?.displayName)||text(member?.name), phone:text(input.phone)||text(member?.phone)},config); const reservedAt=new Date(`${value.reservationDate}T${value.reservationTime}:00+07:00`).toISOString(), reservation={id:`RES-${crypto.randomUUID().slice(0,8)}`,reservationNumber:this.sequence("RSV",value.reservationDate,"reservationNumber"),depositReceiptNumber:this.sequence("DR",value.reservationDate,"depositReceiptNumber"),customerName:value.customerName,phone:value.phone,memberId,memberCode:member?.memberCode||null,memberName:member?.displayName||null,reservationDate:value.reservationDate,reservationTime:value.reservationTime,reservedAt,effectiveReservationAt:reservedAt,remark:text(input.remark),status:"BOOKED",assignedTableId:null,tableSessionId:null,openedAt:null,checkInDeadlineAt:null,checkedInAt:null,deferCount:0,lastAlertAt:null,alertAcknowledgedAt:null,cancelledAt:null,noShowAt:null,createdAt:now,createdBy:user.userId,updatedAt:now,updatedBy:user.userId,version:1,timeline:[{event:"RESERVATION_CREATED",occurredAt:now,actorId:user.userId}]}; const deposit=this.depositService.create({reservationId:reservation.id,receiptNumber:reservation.depositReceiptNumber,amountSatang:value.amountSatang,paymentMethod:value.paymentMethod,paymentReference:input.paymentReference},user.userId); this.repository.create(reservation); this.audit(memberId?"RESERVATION_MEMBER_LINKED":"RESERVATION_CREATED",user.userId,{entityType:"RESERVATION",entityId:reservation.id,depositId:deposit.id}); return {reservation,deposit}; }
   update(id, changes, user) { if(!["OWNER","MANAGER","CASHIER"].includes(user.role))this.fail("FORBIDDEN","You cannot edit reservations");const item=this.get(id);if(!OPEN_STATUSES.has(item.status))this.fail("VALIDATION_ERROR","Reservation can no longer be edited");["customerName","phone","remark"].forEach(key=>{if(changes[key]!==undefined)item[key]=text(changes[key]);});if(!item.customerName||!item.phone)this.fail("VALIDATION_ERROR","Customer name and phone number are required");this.timeline(item,"RESERVATION_UPDATED",user.userId);return this.save(item,user.userId); }
-  async cancel(id,user) { if(!["OWNER","MANAGER","CASHIER"].includes(user.role))this.fail("FORBIDDEN","You cannot cancel reservations");const item=this.get(id);if(!OPEN_STATUSES.has(item.status))this.fail("VALIDATION_ERROR","Reservation cannot be cancelled");item.status="CANCELLED";item.cancelledAt=this.stamp();this.timeline(item,"CANCELLED",user.userId);this.save(item,user.userId);this.audit("CANCELLED",user.userId,{reservationId:item.id});return item; }
+  // Cancelling decides where the customer's deposit goes, and there are only two honest answers:
+  // FORFEIT keeps it and recognises it as the shop's income there and then, REFUND gives it back and
+  // it must never count as income. KEEP is the old behaviour — the deposit is simply left AVAILABLE
+  // for somebody to settle later — and stays the default so existing callers are unaffected.
+  async cancel(id,user,options={}) {
+    if(!["OWNER","MANAGER","CASHIER"].includes(user.role))this.fail("FORBIDDEN","You cannot cancel reservations");
+    const item=this.get(id);
+    if(!OPEN_STATUSES.has(item.status))this.fail("VALIDATION_ERROR","Reservation cannot be cancelled");
+    const action=text(options.depositAction||"KEEP").toUpperCase();
+    if(!["KEEP","FORFEIT","REFUND"].includes(action))this.fail("VALIDATION_ERROR","Deposit action must be KEEP, FORFEIT or REFUND");
+    const deposit=this.depositService.list({reservationId:item.id})[0]||null;
+    // Both refusals happen BEFORE anything is cancelled. Deciding where the money goes is the whole
+    // point of the choice, so a refusal must never leave the booking cancelled and the deposit in
+    // limbo — the staff member would have to guess what state they were in.
+    if(action==="REFUND"&&!["OWNER","MANAGER"].includes(user.role))this.fail("FORBIDDEN","Only OWNER or MANAGER may refund a deposit");
+    if(action!=="KEEP"&&deposit&&deposit.status!=="AVAILABLE")this.fail("DEPOSIT_NOT_AVAILABLE",`Deposit is already ${deposit.status}`);
+    item.status="CANCELLED";item.cancelledAt=this.stamp();
+    this.timeline(item,"CANCELLED",user.userId,{depositAction:action});
+    this.save(item,user.userId);
+    if(deposit&&action==="FORFEIT")this.depositService.forfeitForReservation(item.id,user.userId);
+    if(deposit&&action==="REFUND")this.depositService.refund(deposit.id,text(options.reason)||"ยกเลิกการจอง",user);
+    this.audit("CANCELLED",user.userId,{reservationId:item.id,depositAction:action,depositId:deposit?.id||null});
+    return item;
+  }
+  // The table a reservation may be opened onto when staff pick one by hand, rather than letting
+  // availableTable() take the first free one. Same exclusion: a table already held for another
+  // booking that is waiting for its customer to walk in is not free, whatever its own status says.
+  selectableTable(reservationId,tableId) {
+    const table=this.tables().find(item=>String(item.id)===String(tableId));
+    if(!table)this.fail("TABLE_NOT_FOUND","Table not found");
+    const heldForAnother=this.repository.list().some(item=>item.id!==reservationId&&item.status==="OPENED_WAITING_CHECK_IN"&&String(item.assignedTableId)===String(tableId));
+    if(table.status!=="free"||heldForAnother)this.fail("TABLE_NOT_FREE","That table is not free");
+    return table;
+  }
   availableTable(reservationId) { const reserved=new Set(this.repository.list().filter(x=>x.id!==reservationId&&x.status==="OPENED_WAITING_CHECK_IN"&&x.assignedTableId!=null).map(x=>String(x.assignedTableId))); return this.tables().find(table=>table.status==="free"&&!reserved.has(String(table.id)))||null; }
   priorityQueue() { return this.list().filter(item=>["WAITING_TABLE","AWAITING_DECISION","DUE","DEFERRED","BOOKED"].includes(item.status)).sort((a,b)=>{const ap=a.deferCount>0?0:1,bp=b.deferCount>0?0:1;return ap-bp||new Date(a.effectiveReservationAt||a.reservedAt)-new Date(b.effectiveReservationAt||b.reservedAt);}); }
   async processDue() { const now=this.now(), changed=[]; for(const item of this.repository.list()) { if(item.status==="OPENED_WAITING_CHECK_IN"&&new Date(item.checkInDeadlineAt)<=now){await this.noShow(item.id,{userId:"SYSTEM",role:"OWNER"},true);changed.push(item.id);continue;} if(["BOOKED","DEFERRED"].includes(item.status)&&new Date(item.effectiveReservationAt||item.reservedAt)<=now){item.status="AWAITING_DECISION";this.timeline(item,item.deferCount?"RESERVATION_DEFERRED_DUE":"RESERVATION_DUE","SYSTEM");this.save(item,"SYSTEM");this.audit("RESERVATION_DUE","SYSTEM",{reservationId:item.id});changed.push(item.id);} } return changed; }
@@ -64,7 +97,7 @@ class ReservationService {
   alertItem(item) { const deposit=this.depositService.list({reservationId:item.id})[0]||null, table=this.availableTable(item.id); return {reservationId:item.id,reservationNumber:item.reservationNumber,version:item.version,customerName:item.customerName,memberCode:item.memberCode,phone:item.phone,originalReservationAt:item.reservedAt,effectiveReservationAt:item.effectiveReservationAt||item.reservedAt,deferCount:item.deferCount||0,remark:item.remark,depositAmountSatang:deposit?.amountSatang||0,tableAvailable:Boolean(table),availableTableName:table?.name||null}; }
   assertVersion(item, expected) { if(expected!==undefined&&expected!==null&&Number(expected)!==Number(item.version||1))this.fail("VERSION_CONFLICT","Reservation has been changed by another user"); }
   acquireDecision(id) { if(this.decisionLocks.has(id))this.fail("RESERVATION_OPERATION_IN_PROGRESS","Another reservation decision is in progress");this.decisionLocks.add(id); }
-  async openNow(id,user,expectedVersion) {
+  async openNow(id,user,expectedVersion,tableId=null) {
     if(!["OWNER","MANAGER","CASHIER"].includes(user.role))this.fail("FORBIDDEN","You cannot open a reservation");
     this.acquireDecision(id);
     try {
@@ -72,9 +105,15 @@ class ReservationService {
       // Openable from any waiting state, not just AWAITING_DECISION: the table-free alert and the
       // banner above the table cards both fire while the reservation sits in DEFERRED or
       // WAITING_TABLE, and their whole point is a working "open now" button.
-      if(!["AWAITING_DECISION",...this.TABLE_FREE_WAITING_STATUSES].includes(item.status))this.fail(item.status==="OPENED_WAITING_CHECK_IN"?"RESERVATION_ALREADY_OPENED":"RESERVATION_NOT_AWAITING_DECISION","Reservation is not awaiting a decision");
-      item.decisionSelectedAt=this.stamp();item.decisionSelectedBy=user.userId;this.timeline(item,"RESERVATION_OPEN_NOW_SELECTED",user.userId);
-      const table=this.availableTable(item.id);
+      //
+      // BOOKED and DUE are here too, for the customer who simply turns up early. Refusing them
+      // meant staff had to wait for the clock before they could seat somebody standing at the
+      // counter — or cancel the booking and open the table by hand, losing the deposit link.
+      if(!["AWAITING_DECISION","BOOKED","DUE",...this.TABLE_FREE_WAITING_STATUSES].includes(item.status))this.fail(item.status==="OPENED_WAITING_CHECK_IN"?"RESERVATION_ALREADY_OPENED":"RESERVATION_NOT_AWAITING_DECISION","Reservation is not awaiting a decision");
+      const early=new Date(item.effectiveReservationAt||item.reservedAt)>this.now();
+      item.decisionSelectedAt=this.stamp();item.decisionSelectedBy=user.userId;this.timeline(item,early?"RESERVATION_OPENED_EARLY":"RESERVATION_OPEN_NOW_SELECTED",user.userId);
+      // An explicitly chosen table wins; without one the first free table is taken as before.
+      const table=tableId?this.selectableTable(item.id,tableId):this.availableTable(item.id);
       if(!table){item.status="WAITING_TABLE";this.timeline(item,"RESERVATION_WAITING_TABLE",user.userId);this.save(item,user.userId);this.audit("RESERVATION_WAITING_TABLE",user.userId,{reservationId:item.id});return {reservation:item,table:null,session:null};}
       item.assignedTableId=table.id;await this.relay(table,"on");const session=await this.startSession(item,user);item.tableSessionId=session?.id||null;item.status="OPENED_WAITING_CHECK_IN";item.openedAt=this.stamp();item.checkInDeadlineAt=new Date(this.now().getTime()+this.settings().reservation.checkInGraceMinutes*60000).toISOString();this.timeline(item,"TABLE_ASSIGNED",user.userId,{tableId:table.id});this.timeline(item,"SESSION_STARTED",user.userId,{tableSessionId:item.tableSessionId});this.timeline(item,"WAITING_FOR_CHECK_IN",user.userId);this.save(item,user.userId);this.audit("RESERVATION_TABLE_OPENED",user.userId,{reservationId:item.id,tableId:table.id,tableSessionId:item.tableSessionId});return {reservation:item,table,session};
     } finally { this.decisionLocks.delete(id); }

@@ -169,3 +169,13 @@ The session keeps its id, its opened time, its pauses and its `pricingSnapshot` 
 What follows the session, because it points at the old table by id: the table's POS orders (`CombinedBillingService#ordersForSession` matches on both the table and the session, so without this the food would be orphaned from the bill), the legacy `table.items` list, and the `assignedTableId` of a booking that opened the session. The relays switch: the old table off, the new one on. Every move is audited as `TABLE_SESSION_MOVED` with both table names and how many POS orders travelled, and each one is appended to `session.moves[]`.
 
 Refusals: `NO_ACTIVE_SESSION` (409), `TABLE_NOT_FREE` (409), `SESSION_NOT_MOVABLE` (409, the session is already awaiting payment), `SAME_TABLE` (400), `TABLE_NOT_FOUND` (404).
+## Reservation card — early open, table choice, cancel with a deposit decision
+
+| Method | Path | Change |
+|---|---|---|
+| POST | `/api/reservations/:id/open-now` | Now openable from `BOOKED` and `DUE` as well, for the customer who walks in early. Optional `tableId` picks the table instead of taking the first free one; it must be free and not held for another booking (`TABLE_NOT_FREE`). An early open is recorded on the timeline as `RESERVATION_OPENED_EARLY` |
+| PATCH | `/api/reservations/:id/cancel` | Optional `depositAction`: `FORFEIT` (kept, recognised as the shop's income immediately), `REFUND` (given back, never counted as income, OWNER/MANAGER only), or `KEEP` (the previous behaviour and still the default — the deposit is left `AVAILABLE`). Responds with `{ reservation, deposit }` |
+
+Both refusals in `cancel` are checked **before** the booking is cancelled, so a refusal never leaves it cancelled with the deposit in limbo.
+
+`GET /api/reports/analytics` gains `forfeitedDepositSatang` / `forfeitedDepositCount`, `refundedDepositSatang` / `refundedDepositCount`, and `totalIncome`. A forfeited deposit is income but is not a sale, so it is reported on its own line and `revenue` stays bills-only — otherwise `revenue` would stop reconciling against `billCount` and `averageBill`. `totalIncome` is the two added together. A refunded deposit appears in neither, which is the whole reason `FORFEITED` and `REFUNDED` are separate statuses. The reservation dashboard gains `todayForfeitedDepositSatang` on the same basis.

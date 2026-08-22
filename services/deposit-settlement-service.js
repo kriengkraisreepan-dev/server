@@ -53,7 +53,15 @@ class DepositSettlementService {
   }
   dashboard() {
     const day = this.now().slice(0, 10), deposits = this.repository.list();
-    return { todayDepositSettledSatang: deposits.filter(x => x.status === "SETTLED" && String(x.settledAt).slice(0, 10) === day).reduce((s, x) => s + Number(x.settledAmountSatang || 0), 0), availableDepositSatang: deposits.filter(x => x.status === "AVAILABLE").reduce((s, x) => s + Number(x.amountSatang || 0), 0), outstandingDepositSatang: deposits.filter(x => ["AVAILABLE", "LOCKED"].includes(x.status)).reduce((s, x) => s + Number(x.amountSatang || 0), 0) };
+    return {
+      todayDepositSettledSatang: deposits.filter(x => x.status === "SETTLED" && String(x.settledAt).slice(0, 10) === day).reduce((s, x) => s + Number(x.settledAmountSatang || 0), 0),
+      availableDepositSatang: deposits.filter(x => x.status === "AVAILABLE").reduce((s, x) => s + Number(x.amountSatang || 0), 0),
+      outstandingDepositSatang: deposits.filter(x => ["AVAILABLE", "LOCKED"].includes(x.status)).reduce((s, x) => s + Number(x.amountSatang || 0), 0),
+      // Deposits kept when a booking was cancelled or no-showed. This is money the shop has earned
+      // and is counted as income from the moment it is forfeited; a REFUNDED deposit never appears
+      // in any of these figures, which is the whole point of keeping the two statuses apart.
+      todayForfeitedDepositSatang: deposits.filter(x => x.status === "FORFEITED" && String(x.revenueRecognizedAt || x.forfeitedAt || "").slice(0, 10) === day).reduce((s, x) => s + Number(x.amountSatang || 0), 0)
+    };
   }
   report() {
     return this.repository.list().filter(x => x.status === "SETTLED").map(deposit => { const reservation = this.reservationRepository?.findById(deposit.reservationId), bill = this.billingRepository.findBill(deposit.settledBillId); return { reservationNumber: reservation?.reservationNumber || null, depositReceipt: deposit.receiptNumber, billNumber: deposit.settledBillNumber, grossTotalSatang: bill?.grossTotalSatang ?? null, depositAppliedSatang: deposit.settledAmountSatang, remainingPaymentSatang: bill?.remainingPaymentSatang ?? null, settlementDate: deposit.settledAt, cashier: deposit.settledBy }; });
