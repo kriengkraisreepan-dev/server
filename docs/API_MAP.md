@@ -179,3 +179,15 @@ Refusals: `NO_ACTIVE_SESSION` (409), `TABLE_NOT_FREE` (409), `SESSION_NOT_MOVABL
 Both refusals in `cancel` are checked **before** the booking is cancelled, so a refusal never leaves it cancelled with the deposit in limbo.
 
 `GET /api/reports/analytics` gains `forfeitedDepositSatang` / `forfeitedDepositCount`, `refundedDepositSatang` / `refundedDepositCount`, and `totalIncome`. A forfeited deposit is income but is not a sale, so it is reported on its own line and `revenue` stays bills-only — otherwise `revenue` would stop reconciling against `billCount` and `averageBill`. `totalIncome` is the two added together. A refunded deposit appears in neither, which is the whole reason `FORFEITED` and `REFUNDED` are separate statuses. The reservation dashboard gains `todayForfeitedDepositSatang` on the same basis.
+## เปิดโต๊ะแบบกำหนดเวลา — a planned duration on a session
+
+| Method | Path | Access | Description |
+|---|---|---|---|
+| POST | `/api/tables/:id/start` | `table.open` | Optional `plannedMinutes` sets the limit the customer was quoted |
+| POST | `/api/tables/:id/planned-time` | `table.open` | Sets, extends or clears (`0`) the limit on a table that is already running |
+
+**The limit is a reminder and nothing else.** The relay stays on, the table keeps running, and the charge is still whatever time was actually played — running over changes nothing about the bill. The session stores `plannedSeconds` (0 = no limit) and enriched tables carry `plannedSeconds` plus `remainingSeconds`, which is `null` when there is no limit and goes negative once the time is up.
+
+The countdown runs against **billable** seconds, not the wall clock, so pausing the table pauses it — otherwise a table paused for twenty minutes would announce that the customer's time was up while nobody was playing on it. Limits over 24 hours and negative values are refused (`INVALID_PLANNED_TIME`); changing the limit on a table that is not running is refused (`NO_ACTIVE_SESSION` / `SESSION_NOT_RUNNING`).
+
+The limit a table was opened with is recorded on its `TABLE_OPENED` audit entry; later changes get their own `TABLE_PLANNED_TIME_SET`.
