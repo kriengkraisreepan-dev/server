@@ -382,7 +382,7 @@ async function statusUser(id,status){const user=staffUsers.find(u=>u.userId===id
 function resetDialog(id){openModal(`<h3>Reset Password</h3><form id="resetPasswordForm"><input id="resetPassword" name="password" type="password" placeholder="รหัสชั่วคราว"><label class="password-toggle"><input id="showResetPassword" type="checkbox"> แสดงรหัสผ่าน</label><button id="doReset">Reset</button></form>`);bindPasswordVisibility("#showResetPassword","#resetPasswordForm");$("#resetPasswordForm").onsubmit=async e=>{e.preventDefault();try{await api(`/api/users/${id}/password`,{method:"PATCH",body:JSON.stringify({password:$("#resetPassword").value})});notify("รีเซ็ตรหัสแล้ว กรุณาส่งรหัสชั่วคราวอย่างปลอดภัย");closeModal();}catch(e){notify(e.message,true);}};}
 async function passwordSubmit(e,id){e.preventDefault();try{await api(`/api/users/${id}/password`,{method:"PATCH",body:JSON.stringify(Object.fromEntries(new FormData(e.target)))});notify("เปลี่ยนรหัสผ่านสำเร็จ");e.target.reset();}catch(x){notify(x.message,true);}}
 async function revokeSession(id){const target=activeSessions.find(s=>s.id===id);confirmAction({title:"Force Logout",description:`Session ของ ${target?.username||target?.userId||id} จะถูกออกจากระบบทันที`,onConfirm:async()=>{await api(`/api/sessions/${id}`,{method:"DELETE"});await loadSessions();render();}});}
-nav(); refresh().catch(e=>notify(e.message,true)); setInterval(tickPlayingTables,1000); setInterval(()=>{ if(state && state.tables.some(t=>t.status==="playing")) refresh(); },15000);
+nav(); refresh().catch(e=>notify(e.message,true)); setInterval(()=>tickPlayingTables(),1000); setInterval(()=>{ if(state && state.tables.some(t=>t.status==="playing")) refresh(); },15000);
 let sessionTimer=null, sessionBusy=false, sessionWarningShown=false, securitySummary=null;
 async function monitorSession(){if(!state||sessionBusy)return;sessionBusy=true;try{const status=await api("/api/session/status");if(status.remainingMs<=status.warningMs&&!sessionWarningShown){sessionWarningShown=true;openModal(`<h3>Session ใกล้หมดอายุ</h3><p id="sessionCountdown"></p><div class="actions"><button id="renewSession">ต่ออายุ Session</button><button class="outline" id="logoutSession">ออกจากระบบ</button></div>`);$("#renewSession").onclick=async()=>{await api("/api/session/refresh",{method:"PATCH"});sessionWarningShown=false;closeModal();};$("#logoutSession").onclick=()=>$("#logout").click();}const c=$("#sessionCountdown");if(c)c.textContent=`เหลือเวลา ${Math.ceil(status.remainingMs/60000)} นาที`;}catch(e){if(e.status===401){clearInterval(sessionTimer);sessionTimer=null;closeModal();state=null;showLogin();notify("Session หมดอายุ กรุณาเข้าสู่ระบบใหม่",true);}}finally{sessionBusy=false;}}
 function startSessionTimer(){if(sessionTimer)return;sessionWarningShown=false;sessionTimer=setInterval(monitorSession,30000);monitorSession();}
@@ -1679,6 +1679,99 @@ const reportsForfeit=reports;reports=function(){
     +`<div class="card"><div class="muted">มัดจำที่ยึด (นับเป็นรายได้)</div><div class="stat">${money((analytics.forfeitedDepositSatang||0)/100)}</div><small class="muted">${analytics.forfeitedDepositCount||0} รายการ</small></div>`
     +`<div class="card"><div class="muted">มัดจำที่คืนลูกค้า (ไม่นับเป็นรายได้)</div><div class="stat">${money((analytics.refundedDepositSatang||0)/100)}</div><small class="muted">${analytics.refundedDepositCount||0} รายการ</small></div>`
     +`<div class="card"><div class="muted">รายได้รวม (บิล + มัดจำที่ยึด)</div><div class="stat">${money(analytics.totalIncome||0)}</div><small class="muted">ยอดจากบิล ${money(analytics.revenue||0)}</small></div></div>`;
+};
+
+
+// ---- เปิดโต๊ะแบบกำหนดเวลา -----------------------------------------------------------------------
+// An optional "we told them two hours" limit. It is a reminder and nothing else: the light stays on,
+// the customer plays on, and the bill is still whatever time they actually played. The countdown
+// runs against BILLABLE time, so pausing the table pauses it too.
+function plannedTimeFieldsHtml(seconds=0){
+  const total=Math.max(0,Math.round(Number(seconds)||0)/60);
+  return `<label>กำหนดเวลา (ไม่บังคับ)</label><div class="two">`
+    +`<input id="plannedHours" type="number" min="0" max="23" step="1" placeholder="ชั่วโมง" value="${total?Math.floor(total/60):""}">`
+    +`<input id="plannedMinutes" type="number" min="0" max="59" step="1" placeholder="นาที" value="${total?Math.round(total%60):""}">`
+    +`</div><small class="muted">เว้นว่าง = ไม่กำหนด · เมื่อครบเวลาระบบจะเตือนเฉย ๆ ไฟไม่ดับ ลูกค้าเล่นต่อได้ และคิดเงินตามเวลาที่เล่นจริงเสมอ</small>`;
+}
+function plannedMinutesFromFields(){
+  const hours=Math.max(0,Number($("#plannedHours")?.value)||0),minutes=Math.max(0,Number($("#plannedMinutes")?.value)||0);
+  return hours*60+minutes;
+}
+const countdown=seconds=>duration(Math.abs(Math.round(seconds)));
+// The card carries the countdown so it is visible wherever staff happen to be looking, and turns
+// into an unmissable overtime line rather than a toast that has already faded.
+const tableCardPlanned=tableCardV2;tableCardV2=function(table){
+  const html=tableCardPlanned(table);
+  if(!["playing","paused"].includes(table.status))return html;
+  const remaining=Number(table.plannedSeconds||0)?Number(table.plannedSeconds)-Number(table.elapsedSeconds||0):null;
+  const line=remaining===null
+    ?""
+    :remaining>0
+      ?`<p class="muted">เหลือเวลาที่กำหนด <b>${countdown(remaining)}</b> (จาก ${countdown(table.plannedSeconds)})</p>`
+      :`<p style="color:#f87171"><b>หมดเวลาที่กำหนดแล้ว</b> · เกินมา ${countdown(remaining)} — โต๊ะยังเปิดอยู่ตามปกติ</p>`;
+  return html
+    .replace('<div class="actions">',`${line}<div class="actions">`)
+    .replace('<button class="outline" data-relay=',`<button class="outline" data-planned="${table.id}">${remaining===null?"กำหนดเวลา":"แก้เวลา"}</button><button class="outline" data-relay=`);
+};
+function plannedTimeDialog(tableId){
+  const table=state.tables.find(item=>String(item.id)===String(tableId));
+  if(!table)return;
+  openModal(`<h3>กำหนดเวลาให้ ${escapeHtml(table.name)}</h3>`
+    +`<p class="muted">เล่นไปแล้ว ${duration(table.elapsedSeconds||0)}</p>`
+    +plannedTimeFieldsHtml(table.plannedSeconds)
+    +`<div class="actions"><button class="outline" id="cancelPlanned">กลับ</button>${Number(table.plannedSeconds)?`<button class="outline danger" id="clearPlanned">ยกเลิกการกำหนดเวลา</button>`:""}<button class="success" id="savePlanned">บันทึก</button></div>`);
+  $("#cancelPlanned").onclick=closeModal;
+  const send=async(minutes,button)=>{
+    button.disabled=true;
+    try{
+      await api(`/api/tables/${tableId}/planned-time`,{method:"POST",body:JSON.stringify({plannedMinutes:minutes})});
+      closeModal();await refresh();
+      notify(minutes?`กำหนดเวลา ${countdown(minutes*60)} ให้ ${table.name} แล้ว`:`ยกเลิกการกำหนดเวลาของ ${table.name} แล้ว`);
+    }catch(error){notify(error.message,true);button.disabled=false;}
+  };
+  $("#savePlanned").onclick=()=>send(plannedMinutesFromFields(),$("#savePlanned"));
+  if($("#clearPlanned"))$("#clearPlanned").onclick=()=>send(0,$("#clearPlanned"));
+}
+const startDialogPlanned=startDialog;startDialog=function(id){
+  startDialogPlanned(id);
+  const confirmButton=$("#confirmStart");
+  if(!confirmButton)return;
+  confirmButton.insertAdjacentHTML("beforebegin",plannedTimeFieldsHtml(0));
+  // Wrapping rather than replacing: the coupon patch already owns this handler, and its own payload
+  // (member, coupon code) still has to be sent. api() is swapped for the duration of the click so
+  // the planned time rides along on the same request — the same trick the receipt patches use on
+  // window.open.
+  const original=confirmButton.onclick;
+  confirmButton.onclick=async event=>{
+    const minutes=plannedMinutesFromFields();
+    if(!minutes)return original.call(confirmButton,event);
+    const realApi=api;
+    api=async(url,options={})=>{
+      if(/\/api\/tables\/[^/]+\/start$/.test(url)&&options.method==="POST"){
+        options={...options,body:JSON.stringify({...JSON.parse(options.body||"{}"),plannedMinutes:minutes})};
+      }
+      return realApi(url,options);
+    };
+    try{return await original.call(confirmButton,event);}finally{api=realApi;}
+  };
+};
+// Fires once per session as the limit is crossed, wherever staff are in the app — the tick runs
+// globally. Re-arms if the time is later extended, so a second overrun is announced too.
+const overtimeAnnounced=new Set();
+const tickPlanned=tickPlayingTables;tickPlayingTables=function(){
+  tickPlanned();
+  if(!state?.tables)return;
+  for(const table of state.tables){
+    if(!table.runtimeSessionId||!Number(table.plannedSeconds)||!["playing","paused"].includes(table.status)){overtimeAnnounced.delete(table.runtimeSessionId);continue;}
+    if(Number(table.plannedSeconds)-Number(table.elapsedSeconds||0)>0){overtimeAnnounced.delete(table.runtimeSessionId);continue;}
+    if(overtimeAnnounced.has(table.runtimeSessionId))continue;
+    overtimeAnnounced.add(table.runtimeSessionId);
+    notify(`${table.name} หมดเวลาที่กำหนดแล้ว — ไฟยังไม่ดับ ลูกค้าเล่นต่อได้`,true);
+  }
+};
+const bindPlannedTime=bind;bind=function(){
+  bindPlannedTime();
+  document.querySelectorAll("[data-planned]").forEach(button=>button.onclick=()=>plannedTimeDialog(button.dataset.planned));
 };
 
 nav();

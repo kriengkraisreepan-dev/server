@@ -40,3 +40,4 @@ same session rather than being released, so the customer does not quietly lose t
 that is still in progress.
 
 `TABLE_SESSION_MOVED` records a running session being moved to another table (ย้ายโต๊ะ): the actor, the session, both table ids and names, and how many POS orders travelled with it.
+`TABLE_PLANNED_TIME_SET` records the planned-time limit on a running table being set, extended or cleared (`plannedSeconds: 0`). The limit a table was opened with is on its `TABLE_OPENED` entry instead.

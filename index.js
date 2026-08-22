@@ -314,7 +314,7 @@ function elapsedSeconds(table) { return table.startTime ? Math.max(0, Math.floor
 function legacyTableChargeSatang(table) { return bahtToSatang(Math.max(store.settings.minimumCharge, elapsedSeconds(table) / 3600 * store.settings.hourlyRate)); }
 function tableChargeSatang(table) { const session = sessionRepository.findSessionByTable(table.id); return session ? sessionService.previewCharge(session.id) : legacyTableChargeSatang(table); }
 function apiBaht(satang) { return Number(satangToBaht(satang)); }
-function enrichTable(table) { const session = sessionRepository.findSessionByTable(table.id); const active = table.status === "playing" || table.status === "paused" || table.status === "awaiting_payment"; return { ...table, ...hardwareService.tableHardware(table), elapsedSeconds: session ? sessionService.billableSeconds(session) : elapsedSeconds(table), currentPrice: active ? apiBaht(tableChargeSatang(table)) : 0, member: memberById(table.memberId) || null, sessionState: session?.state || null }; }
+function enrichTable(table) { const session = sessionRepository.findSessionByTable(table.id); const active = table.status === "playing" || table.status === "paused" || table.status === "awaiting_payment"; return { ...table, ...hardwareService.tableHardware(table), elapsedSeconds: session ? sessionService.billableSeconds(session) : elapsedSeconds(table), currentPrice: active ? apiBaht(tableChargeSatang(table)) : 0, member: memberById(table.memberId) || null, sessionState: session?.state || null, plannedSeconds: Number(session?.plannedSeconds || 0), remainingSeconds: session ? sessionService.remainingSeconds(session) : null }; }
 function createBill(table, closedSession, loggedInActorId = "SYSTEM") { return billingService.createBillDraft({ table, session: closedSession, memberName: memberById(table.memberId)?.name || "ลูกค้าทั่วไป", actorId: loggedInActorId }); }
 // Resolves the pricing profile to snapshot at table-start time: the table's own override
 // (table.pricingProfileId) if set and still valid, else settings.defaultPricingProfileId.
@@ -567,10 +567,10 @@ app.post("/api/tables/:id/start", requirePermission(PERMISSIONS.TABLE_OPEN), asy
   // (wrong code, no member, expired) never opens and then cancels a table.
   const couponCode = String(req.body?.couponCode || "").trim();
   if (couponCode) couponService.validate({ code: couponCode, memberId: req.body.memberId || null, channel: "TABLE" });
-  const settings = settingsService.getSettings(); const profile = resolvePricingProfileForTable(table, settings); const session = sessionService.openSession({ tableId: table.id, memberId: req.body.memberId || null, pricingProfile: profile });
+  const settings = settingsService.getSettings(); const profile = resolvePricingProfileForTable(table, settings); const session = sessionService.openSession({ tableId: table.id, memberId: req.body.memberId || null, pricingProfile: profile, plannedSeconds: Math.round(Number(req.body?.plannedMinutes || 0) * 60) });
   let coupon = null;
   if (couponCode) { try { coupon = couponService.reserve({ code: couponCode, memberId: req.body.memberId || null, channel: "TABLE", tableSessionId: session.id }, actorId(req)); } catch (error) { sessionService.cancelSession(session.id); save(); throw error; } }
-  billingService.audit("TABLE_OPENED", { tableId: table.id, sessionId: session.id, actorId: actorId(req) }); const relay = await setRelayState(table, "on"); save(); res.json({ ...enrichTable(table), coupon, warning: relay.failed ? "เปิดโต๊ะแล้ว แต่ติดต่อ ESP32 เพื่อเปิด Relay ไม่สำเร็จ" : undefined }); } catch (error) { if (String(error.code || "").startsWith("COUPON_")) return couponError(res, error); res.status(409).json({ error: error.message }); } });
+  billingService.audit("TABLE_OPENED", { tableId: table.id, sessionId: session.id, actorId: actorId(req), data: { plannedSeconds: Number(session.plannedSeconds || 0) } }); const relay = await setRelayState(table, "on"); save(); res.json({ ...enrichTable(table), coupon, warning: relay.failed ? "เปิดโต๊ะแล้ว แต่ติดต่อ ESP32 เพื่อเปิด Relay ไม่สำเร็จ" : undefined }); } catch (error) { if (String(error.code || "").startsWith("COUPON_")) return couponError(res, error); res.status(409).json({ error: error.message }); } });
 app.post("/api/tables/:id/pause", requirePermission(PERMISSIONS.TABLE_PAUSE), (req, res) => { try { const session = sessionRepository.findOpenSessionByTable(req.params.id); if (!session) return res.status(409).json({ error: "โต๊ะยังไม่ได้เปิดใช้งาน" }); sessionService.pauseSession(session.id); billingService.audit("TABLE_PAUSED", { tableId: Number(req.params.id), sessionId: session.id, actorId: actorId(req) }); res.json(enrichTable(tableById(req.params.id))); } catch (error) { res.status(409).json({ error: error.message }); } });
 app.post("/api/tables/:id/resume", requirePermission(PERMISSIONS.TABLE_RESUME), (req, res) => { try { const session = sessionRepository.findOpenSessionByTable(req.params.id); if (!session) return res.status(409).json({ error: "โต๊ะยังไม่ได้เปิดใช้งาน" }); sessionService.resumeSession(session.id); billingService.audit("TABLE_RESUMED", { tableId: Number(req.params.id), sessionId: session.id, actorId: actorId(req) }); res.json(enrichTable(tableById(req.params.id))); } catch (error) { res.status(409).json({ error: error.message }); } });
 // ย้ายโต๊ะ — the customer moves mid-game. The session keeps its id, its clock and its quoted rate;
@@ -596,6 +596,24 @@ app.post("/api/tables/:id/move", requirePermission(PERMISSIONS.TABLE_OPEN), asyn
     res.json({ from: origin ? enrichTable(origin) : null, to: enrichTable(target), posOrdersMoved: movedOrders.length, warning: originRelay.failed || targetRelay.failed ? "ย้ายโต๊ะแล้ว แต่ติดต่อ ESP32 เพื่อสลับ Relay ไม่สำเร็จ" : undefined });
   } catch (error) {
     res.status(["TABLE_NOT_FREE", "SESSION_NOT_MOVABLE"].includes(error.code) ? 409 : error.code === "TABLE_NOT_FOUND" ? 404 : 400).json({ error: error.code || "TABLE_MOVE_ERROR", message: error.message });
+  }
+});
+// Setting, extending or clearing the "we told them two hours" limit on a table that is already
+// running — the customer asks for another hour and staff should not have to close and reopen.
+// Sending 0 clears the limit. This is a reminder only; the charge is still the time actually played.
+app.post("/api/tables/:id/planned-time", requirePermission(PERMISSIONS.TABLE_OPEN), (req, res) => {
+  try {
+    const table = tableById(req.params.id);
+    if (!table) return res.status(404).json({ error: "ไม่พบโต๊ะ" });
+    const session = sessionRepository.findOpenSessionByTable(req.params.id);
+    if (!session) return res.status(409).json({ error: "NO_ACTIVE_SESSION", message: "โต๊ะนี้ไม่ได้เปิดอยู่" });
+    const plannedSeconds = Math.round(Number(req.body?.plannedMinutes || 0) * 60);
+    sessionService.setPlannedSeconds(session.id, plannedSeconds);
+    billingService.audit("TABLE_PLANNED_TIME_SET", { tableId: table.id, sessionId: session.id, actorId: actorId(req), data: { plannedSeconds } });
+    save();
+    res.json(enrichTable(table));
+  } catch (error) {
+    res.status(error.code === "INVALID_PLANNED_TIME" ? 400 : error.code === "SESSION_NOT_RUNNING" ? 409 : 400).json({ error: error.code || "PLANNED_TIME_ERROR", message: error.message });
   }
 });
 app.post("/api/tables/:id/cancel", async (req, res) => { try { const table = tableById(req.params.id), session = sessionRepository.findOpenSessionByTable(req.params.id); if (!table || !session) return res.status(409).json({ error: "ไม่มี Session ที่ยกเลิกได้" }); sessionService.cancelSession(session.id); const reservedCoupon = couponService.reservedForSession(session.id); if (reservedCoupon) couponService.release(reservedCoupon.id, "SESSION_CANCELLED", actorId(req)); billingService.audit("SESSION_CANCELLED", { tableId: table.id, sessionId: session.id }); const relay = await setRelayState(table, "off"); save(); res.json({ table: enrichTable(table), warning: relay.failed ? "ยกเลิก Session แล้ว แต่ติดต่อ ESP32 เพื่อปิด Relay ไม่สำเร็จ" : undefined }); } catch (error) { res.status(409).json({ error: error.message }); } });
