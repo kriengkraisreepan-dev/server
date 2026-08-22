@@ -771,7 +771,7 @@ function reservationCardsHtml(){
 }
 function reservations(){
   const canManage=["OWNER","MANAGER","CASHIER"].includes(state.user.role),canAdjust=["OWNER","MANAGER"].includes(state.user.role),config=state.settings.reservation||{},deposits=state.reservationDeposits||[];
-  return `${canManage?`<div class="card form"><h3>สร้างการจองทางโทรศัพท์</h3><form id="reservationForm"><div class="grid"><div><label>ชื่อลูกค้า *</label><input name="customerName" required></div><div><label>โทรศัพท์ *</label><input name="phone" required></div><div><label>วันที่ *</label><input name="reservationDate" type="date" required></div><div><label>เวลา *</label><input name="reservationTime" type="time" required></div><div><label>มัดจำ (บาท) *</label><input name="depositAmount" type="number" min="${config.minimumDepositAmount||0}" value="${config.defaultDepositAmount||100}" required></div><div><label>วิธีชำระ *</label><select name="paymentMethod" required><option value="">เลือก</option><option value="cash">เงินสด</option><option value="transfer">โอน</option><option value="qr">QR</option></select></div></div><label>เลขอ้างอิง</label><input name="paymentReference"><label>หมายเหตุ</label><textarea name="remark"></textarea><label class="checkbox-line"><input name="paymentConfirmed" type="checkbox" required> ยืนยันว่าได้รับเงินมัดจำแล้ว</label><button>สร้างการจองและใบรับมัดจำ</button></form></div>`:""}<h3 style="margin-top:20px">รายการจองและคิว</h3><div id="reservationLiveContent" class="grid">${reservationCardsHtml()}</div>`;
+  return `${canManage?`<div class="card form"><h3>สร้างการจองทางโทรศัพท์</h3><form id="reservationForm"><div class="grid"><div><label>ชื่อลูกค้า *</label><input name="customerName" required></div><div><label>โทรศัพท์ *</label><input name="phone" required></div><div><label>วันที่ *</label><input name="reservationDate" type="date" required></div><div><label>เวลา *</label>${reservationTimeFieldHtml()}</div><div><label>มัดจำ (บาท) *</label><input name="depositAmount" type="number" min="${config.minimumDepositAmount||0}" value="${config.defaultDepositAmount||100}" required></div><div><label>วิธีชำระ *</label><select name="paymentMethod" required><option value="">เลือก</option><option value="cash">เงินสด</option><option value="transfer">โอน</option><option value="qr">QR</option></select></div></div><label>เลขอ้างอิง</label><input name="paymentReference"><label>หมายเหตุ</label><textarea name="remark"></textarea><label class="checkbox-line"><input name="paymentConfirmed" type="checkbox" required> ยืนยันว่าได้รับเงินมัดจำแล้ว</label><button>สร้างการจองและใบรับมัดจำ</button></form></div>`:""}<h3 style="margin-top:20px">รายการจองและคิว</h3><div id="reservationLiveContent" class="grid">${reservationCardsHtml()}</div>`;
 }
 const renderReservations10=render;render=function(){if(page!=="reservations")return renderReservations10();if(!state)return;$("#title").textContent="การจอง";$("#clock").textContent=new Date().toLocaleString("th-TH");$("#currentUser").textContent=`${state.user.displayName} (${state.user.role})`;const preserveExistingForm=reservationFormDirty||Boolean($("#reservationForm"));if(preserveExistingForm&&window.ReservationRefresh?.patchReservationLiveContent(document,reservationCardsHtml())){bind();return;}$("#app").innerHTML=reservations();reservationFormDirty=false;bind();};
 const dashboardReservations10=dashboard;dashboard=function(){const base=dashboardReservations10(),d=state.reservationDashboard||{};return base+`<h3 style="margin-top:25px">Smart Reservation</h3><div class="grid"><div class="card"><div class="muted">จองวันนี้</div><div class="stat">${d.todayReservations||0}</div></div><div class="card"><div class="muted">มัดจำรับวันนี้</div><div class="stat">${money((d.todayDepositReceivedSatang||0)/100)}</div></div><div class="card"><div class="muted">มัดจำคงค้าง</div><div class="stat">${money((d.outstandingDepositSatang||0)/100)}</div></div><div class="card"><div class="muted">คืนวันนี้</div><div class="stat">${money((d.todayRefundSatang||0)/100)}</div></div><div class="card"><div class="muted">No Show วันนี้</div><div class="stat">${d.todayNoShow||0}</div></div><div class="card"><div class="muted">คิวรอโต๊ะ</div><div class="stat">${d.waitingQueue||0}</div></div><div class="card"><div class="muted">พร้อม Check-in</div><div class="stat">${d.readyToCheckIn||0}</div></div></div>`;};
@@ -1503,6 +1503,37 @@ const reportsCoupons11=reports;reports=function(){
     +`<div class="card"><div class="muted">จองสิทธิ์ไว้ ยังไม่ชำระ</div><div class="stat">${analytics.outstandingCouponReservations||0}</div></div></div>`
     +`<div class="grid" style="margin-top:18px"><div class="card"><h3>คูปองที่ให้ส่วนลดมากที่สุด</h3><table><tr><th>คูปอง</th><th>ลดกับ</th><th>ใช้</th><th>ช่องทาง</th><th>สมาชิก</th><th>ส่วนลดรวม</th></tr>${couponRows}</table></div>`
     +`<div class="card"><h3>สมาชิกที่ใช้คูปองมากที่สุด</h3><ol>${memberRows}</ol></div></div>`;
+};
+
+
+// ---- เวลาจองแบบ 24 ชั่วโมง ---------------------------------------------------------------------
+// <input type="time"> renders in the BROWSER's UI locale, not the page's. On a Windows machine set
+// to en-US that is a 12-hour box with AM/PM, which is not how anyone at the counter reads a booking
+// — and no page-level attribute changes it (lang="th" does not; only the browser/OS locale does).
+// Two plain selects are the only way to guarantee 24-hour on every machine the app is installed on.
+//
+// The value still reaches the server as "HH:MM" through a hidden field of the original name, so
+// nothing downstream (reservation-service parses `${date}T${time}:00+07:00`) had to change.
+const RESERVATION_MINUTE_STEP=5;
+function reservationTimeFieldHtml(){
+  const hours=Array.from({length:24},(_,hour)=>String(hour).padStart(2,"0"));
+  const minutes=Array.from({length:60/RESERVATION_MINUTE_STEP},(_,index)=>String(index*RESERVATION_MINUTE_STEP).padStart(2,"0"));
+  // The hour carries the `required` and starts empty on purpose. A pair of selects that defaulted to
+  // 00:00 would let a distracted cashier submit a booking for midnight without choosing anything —
+  // the old time box started empty and refused to submit, and that guard has to survive the change.
+  return `<div class="two"><select id="reservationHour" required aria-label="ชั่วโมง"><option value="">ชม.</option>${hours.map(hour=>`<option value="${hour}">${hour}</option>`).join("")}</select>`
+    +`<select id="reservationMinute" aria-label="นาที">${minutes.map(minute=>`<option value="${minute}">${minute}</option>`).join("")}</select></div>`
+    +`<input type="hidden" name="reservationTime" id="reservationTimeValue">`
+    +`<small class="muted">แบบ 24 ชั่วโมง เช่น 19:30 = หนึ่งทุ่มครึ่ง</small>`;
+}
+const bindReservationTime24=bind;bind=function(){
+  bindReservationTime24();
+  const hour=$("#reservationHour"),minute=$("#reservationMinute"),hidden=$("#reservationTimeValue");
+  if(!hour||!minute||!hidden)return;
+  const sync=()=>{hidden.value=hour.value?`${hour.value}:${minute.value}`:"";};
+  hour.addEventListener("change",sync);
+  minute.addEventListener("change",sync);
+  sync();
 };
 
 nav();
