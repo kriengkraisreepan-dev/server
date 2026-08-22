@@ -226,7 +226,7 @@ function pricingProfilesPanel(){
   return `<div class="card"><h3>โปรไฟล์ราคา</h3><p class="muted">แต่ละโปรไฟล์ตั้งอัตราค่าโต๊ะและกฎราคาพิเศษ (Happy Hour) ของตัวเองได้แยกกัน — โปรไฟล์ราคาถูกล็อกตอนกด "เปิดโต๊ะ" (แก้โปรไฟล์ทีหลังไม่กระทบโต๊ะที่เปิดอยู่) แต่ค่าโต๊ะคิดตามราคาของแต่ละช่วงเวลาจริง — เล่นคร่อม Happy Hour จะถูกแบ่งคิดตามเรตของแต่ละช่วง และใบเสร็จจะแสดงแยกบรรทัดให้เห็นชัด</p><div class="grid">${profileCards}</div><button type="button" id="addPricingProfile">+ เพิ่มโปรไฟล์</button></div><div class="card form" style="margin-top:18px"><h3>ราคาโต๊ะแยกตามโต๊ะ</h3><p class="muted">เช่น ห้อง VIP ที่ตั้งราคาไม่เหมือนโต๊ะทั่วไป — ไม่เลือกจะใช้โปรไฟล์เริ่มต้น</p><table><tr><th>โต๊ะ</th><th>โปรไฟล์ราคา</th></tr>${tableRows}</table></div>`;
 }
 function pricingProfileRuleRowHtml(rule={},index){
-  return `<div class="card pricing-rule-row" data-rule-index="${index}" style="margin-top:10px"><div class="two">${PRICING_WEEKDAY_LABELS.map((label,day)=>`<label class="checkbox-line"><input type="checkbox" class="rule-weekday" value="${day}" ${Array.isArray(rule.weekdays)&&rule.weekdays.includes(day)?"checked":""}> ${label}</label>`).join("")}</div><label>เวลาเริ่ม (ว่าง = ทั้งวัน)</label><input type="time" class="rule-start" value="${rule.startTime||""}"><label>เวลาสิ้นสุด</label><input type="time" class="rule-end" value="${rule.endTime||""}"><label>อัตราพิเศษ (บาท/ชม.)</label><input type="number" min="0" step="1" class="rule-rate" required value="${rule.rateSatang!=null?rule.rateSatang/100:""}"><button type="button" class="outline danger" data-remove-rule="${index}">ลบกฎนี้</button></div>`;
+  return `<div class="card pricing-rule-row" data-rule-index="${index}" style="margin-top:10px"><div class="two">${PRICING_WEEKDAY_LABELS.map((label,day)=>`<label class="checkbox-line"><input type="checkbox" class="rule-weekday" value="${day}" ${Array.isArray(rule.weekdays)&&rule.weekdays.includes(day)?"checked":""}> ${label}</label>`).join("")}</div><label>เวลาเริ่ม (ว่าง = ทั้งวัน)</label>${hourMinuteFieldHtml({hiddenAttributes:'class="rule-start"',value:rule.startTime||"",emptyLabel:"ทั้งวัน"})}<label>เวลาสิ้นสุด</label>${hourMinuteFieldHtml({hiddenAttributes:'class="rule-end"',value:rule.endTime||"",emptyLabel:"ทั้งวัน"})}<label>อัตราพิเศษ (บาท/ชม.)</label><input type="number" min="0" step="1" class="rule-rate" required value="${rule.rateSatang!=null?rule.rateSatang/100:""}"><button type="button" class="outline danger" data-remove-rule="${index}">ลบกฎนี้</button></div>`;
 }
 function pricingProfileFormHtml(profile){
   const rules=profile?.timeRules||[];
@@ -1506,34 +1506,45 @@ const reportsCoupons11=reports;reports=function(){
 };
 
 
-// ---- เวลาจองแบบ 24 ชั่วโมง ---------------------------------------------------------------------
+// ---- ช่องเลือกเวลาแบบ 24 ชั่วโมง ----------------------------------------------------------------
 // <input type="time"> renders in the BROWSER's UI locale, not the page's. On a Windows machine set
-// to en-US that is a 12-hour box with AM/PM, which is not how anyone at the counter reads a booking
-// — and no page-level attribute changes it (lang="th" does not; only the browser/OS locale does).
-// Two plain selects are the only way to guarantee 24-hour on every machine the app is installed on.
+// to en-US that is a 12-hour box with AM/PM, which is not how anyone here reads a clock — and no
+// page-level attribute changes it (lang="th" does not; only the browser or OS locale does). Two
+// plain selects are the only way to guarantee 24 hours on every machine the app is installed on.
 //
-// The value still reaches the server as "HH:MM" through a hidden field of the original name, so
-// nothing downstream (reservation-service parses `${date}T${time}:00+07:00`) had to change.
-const RESERVATION_MINUTE_STEP=5;
-function reservationTimeFieldHtml(){
-  const hours=Array.from({length:24},(_,hour)=>String(hour).padStart(2,"0"));
-  const minutes=Array.from({length:60/RESERVATION_MINUTE_STEP},(_,index)=>String(index*RESERVATION_MINUTE_STEP).padStart(2,"0"));
-  // The hour carries the `required` and starts empty on purpose. A pair of selects that defaulted to
-  // 00:00 would let a distracted cashier submit a booking for midnight without choosing anything —
-  // the old time box started empty and refused to submit, and that guard has to survive the change.
-  return `<div class="two"><select id="reservationHour" required aria-label="ชั่วโมง"><option value="">ชม.</option>${hours.map(hour=>`<option value="${hour}">${hour}</option>`).join("")}</select>`
-    +`<select id="reservationMinute" aria-label="นาที">${minutes.map(minute=>`<option value="${minute}">${minute}</option>`).join("")}</select></div>`
-    +`<input type="hidden" name="reservationTime" id="reservationTimeValue">`
-    +`<small class="muted">แบบ 24 ชั่วโมง เช่น 19:30 = หนึ่งทุ่มครึ่ง</small>`;
+// Each field keeps a hidden input carrying the ORIGINAL name/class, so every reader downstream
+// (the reservation form's FormData, the pricing dialog's row.querySelector(".rule-start")) is
+// untouched and still sees a plain "HH:MM" string.
+const TIME_MINUTE_STEP = 5;
+function hourMinuteFieldHtml({ hiddenAttributes = "", value = "", required = false, emptyLabel = "ชม." } = {}) {
+  const [currentHour = "", currentMinute = ""] = String(value || "").split(":");
+  const hours = Array.from({ length: 24 }, (_, hour) => String(hour).padStart(2, "0"));
+  const minutes = Array.from({ length: 60 / TIME_MINUTE_STEP }, (_, index) => String(index * TIME_MINUTE_STEP).padStart(2, "0"));
+  // A saved value that is not on the step grid (an old 17:07 rule, say) keeps its own option, so
+  // simply opening a dialog and saving it again cannot quietly round somebody's rule boundary.
+  if (currentMinute && !minutes.includes(currentMinute)) minutes.push(currentMinute);
+  minutes.sort();
+  const option = (candidate, selected) => `<option value="${candidate}" ${candidate === selected ? "selected" : ""}>${candidate}</option>`;
+  return `<div class="two" data-time-field><select class="time-hour" ${required ? "required" : ""} aria-label="ชั่วโมง"><option value="">${emptyLabel}</option>${hours.map(hour => option(hour, currentHour)).join("")}</select>`
+    + `<select class="time-minute" aria-label="นาที">${minutes.map(minute => option(minute, currentMinute || "00")).join("")}</select>`
+    + `<input type="hidden" ${hiddenAttributes} value="${escapeHtml(value || "")}"></div>`;
 }
-const bindReservationTime24=bind;bind=function(){
-  bindReservationTime24();
-  const hour=$("#reservationHour"),minute=$("#reservationMinute"),hidden=$("#reservationTimeValue");
-  if(!hour||!minute||!hidden)return;
-  const sync=()=>{hidden.value=hour.value?`${hour.value}:${minute.value}`:"";};
-  hour.addEventListener("change",sync);
-  minute.addEventListener("change",sync);
-  sync();
-};
+// One delegated listener for every such field on the page, registered once. Per-field binding would
+// have to be re-run after each render and after each dynamically added pricing rule row; this does
+// not, which is the whole reason it is delegated.
+document.addEventListener("change", event => {
+  const field = event.target.closest?.("[data-time-field]");
+  if (!field) return;
+  const hour = field.querySelector(".time-hour"), minute = field.querySelector(".time-minute"), hidden = field.querySelector("input[type=hidden]");
+  if (hour && minute && hidden) hidden.value = hour.value ? `${hour.value}:${minute.value}` : "";
+});
+// The hour carries the `required` and starts empty on purpose. A pair of selects that defaulted to
+// 00:00 would let a distracted cashier submit a booking for midnight without choosing anything —
+// the old time box started empty and refused to submit, and that guard has to survive the change.
+function reservationTimeFieldHtml() {
+  return hourMinuteFieldHtml({ hiddenAttributes: 'name="reservationTime" id="reservationTimeValue"', required: true })
+    + `<small class="muted">แบบ 24 ชั่วโมง เช่น 19:30 = หนึ่งทุ่มครึ่ง</small>`;
+}
+
 
 nav();
