@@ -573,6 +573,31 @@ app.post("/api/tables/:id/start", requirePermission(PERMISSIONS.TABLE_OPEN), asy
   billingService.audit("TABLE_OPENED", { tableId: table.id, sessionId: session.id, actorId: actorId(req) }); const relay = await setRelayState(table, "on"); save(); res.json({ ...enrichTable(table), coupon, warning: relay.failed ? "เปิดโต๊ะแล้ว แต่ติดต่อ ESP32 เพื่อเปิด Relay ไม่สำเร็จ" : undefined }); } catch (error) { if (String(error.code || "").startsWith("COUPON_")) return couponError(res, error); res.status(409).json({ error: error.message }); } });
 app.post("/api/tables/:id/pause", requirePermission(PERMISSIONS.TABLE_PAUSE), (req, res) => { try { const session = sessionRepository.findOpenSessionByTable(req.params.id); if (!session) return res.status(409).json({ error: "โต๊ะยังไม่ได้เปิดใช้งาน" }); sessionService.pauseSession(session.id); billingService.audit("TABLE_PAUSED", { tableId: Number(req.params.id), sessionId: session.id, actorId: actorId(req) }); res.json(enrichTable(tableById(req.params.id))); } catch (error) { res.status(409).json({ error: error.message }); } });
 app.post("/api/tables/:id/resume", requirePermission(PERMISSIONS.TABLE_RESUME), (req, res) => { try { const session = sessionRepository.findOpenSessionByTable(req.params.id); if (!session) return res.status(409).json({ error: "โต๊ะยังไม่ได้เปิดใช้งาน" }); sessionService.resumeSession(session.id); billingService.audit("TABLE_RESUMED", { tableId: Number(req.params.id), sessionId: session.id, actorId: actorId(req) }); res.json(enrichTable(tableById(req.params.id))); } catch (error) { res.status(409).json({ error: error.message }); } });
+// ย้ายโต๊ะ — the customer moves mid-game. The session keeps its id, its clock and its quoted rate;
+// what has to follow it are the things that point at the OLD table by id.
+app.post("/api/tables/:id/move", requirePermission(PERMISSIONS.TABLE_OPEN), async (req, res) => {
+  try {
+    const session = sessionRepository.findOpenSessionByTable(req.params.id);
+    if (!session) return res.status(409).json({ error: "NO_ACTIVE_SESSION", message: "โต๊ะนี้ไม่มีการเล่นที่ย้ายได้" });
+    const { origin, target } = sessionService.moveSession(session.id, req.body?.targetTableId);
+    // POS orders record the table they were rung up on, and CombinedBillingService#ordersForSession
+    // matches on BOTH the table and the session — without this the food and drink would be orphaned
+    // from the bill the moment the customer changed tables.
+    const movedOrders = posOrderRepository.list().filter(order => order.tableSessionId === session.id);
+    movedOrders.forEach(order => Object.assign(order, { tableId: target.id, tableName: target.name }));
+    if (movedOrders.length) posOrderRepository.persist();
+    // A booking that opened this session still points at the old table for its check-in.
+    const bookingId = reservationRepository.list().find(item => item.tableSessionId === session.id)?.id;
+    if (bookingId) { const booking = reservationRepository.findById(bookingId); booking.assignedTableId = target.id; reservationRepository.update(booking); }
+    billingService.audit("TABLE_SESSION_MOVED", { tableId: target.id, sessionId: session.id, actorId: actorId(req), data: { fromTableId: origin?.id ?? null, fromTableName: origin?.name ?? null, toTableId: target.id, toTableName: target.name, posOrdersMoved: movedOrders.length } });
+    const originRelay = origin ? await setRelayState(origin, "off") : {};
+    const targetRelay = await setRelayState(target, "on");
+    save();
+    res.json({ from: origin ? enrichTable(origin) : null, to: enrichTable(target), posOrdersMoved: movedOrders.length, warning: originRelay.failed || targetRelay.failed ? "ย้ายโต๊ะแล้ว แต่ติดต่อ ESP32 เพื่อสลับ Relay ไม่สำเร็จ" : undefined });
+  } catch (error) {
+    res.status(["TABLE_NOT_FREE", "SESSION_NOT_MOVABLE"].includes(error.code) ? 409 : error.code === "TABLE_NOT_FOUND" ? 404 : 400).json({ error: error.code || "TABLE_MOVE_ERROR", message: error.message });
+  }
+});
 app.post("/api/tables/:id/cancel", async (req, res) => { try { const table = tableById(req.params.id), session = sessionRepository.findOpenSessionByTable(req.params.id); if (!table || !session) return res.status(409).json({ error: "ไม่มี Session ที่ยกเลิกได้" }); sessionService.cancelSession(session.id); const reservedCoupon = couponService.reservedForSession(session.id); if (reservedCoupon) couponService.release(reservedCoupon.id, "SESSION_CANCELLED", actorId(req)); billingService.audit("SESSION_CANCELLED", { tableId: table.id, sessionId: session.id }); const relay = await setRelayState(table, "off"); save(); res.json({ table: enrichTable(table), warning: relay.failed ? "ยกเลิก Session แล้ว แต่ติดต่อ ESP32 เพื่อปิด Relay ไม่สำเร็จ" : undefined }); } catch (error) { res.status(409).json({ error: error.message }); } });
 app.post("/api/tables/:id/items", (req, res) => { const table = tableById(req.params.id); const product = store.products.find(p => p.id === req.body.productId); if (!table || table.status !== "playing") return res.status(400).json({ error: "โต๊ะยังไม่เปิดใช้งาน" }); if (!product) return res.status(404).json({ error: "ไม่พบสินค้า" }); const existing = table.items.find(i => i.productId === product.id); if (existing) existing.quantity += Number(req.body.quantity) || 1; else table.items.push({ productId: product.id, name: product.name, price: product.price, quantity: Number(req.body.quantity) || 1 }); save(); res.json(enrichTable(table)); });
 // Per-table pricing-profile override (e.g. a VIP room billed differently from the standard tables).
