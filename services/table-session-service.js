@@ -37,6 +37,31 @@ class TableSessionService {
     current.rateSegments = result.segments;
     current.finalChargeSatang = result.chargeSatang;
     return this.repository.saveSession(current); }
+  // Moves a running session to another table — the customer changes tables mid-game, usually
+  // because something is wrong with the one they are on.
+  //
+  // The session keeps its id, its opened time, its pauses and, deliberately, its pricingSnapshot:
+  // the customer is charged the rate they were quoted when they sat down, even if the table they
+  // move to is on a different pricing profile. Re-pricing mid-session would also mean re-cutting
+  // the Happy Hour segments around the move, which is a far bigger change than "they moved tables".
+  moveSession(sessionId, targetTableId) {
+    const fail = (code, message) => { const error = new Error(message); error.code = code; throw error; };
+    const session = this.requireSession(sessionId);
+    if (![STATES.ACTIVE, STATES.PAUSED].includes(session.state)) fail("SESSION_NOT_MOVABLE", "Only a running or paused table can be moved");
+    const target = this.repository.findTable(targetTableId);
+    if (!target) fail("TABLE_NOT_FOUND", "Target table not found");
+    if (String(target.id) === String(session.tableId)) fail("SAME_TABLE", "The session is already on that table");
+    if (this.repository.findOpenSessionByTable(target.id) || (target.status && target.status !== "free")) fail("TABLE_NOT_FREE", "Target table is not free");
+    const origin = this.repository.findTable(session.tableId);
+    // releaseTable wipes the origin's legacy item list, so it is carried over rather than lost.
+    const carriedItems = Array.isArray(origin?.items) ? origin.items : [];
+    if (origin) this.repository.releaseTable(origin.id, false);
+    session.tableId = target.id;
+    session.moves = [...(session.moves || []), { fromTableId: origin?.id ?? null, fromTableName: origin?.name ?? null, toTableId: target.id, toTableName: target.name, movedAt: this.now() }];
+    this.repository.saveSession(session);
+    target.items = carriedItems;
+    return { session, origin, target };
+  }
   // Kept as a compatibility alias for callers introduced before the payment workflow.
   closeSession(sessionId) { return this.awaitPaymentSession(sessionId); }
   completeSession(sessionId) { const session = this.requireSession(sessionId); session.state = nextState(session.state, "CLOSE"); return this.repository.saveSession(session); }

@@ -157,3 +157,15 @@ Bills carry `couponRedemptionId`, `couponId`, `couponCode`, `couponName`, `coupo
 Coupons are counted **through their bill**, not by their own timestamp: only `APPLIED` redemptions whose bill is in the period's paid-bill set are included. That makes the discount given reconcile exactly with the revenue reported for the same period, including the 06:00 business-day roll and the rule that a table counts on the night it opened. Voiding a paid bill therefore takes its discount back out of the report, because the redemption is released and the bill is no longer paid.
 
 `outstandingCouponReservations` is deliberately **live rather than period-scoped**, the same way `outstandingPoints` is — it answers "what has been claimed and not yet paid for", which is a fact about now, not about the reporting window.
+
+## ย้ายโต๊ะ — moving a running session
+
+| Method | Path | Access | Description |
+|---|---|---|---|
+| POST | `/api/tables/:id/move` | `table.open` | Moves the running (or paused) session on `:id` to `targetTableId`. The destination must be free |
+
+The session keeps its id, its opened time, its pauses and its `pricingSnapshot` — the customer is charged the rate they were quoted when they sat down, even if the destination table is on a different pricing profile. Re-pricing mid-session would also mean re-cutting the Happy Hour segments around the move.
+
+What follows the session, because it points at the old table by id: the table's POS orders (`CombinedBillingService#ordersForSession` matches on both the table and the session, so without this the food would be orphaned from the bill), the legacy `table.items` list, and the `assignedTableId` of a booking that opened the session. The relays switch: the old table off, the new one on. Every move is audited as `TABLE_SESSION_MOVED` with both table names and how many POS orders travelled, and each one is appended to `session.moves[]`.
+
+Refusals: `NO_ACTIVE_SESSION` (409), `TABLE_NOT_FREE` (409), `SESSION_NOT_MOVABLE` (409, the session is already awaiting payment), `SAME_TABLE` (400), `TABLE_NOT_FOUND` (404).

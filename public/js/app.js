@@ -1547,4 +1547,36 @@ function reservationTimeFieldHtml() {
 }
 
 
+
+// ---- ย้ายโต๊ะ ------------------------------------------------------------------------------------
+// Sits next to the relay button on any table that is actually in play, the same way "แยกบิลสั่งของ"
+// does — the moment a customer asks to move is the moment staff are looking at that card.
+const tableCardMove=tableCardV2;tableCardV2=function(table){
+  const html=tableCardMove(table);
+  if(!["playing","paused"].includes(table.status))return html;
+  return html.replace('<button class="outline" data-relay=',`<button class="outline" data-move="${table.id}">ย้ายโต๊ะ</button><button class="outline" data-relay=`);
+};
+function moveTableDialog(tableId){
+  const table=state.tables.find(item=>String(item.id)===String(tableId));
+  const free=state.tables.filter(item=>item.status==="free");
+  if(!free.length)return notify("ไม่มีโต๊ะว่างให้ย้ายไป",true);
+  openModal(`<h3>ย้าย ${escapeHtml(table.name)}</h3>`
+    +`<p class="muted">เวลาที่เล่นไปแล้ว รายการอาหาร/เครื่องดื่ม สมาชิก และคูปอง จะย้ายตามไปทั้งหมด · <b>ค่าโต๊ะยังคิดตามเรตเดิมที่ลูกค้าได้ตอนเปิดโต๊ะ</b> แม้โต๊ะใหม่จะตั้งราคาไว้ต่างกัน</p>`
+    +`<label>ย้ายไปโต๊ะ</label><select id="moveTarget">${free.map(item=>`<option value="${item.id}">${escapeHtml(item.name)}</option>`).join("")}</select>`
+    +`<div class="actions"><button class="outline" id="cancelMove">กลับ</button><button class="success" id="confirmMove">ย้ายโต๊ะ</button></div>`);
+  $("#cancelMove").onclick=closeModal;
+  $("#confirmMove").onclick=async()=>{
+    const button=$("#confirmMove");button.disabled=true;
+    try{
+      const result=await api(`/api/tables/${tableId}/move`,{method:"POST",body:JSON.stringify({targetTableId:$("#moveTarget").value})});
+      closeModal();await refresh();
+      notify(result.warning||`ย้ายไป ${result.to.name} แล้ว${result.posOrdersMoved?` · ย้ายรายการสั่งของ ${result.posOrdersMoved} รายการ`:""}`,!!result.warning);
+    }catch(error){notify(error.message,true);button.disabled=false;}
+  };
+}
+const bindMoveTable=bind;bind=function(){
+  bindMoveTable();
+  document.querySelectorAll("[data-move]").forEach(button=>button.onclick=()=>moveTableDialog(button.dataset.move));
+};
+
 nav();

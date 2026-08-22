@@ -38,3 +38,5 @@ trace a specific voucher); no member personal data beyond the member id is writt
 payment could be attached and the sale was reopened. The claim goes back to `RESERVED` against the
 same session rather than being released, so the customer does not quietly lose their coupon on a sale
 that is still in progress.
+
+`TABLE_SESSION_MOVED` records a running session being moved to another table (ย้ายโต๊ะ): the actor, the session, both table ids and names, and how many POS orders travelled with it.
