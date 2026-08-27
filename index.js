@@ -76,6 +76,12 @@ const AUTO_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
 // mirrorBackupExternally() (a hoisted function declaration) would otherwise read this `let`
 // before its own initializer line runs further down the file.
 let lastExternalBackupStatus = null;
+// Same hoisting reason as above: maybeAutoBackup() can run during module initialization, and it
+// reads this cache of "when was the newest backup written" (see maybeAutoBackup below).
+let newestBackupAtMs = null;
+// Hoisted for the same reason: backupNow() can run during module initialization (see the
+// inspectBackupCached() comment further down for what this cache is for).
+const backupInspectionCache = new Map();
 const checksum = value => crypto.createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex");
 
 function seed() {
@@ -85,7 +91,7 @@ const validStoreShape = value => value && typeof value === "object" && !Array.is
 function load() { return readJsonWithRecovery(dataFile, { validate: validStoreShape, create: seed }).value; }
 let store = load();
 let reservationRepository, reservationDepositRepository;
-function save() { atomicWriteJson(dataFile, store); maybeAutoBackup(); }
+function save() { atomicWriteJson(dataFile, store, { pretty: false }); maybeAutoBackup(); }
 const settingsRepository = new JsonSettingsRepository({ getStore: () => store, save });
 const settingsService = new SettingsService(settingsRepository);
 const sessionRepository = new JsonSessionRepository({ getStore: () => store, save });
@@ -253,11 +259,35 @@ function inspectBackup(full) {
     return { verificationStatus: validStoreShape(payload) ? "LEGACY_VALID" : "INVALID", missing: [], checksum: checksum(payload), metadata: null, payload };
   } catch (error) { return { verificationStatus: "INVALID", missing: [], error: error.message, payload: null }; }
 }
-function listBackups() {
-  fs.mkdirSync(backupsDir, { recursive: true });
-  return fs.readdirSync(backupsDir).filter(f => /^backup-.*\.json$/.test(f)).map(file => { const full=path.join(backupsDir,file),stat=fs.statSync(full),inspection=inspectBackup(full); return { file, backupId: inspection.metadata?.backupId || file, size: stat.size, createdAt: inspection.metadata?.createdAt || stat.mtime.toISOString(), fileCount: inspection.metadata?.fileCount || 1, checksum: inspection.metadata?.checksum || inspection.checksum, appVersion: inspection.metadata?.appVersion || "legacy", schemaVersion: inspection.metadata?.schemaVersion || 1, verifiedAt: new Date().toISOString(), verificationStatus: inspection.verificationStatus }; }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+// Reading + parsing + checksumming a backup costs as much as the whole dataset, and the folder
+// holds up to MAX_BACKUPS of them. Backup files are immutable once written, so identity
+// (name + size + mtime) is enough to reuse an earlier inspection instead of redoing that work
+// every time the Backups screen is opened. Bounded by MAX_BACKUPS: stale keys are dropped
+// whenever the folder is listed.
+function inspectBackupCached(full, stat) {
+  const key = `${full}|${stat.size}|${stat.mtimeMs}`;
+  let inspection = backupInspectionCache.get(key);
+  if (!inspection) { inspection = inspectBackup(full); backupInspectionCache.set(key, { ...inspection, payload: null }); }
+  return inspection;
 }
-function pruneBackups() { const list = listBackups(); list.slice(MAX_BACKUPS).forEach(b => fs.unlinkSync(path.join(backupsDir, b.file))); }
+// Cheap listing: filename + stat only, no file contents. The timestamp is already encoded in the
+// name by backupNow(), so "when was the last backup" never needs to open a single byte.
+function backupFileStamp(file) { const match = /^backup-(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})-(\d{3})Z\.json$/.exec(file); return match ? Date.parse(`${match[1]}T${match[2]}:${match[3]}:${match[4]}.${match[5]}Z`) : NaN; }
+function backupFilesNewestFirst() {
+  fs.mkdirSync(backupsDir, { recursive: true });
+  return fs.readdirSync(backupsDir).filter(f => /^backup-.*\.json$/.test(f))
+    .map(file => { const full = path.join(backupsDir, file), stat = fs.statSync(full); const stamp = backupFileStamp(file); return { file, full, stat, createdAtMs: Number.isNaN(stamp) ? stat.mtimeMs : stamp }; })
+    .sort((a, b) => b.createdAtMs - a.createdAtMs);
+}
+function listBackups() {
+  const entries = backupFilesNewestFirst();
+  const live = new Set();
+  const items = entries.map(({ file, full, stat }) => { live.add(`${full}|${stat.size}|${stat.mtimeMs}`); const inspection = inspectBackupCached(full, stat); return { file, backupId: inspection.metadata?.backupId || file, size: stat.size, createdAt: inspection.metadata?.createdAt || stat.mtime.toISOString(), fileCount: inspection.metadata?.fileCount || 1, checksum: inspection.metadata?.checksum || inspection.checksum, appVersion: inspection.metadata?.appVersion || "legacy", schemaVersion: inspection.metadata?.schemaVersion || 1, verifiedAt: new Date().toISOString(), verificationStatus: inspection.verificationStatus }; }).sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  for (const key of backupInspectionCache.keys()) if (!live.has(key)) backupInspectionCache.delete(key);
+  newestBackupAtMs = entries.length ? entries[0].createdAtMs : 0;
+  return items;
+}
+function pruneBackups() { backupFilesNewestFirst().slice(MAX_BACKUPS).forEach(entry => { fs.unlinkSync(entry.full); }); }
 function pruneExternalBackups(directory) {
   const entries = fs.readdirSync(directory).filter(f => /^backup-.*\.json$/.test(f)).map(file => ({ file, mtime: fs.statSync(path.join(directory, file)).mtimeMs })).sort((a, b) => b.mtime - a.mtime);
   entries.slice(MAX_BACKUPS).forEach(entry => fs.unlinkSync(path.join(directory, entry.file)));
@@ -297,15 +327,24 @@ function backupNow() {
   const inspection = inspectBackup(target);
   if (inspection.verificationStatus !== "VERIFIED") throw new Error("Backup verification failed");
   operationalLog("INFO","BACKUP_VERIFIED",{backupId:metadata.backupId,file,checksum:metadata.checksum,size:fs.statSync(target).size});
+  // Keeps maybeAutoBackup()'s zero-I/O check honest, and lets the Backups screen reuse the
+  // verification we just did instead of re-reading the file it was written from.
+  const writtenStat = fs.statSync(target);
+  newestBackupAtMs = Date.parse(createdAt);
+  backupInspectionCache.set(`${target}|${writtenStat.size}|${writtenStat.mtimeMs}`, { ...inspection, payload: null });
   pruneBackups();
   mirrorBackupExternally(file, payload);
   return { file, ...metadata, size: fs.statSync(target).size };
 }
+// Runs on EVERY save() — i.e. on every table open, relay toggle, POS line, payment. It used to
+// call listBackups(), which read + parsed + checksummed all 30 backup files, so a single click
+// cost ~30x the size of the whole dataset in disk I/O and grew heavier every day the shop traded.
+// The newest backup's timestamp is remembered in memory instead (seeded once from filenames, kept
+// current by backupNow()), so the steady-state cost of this check is zero I/O.
 function maybeAutoBackup() {
   if (!reservationRepository || !reservationDepositRepository) return;
-  const list = listBackups();
-  const latest = list[0];
-  if (!latest || Date.now() - new Date(latest.createdAt).getTime() > AUTO_BACKUP_INTERVAL_MS) backupNow();
+  if (newestBackupAtMs === null) { const entries = backupFilesNewestFirst(); newestBackupAtMs = entries.length ? entries[0].createdAtMs : 0; }
+  if (Date.now() - newestBackupAtMs > AUTO_BACKUP_INTERVAL_MS) backupNow();
 }
 function id(prefix) { return `${prefix}-${crypto.randomUUID().slice(0, 8)}`; }
 function tableById(tableId) { return store.tables.find(t => String(t.id) === String(tableId)); }
