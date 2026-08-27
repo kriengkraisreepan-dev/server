@@ -6,6 +6,10 @@ const { atomicWriteJson } = require("../infrastructure/safe-json-file");
 const projectRoot = path.resolve(__dirname, "..");
 const dataRoot = path.join(projectRoot, "data");
 const backupRoot = path.join(dataRoot, "backups");
+// Bills, payments, orders, sessions and the audit trail live here as month files rather than
+// inside store.json (see infrastructure/history-store.js). A reset that cleared store.json but
+// left these behind would leave the shop's test trading in the "clean" baseline.
+const historyRoot = path.join(dataRoot, "history");
 const stamp = new Date().toISOString().replace(/[:.]/g, "-");
 const archiveRoot = path.join(projectRoot, "output", `pre-production-archive-${stamp}`);
 const requiredFiles = ["store.json", "reservations.json", "reservation-deposits.json"];
@@ -75,6 +79,10 @@ function main() {
     ? fs.readdirSync(backupRoot, { withFileTypes: true }).filter(entry => entry.isFile()).map(entry => entry.name)
     : [];
   for (const name of oldBackups) archived.push(copyIntoArchive(path.join(backupRoot, name), path.join("backups", name)));
+  const historyFiles = fs.existsSync(historyRoot)
+    ? fs.readdirSync(historyRoot, { withFileTypes: true }).filter(entry => entry.isFile() && entry.name.endsWith(".jsonl")).map(entry => entry.name)
+    : [];
+  for (const name of historyFiles) archived.push(copyIntoArchive(path.join(historyRoot, name), path.join("history", name)));
 
   const before = {
     members: (store.members || []).length,
@@ -88,7 +96,8 @@ function main() {
     memberPointTransactions: (store.memberPointTransactions || []).length,
     reservations: reservations.length,
     reservationDeposits: deposits.length,
-    backups: oldBackups.length
+    backups: oldBackups.length,
+    historyFiles: historyFiles.length
   };
 
   const resetAt = new Date().toISOString();
@@ -122,7 +131,11 @@ function main() {
     }],
     stockMovements: [],
     posOrders: [],
-    memberPointTransactions: []
+    memberPointTransactions: [],
+    // Already at the current layout, so the server must not treat this baseline as a legacy
+    // store and re-run the one-time history migration against it.
+    historySchemaVersion: 1,
+    auditEventTypes: ["PRODUCTION_DATA_RESET_COMPLETED"]
   };
 
   atomicWriteJson(storeFile, resetStore);
@@ -139,6 +152,12 @@ function main() {
   for (const name of oldBackups) {
     const target = path.resolve(backupRoot, name);
     if (path.dirname(target) !== path.resolve(backupRoot)) fail("BACKUP_PATH_INVALID", "Backup path escaped root");
+    fs.unlinkSync(target);
+  }
+
+  for (const name of historyFiles) {
+    const target = path.resolve(historyRoot, name);
+    if (path.dirname(target) !== path.resolve(historyRoot)) fail("HISTORY_PATH_INVALID", "History path escaped root");
     fs.unlinkSync(target);
   }
 

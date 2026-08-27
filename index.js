@@ -32,6 +32,7 @@ const { bahtToSatang, satangToBaht } = require("./domain/money");
 const { resolveEffectiveProfile } = require("./domain/pricing");
 const { atomicWriteJson, readJsonWithRecovery, activeJsonWrites } = require("./infrastructure/safe-json-file");
 const { resolveServerDataLayout } = require("./infrastructure/trusted-data-root");
+const { HistoryStore } = require("./infrastructure/history-store");
 const { IntegrityCheckService } = require("./services/integrity-check-service");
 const { RecoveryService } = require("./services/recovery-service");
 const { HealthService } = require("./services/health-service");
@@ -92,14 +93,24 @@ function load() { return readJsonWithRecovery(dataFile, { validate: validStoreSh
 let store = load();
 let reservationRepository, reservationDepositRepository;
 function save() { atomicWriteJson(dataFile, store, { pretty: false }); maybeAutoBackup(); }
+// store.json is rewritten in full on every save, and save() runs on every table open, relay
+// toggle, POS line and payment. So store.json must only ever hold the working set — what is
+// still in play — and the collections that grow forever (bills, payments, POS orders, table
+// sessions, the audit trail) live in month files instead. That is the whole reason a click costs
+// the same in year twenty as on day one. See infrastructure/history-store.js.
+const historyStore = new HistoryStore({ directory: path.join(dataDir, "history"), getStore: () => store, save, log: (level, event, details) => operationalLog(level, event, details) });
 const settingsRepository = new JsonSettingsRepository({ getStore: () => store, save });
 const settingsService = new SettingsService(settingsRepository);
-const sessionRepository = new JsonSessionRepository({ getStore: () => store, save });
+const sessionRepository = new JsonSessionRepository({ getStore: () => store, save, history: historyStore });
 const sessionService = new TableSessionService(sessionRepository);
-const billingRepository = new JsonBillingRepository({ getStore: () => store, save });
+const billingRepository = new JsonBillingRepository({ getStore: () => store, save, history: historyStore });
+// First boot after the upgrade: move the history that is sitting in store.json out into month
+// files, once, so the shop's very next click is already cheap. No-op on every boot after that.
+const historyMigration = historyStore.migrateLegacyStore();
 // Unconditional prune at boot (on top of the throttled check inside appendAudit) so entries past
 // the retention window are cleared even if the server sat off for a while before this start.
-if (billingRepository.pruneAuditLogs() > 0) save();
+const prunedAuditMonths = billingRepository.pruneAuditLogs();
+if (historyMigration || prunedAuditMonths > 0) save();
 const billingService = new BillingService(billingRepository);
 const memberRepository = new JsonMemberRepository({ getStore: () => store, save });
 const memberService = new MemberService(memberRepository,{audit:(event,actor,data)=>billingService.audit(event,{actorId:actor,data})});
@@ -118,7 +129,7 @@ const inventoryRepository = new JsonInventoryRepository({ getStore: () => store,
 const inventoryService = new InventoryService(inventoryRepository, { audit: (event, actorId, data) => billingService.audit(event, { actorId, data }) });
 inventoryService.normalizeLegacyProducts();
 inventoryService.ensureDefaultCategories();
-const posOrderRepository = new JsonPosOrderRepository({ getStore: () => store, save });
+const posOrderRepository = new JsonPosOrderRepository({ getStore: () => store, save, history: historyStore });
 const posOrderService = new PosOrderService(posOrderRepository, inventoryService, { audit: (event, actorId, data) => billingService.audit(event, { actorId, data }), findTable: tableById, findMember: memberById });
 posOrderService.normalizeLegacyPosOrders();
 const combinedBillingService = new CombinedBillingService({ sessionRepository, sessionService, posOrderRepository, billingRepository, billingService, inventoryService, getMember: memberById, getMemberName: memberId => memberById(memberId)?.displayName || memberById(memberId)?.name || "ลูกค้าทั่วไป", save });
@@ -222,7 +233,7 @@ const tableConfigurationService = new TableConfigurationService({
   hasActiveReservation: tableId => reservationRepository.list().some(item => String(item.assignedTableId) === String(tableId) && !["CANCELLED", "NO_SHOW", "CHECKED_IN", "COMPLETED"].includes(item.status))
 });
 reservationService.normalizeLegacy();
-const integrityCheckService = new IntegrityCheckService({ store: () => store, reservations: () => reservationRepository.list(), deposits: () => reservationDepositRepository.list() });
+const integrityCheckService = new IntegrityCheckService({ store: () => store, reservations: () => reservationRepository.list(), deposits: () => reservationDepositRepository.list(), bills: () => billingRepository.recentBills(), auditLogs: () => billingRepository.recentAuditLogs(), findBill: id => billingRepository.findBill(id) });
 const recoveryService = new RecoveryService({ store: () => store, deposits: reservationDepositRepository, settlement: depositSettlementService, audit: reservationAudit });
 let lastRecovery = recoveryService.run();
 const healthService = new HealthService({
@@ -308,6 +319,9 @@ function mirrorBackupExternally(file, payload) {
     const inspection = inspectBackup(target);
     if (inspection.verificationStatus !== "VERIFIED") throw new Error("External backup verification failed");
     pruneExternalBackups(directory);
+    // Same reasoning as the local mirror: history month files travel alongside the backups rather
+    // than inside them, and only what changed is copied.
+    historyStore.mirrorTo(path.join(directory, "history"));
     lastExternalBackupStatus = { status: "VERIFIED", path: directory, file, checkedAt };
     operationalLog("INFO", "EXTERNAL_BACKUP_VERIFIED", { file, path: directory });
   } catch (error) {
@@ -327,6 +341,12 @@ function backupNow() {
   const inspection = inspectBackup(target);
   if (inspection.verificationStatus !== "VERIFIED") throw new Error("Backup verification failed");
   operationalLog("INFO","BACKUP_VERIFIED",{backupId:metadata.backupId,file,checksum:metadata.checksum,size:fs.statSync(target).size});
+  // The month files holding bills, payments, orders, sessions and the audit trail are not part of
+  // the backup payload — they would make every daily backup a full copy of the shop's entire
+  // history. They are immutable once their month closes, so a mirror alongside the backups stays
+  // current by copying only what changed, which in normal running is the current month alone.
+  const mirroredHistoryFiles = historyStore.mirrorTo(path.join(backupsDir, "history"));
+  if (mirroredHistoryFiles) operationalLog("INFO", "HISTORY_ARCHIVE_MIRRORED", { files: mirroredHistoryFiles, target: "backups/history" });
   // Keeps maybeAutoBackup()'s zero-I/O check honest, and lets the Backups screen reuse the
   // verification we just did instead of re-reading the file it was written from.
   const writtenStat = fs.statSync(target);
@@ -461,7 +481,11 @@ app.get("/api/backups", requirePermission(PERMISSIONS.SETTINGS_MANAGE), (req, re
 app.post("/api/backups", requirePermission(PERMISSIONS.SETTINGS_MANAGE), (req, res) => { try { res.status(201).json(backupNow()); } catch (error) { res.status(500).json({ error: "BACKUP_FAILED", message: error.message }); } });
 app.get("/api/backups/:file/download", requirePermission(PERMISSIONS.SETTINGS_MANAGE), (req, res) => { const file = safeBackupName(req.params.file); if (!file) return res.status(400).json({ error: "ชื่อไฟล์ไม่ถูกต้อง" }); const full = path.join(backupsDir, file); if (!fs.existsSync(full)) return res.status(404).json({ error: "ไม่พบไฟล์สำรองข้อมูล" }); res.download(full, file); });
 app.post("/api/backups/:file/dry-run", requirePermission(PERMISSIONS.SETTINGS_MANAGE), (req, res) => { const file=safeBackupName(req.params.file);if(!file)return res.status(400).json({error:"INVALID_BACKUP_NAME"});const full=path.join(backupsDir,file);if(!fs.existsSync(full))return res.status(404).json({error:"BACKUP_NOT_FOUND"});const result=inspectBackup(full),payload=result.payload,files=payload?.formatVersion===2?payload.files:{"store.json":payload,"reservations.json":[],"reservation-deposits.json":[]};const integrity=payload&&result.verificationStatus!=="INVALID"?new IntegrityCheckService({store:()=>files["store.json"],reservations:()=>files["reservations.json"],deposits:()=>files["reservation-deposits.json"]}).run():null;const status=result.verificationStatus==="INVALID"?"INVALID":integrity?.status==="ERROR"?"WARNING":"RESTORABLE";res.json({status,verificationStatus:result.verificationStatus,missing:result.missing,integrity}); });
-app.post("/api/backups/:file/restore", requirePermission(PERMISSIONS.SETTINGS_MANAGE), (req, res) => { const file = safeBackupName(req.params.file); if (!file) return res.status(400).json({ error: "ชื่อไฟล์ไม่ถูกต้อง" }); const full = path.join(backupsDir, file); if (!fs.existsSync(full)) return res.status(404).json({ error: "ไม่พบไฟล์สำรองข้อมูล" }); const inspection=inspectBackup(full);if(inspection.verificationStatus==="INVALID")return res.status(400).json({error:"BACKUP_INVALID",message:"ไฟล์สำรองข้อมูลไม่ผ่านการตรวจสอบ"}); const payload=inspection.payload,files=payload?.formatVersion===2?payload.files:{"store.json":payload,"reservations.json":reservationRepository.list(),"reservation-deposits.json":reservationDepositRepository.list()},previous={store,reservations:reservationRepository.list(),deposits:reservationDepositRepository.list()};backupNow();try{atomicWriteJson(dataFile,files["store.json"]);atomicWriteJson(reservationRepository.file,files["reservations.json"]);atomicWriteJson(reservationDepositRepository.file,files["reservation-deposits.json"]);store=files["store.json"];reservationRepository.items=files["reservations.json"];reservationDepositRepository.items=files["reservation-deposits.json"];}catch(error){atomicWriteJson(dataFile,previous.store);atomicWriteJson(reservationRepository.file,previous.reservations);atomicWriteJson(reservationDepositRepository.file,previous.deposits);store=previous.store;reservationRepository.items=previous.reservations;reservationDepositRepository.items=previous.deposits;operationalLog("ERROR","RESTORE_ROLLED_BACK",{requestId:req.requestId,userId:req.user.userId,file,errorCode:error.code||"RESTORE_FAILED"});return res.status(500).json({error:"RESTORE_ROLLED_BACK",message:error.message});}lastRecovery=recoveryService.run();operationalLog("INFO","RESTORE_COMPLETED",{requestId:req.requestId,userId:req.user.userId,file,verificationStatus:inspection.verificationStatus});res.json({ message: `กู้คืนข้อมูลจาก ${file} แล้ว (ระบบสำรองข้อมูลก่อนกู้คืนไว้ให้อัตโนมัติ)` }); });
+// A backup taken before the history archive existed carries every bill, payment and audit entry
+// inline in its store.json. Restoring one puts them all back into the hot file, so the same
+// one-time migration that runs at boot runs here too — otherwise the shop would be slow again
+// until the next restart.
+app.post("/api/backups/:file/restore", requirePermission(PERMISSIONS.SETTINGS_MANAGE), (req, res) => { const file = safeBackupName(req.params.file); if (!file) return res.status(400).json({ error: "ชื่อไฟล์ไม่ถูกต้อง" }); const full = path.join(backupsDir, file); if (!fs.existsSync(full)) return res.status(404).json({ error: "ไม่พบไฟล์สำรองข้อมูล" }); const inspection=inspectBackup(full);if(inspection.verificationStatus==="INVALID")return res.status(400).json({error:"BACKUP_INVALID",message:"ไฟล์สำรองข้อมูลไม่ผ่านการตรวจสอบ"}); const payload=inspection.payload,files=payload?.formatVersion===2?payload.files:{"store.json":payload,"reservations.json":reservationRepository.list(),"reservation-deposits.json":reservationDepositRepository.list()},previous={store,reservations:reservationRepository.list(),deposits:reservationDepositRepository.list()};backupNow();try{atomicWriteJson(dataFile,files["store.json"]);atomicWriteJson(reservationRepository.file,files["reservations.json"]);atomicWriteJson(reservationDepositRepository.file,files["reservation-deposits.json"]);store=files["store.json"];reservationRepository.items=files["reservations.json"];reservationDepositRepository.items=files["reservation-deposits.json"];}catch(error){atomicWriteJson(dataFile,previous.store);atomicWriteJson(reservationRepository.file,previous.reservations);atomicWriteJson(reservationDepositRepository.file,previous.deposits);store=previous.store;reservationRepository.items=previous.reservations;reservationDepositRepository.items=previous.deposits;operationalLog("ERROR","RESTORE_ROLLED_BACK",{requestId:req.requestId,userId:req.user.userId,file,errorCode:error.code||"RESTORE_FAILED"});return res.status(500).json({error:"RESTORE_ROLLED_BACK",message:error.message});}historyStore.migrateLegacyStore();save();lastRecovery=recoveryService.run();operationalLog("INFO","RESTORE_COMPLETED",{requestId:req.requestId,userId:req.user.userId,file,verificationStatus:inspection.verificationStatus});res.json({ message: `กู้คืนข้อมูลจาก ${file} แล้ว (ระบบสำรองข้อมูลก่อนกู้คืนไว้ให้อัตโนมัติ)` }); });
 app.delete("/api/backups/:file", requirePermission(PERMISSIONS.SETTINGS_MANAGE), (req, res) => { const file = safeBackupName(req.params.file); if (!file) return res.status(400).json({ error: "ชื่อไฟล์ไม่ถูกต้อง" }); const full = path.join(backupsDir, file); if (!fs.existsSync(full)) return res.status(404).json({ error: "ไม่พบไฟล์สำรองข้อมูล" }); fs.unlinkSync(full); res.json({ message: `ลบไฟล์สำรองข้อมูล ${file} แล้ว` }); });
 function memberReadQuery(req){ const query={...req.query}; if(req.user?.role==="STAFF") query.status="ACTIVE"; return query; }
 app.get("/api/members", requireAuth,(req,res)=>res.json({items:memberService.list(memberReadQuery(req))}));
@@ -844,7 +868,14 @@ app.post("/api/relay/:tableId", async (req, res) => { const table = tableById(re
 // takings" thinks about a session that ran past 00:00. Walk-in/POS-only bills have no play start,
 // so those fall back to createdAt as before. See late-night-bill-reporting-date.test.js.
 function billReportingTimestamp(bill) { return bill.playStartedAt || bill.createdAt; }
-app.get("/api/reports/summary", (req, res) => { const date = req.query.date || new Date().toISOString().slice(0, 10); const bills = store.bills.filter(b => b.status === "paid" && billReportingTimestamp(b).startsWith(date)); const sum = key => bills.reduce((s, b) => s + (b[key] || 0), 0); res.json({ date, billCount: bills.length, revenue: sum("total"), tableRevenue: sum("playAmount"), posRevenue: sum("foodAmount"), bills }); });
+// Reports used to filter every bill the shop had ever taken; they now open only the month files
+// their period covers. Bills are filed under createdAt but reported under playStartedAt, and the
+// business day rolls at 06:00, so the two can land either side of a month boundary — widening the
+// window by two days before picking the files costs one extra file at most and keeps late-night
+// takings on the night they belong to.
+function shiftDay(day, days) { return new Date(new Date(`${String(day).slice(0, 10)}T12:00:00Z`).getTime() + days * 86400000).toISOString().slice(0, 10); }
+function billsForReportingRange(fromDay, toDay) { return billingRepository.billsInRange(shiftDay(fromDay, -2), shiftDay(toDay, 2)); }
+app.get("/api/reports/summary", (req, res) => { const date = req.query.date || new Date().toISOString().slice(0, 10); const bills = billsForReportingRange(date, date).filter(b => b.status === "paid" && billReportingTimestamp(b).startsWith(date)); const sum = key => bills.reduce((s, b) => s + (b[key] || 0), 0); res.json({ date, billCount: bills.length, revenue: sum("total"), tableRevenue: sum("playAmount"), posRevenue: sum("foodAmount"), bills }); });
 app.get("/api/reports/analytics", (req, res) => {
   const type = ["day", "year", "range"].includes(req.query.type) ? req.query.type : "month";
   const now = new Date();
@@ -869,7 +900,13 @@ app.get("/api/reports/analytics", (req, res) => {
   // Single membership test for every series on this endpoint (bills, point transactions, new
   // members) so a custom range cannot end up applied to some of them and not others.
   const matches = source => { const p = part(source); const day = `${p.year}-${p.month}-${p.day}`; return type === "range" ? day >= rangeFrom && day <= rangeTo : (type === "year" ? p.year : type === "day" ? day : `${p.year}-${p.month}`) === period; };
-  const bills = store.bills.filter(b => b.status === "paid" && matches(billReportingTimestamp(b)));
+  // Only the month files this period covers are opened (see billsForReportingRange above); the
+  // period is always bounded, so this never grows into "read every bill ever taken".
+  const periodDays = type === "range" ? [rangeFrom, rangeTo]
+    : type === "day" ? [period, period]
+    : type === "year" ? [`${period}-01-01`, `${period}-12-31`]
+    : [`${period}-01`, `${period}-31`];
+  const bills = billsForReportingRange(periodDays[0], periodDays[1]).filter(b => b.status === "paid" && matches(billReportingTimestamp(b)));
   // Cost of goods sold uses the per-item cost snapshot taken when the bill was created. Bills made
   // during the window where cost was not carried onto bill items have no snapshot; those fall back
   // to the product's current cost so they read as an approximation instead of silently reporting a
@@ -955,6 +992,11 @@ const reservationTimer = setInterval(() => reservationService.processDue().catch
 reservationTimer.unref();
 const pointExpiryTimer = setInterval(() => { try { if (memberService.sweepAllExpiredPoints(settingsService.getSettings()).length) save(); } catch (error) { console.error("Point expiry sweep error", error); } }, 6 * 60 * 60 * 1000);
 pointExpiryTimer.unref();
+// Keeps store.json at working-set size while the shop trades: finished bills, payments, orders and
+// sessions older than the hot window move out to their month files. Hourly is far more often than
+// needed (the window is measured in days) and costs nothing when there is nothing to move.
+const historySweepTimer = setInterval(() => { try { if (Object.keys(historyStore.sweep()).length) save(); } catch (error) { operationalLog("ERROR", "HISTORY_SWEEP_FAILED", { message: error.message }); } }, 60 * 60 * 1000);
+historySweepTimer.unref();
 hardwareHealthMonitoringService.start();
 process.on("unhandledRejection",error=>operationalLog("ERROR","UNHANDLED_REJECTION",{errorCode:error?.code||"UNHANDLED_REJECTION",message:error?.message||String(error)}));
 process.on("uncaughtException",error=>{operationalLog("ERROR","UNCAUGHT_EXCEPTION",{errorCode:error?.code||"UNCAUGHT_EXCEPTION",message:error?.message||String(error)});process.exitCode=1;shutdown("UNCAUGHT_EXCEPTION");});
