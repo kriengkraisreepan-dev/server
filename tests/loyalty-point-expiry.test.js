@@ -3,6 +3,11 @@ const assert = require("node:assert/strict");
 const { JsonMemberRepository } = require("../repositories/json-member-repository");
 const { MemberService } = require("../services/member-service");
 
+// Expiry reads running totals carried on the member record rather than scanning the ledger, and
+// those totals are rebuilt from the ledger by backfillPointExpirySummaries() — which is exactly
+// what runs at boot on an upgraded shop, before the ledger is archived. The tests that seed a
+// ledger directly therefore call the backfill first, so they still check the whole path from
+// transactions to expired balance.
 function makeRig() {
   const store = { members: [], memberPointTransactions: [] };
   const repository = new JsonMemberRepository({ getStore: () => store, save: () => {} });
@@ -33,6 +38,7 @@ test("sweepExpiredPoints expires a due batch and leaves the balance/EXPIRE trans
   const member = service.create({ memberCode: "M3", displayName: "C" }, "owner");
   member.points = 50;
   store.memberPointTransactions.push({ id: "t1", memberId: member.id, type: "EARN", points: 50, expiresAt: "2026-01-01T00:00:00.000Z", createdAt: "2025-07-01T00:00:00.000Z", balanceBefore: 0, balanceAfter: 50 });
+  service.backfillPointExpirySummaries(new Date("2026-06-01T00:00:00.000Z"));
   const result = service.sweepExpiredPoints(member, new Date("2026-06-01T00:00:00.000Z"));
   assert.deepEqual(result, { memberId: member.id, expired: 50, balanceAfter: 0 });
   assert.equal(member.points, 0);
@@ -47,6 +53,7 @@ test("sweepExpiredPoints leaves a batch untouched before its expiry date", () =>
   const member = service.create({ memberCode: "M4", displayName: "D" }, "owner");
   member.points = 50;
   store.memberPointTransactions.push({ id: "t1", memberId: member.id, type: "EARN", points: 50, expiresAt: "2026-12-01T00:00:00.000Z", createdAt: "2025-07-01T00:00:00.000Z", balanceBefore: 0, balanceAfter: 50 });
+  service.backfillPointExpirySummaries(new Date("2026-06-01T00:00:00.000Z"));
   const result = service.sweepExpiredPoints(member, new Date("2026-06-01T00:00:00.000Z"));
   assert.equal(result, null);
   assert.equal(member.points, 50);
@@ -60,6 +67,7 @@ test("sweepExpiredPoints never expires more than the member's current balance (s
     { id: "t1", memberId: member.id, type: "EARN", points: 50, expiresAt: "2026-01-01T00:00:00.000Z", createdAt: "2025-07-01T00:00:00.000Z", balanceBefore: 0, balanceAfter: 50 },
     { id: "t2", memberId: member.id, type: "REDEEM", points: -30, createdAt: "2025-08-01T00:00:00.000Z", balanceBefore: 50, balanceAfter: 20 }
   );
+  service.backfillPointExpirySummaries(new Date("2026-06-01T00:00:00.000Z"));
   const result = service.sweepExpiredPoints(member, new Date("2026-06-01T00:00:00.000Z"));
   assert.equal(result.expired, 20, "capped at the current balance, not the full 50 that was originally earned");
   assert.equal(member.points, 0);
@@ -70,6 +78,7 @@ test("sweepExpiredPoints is idempotent — a second sweep does not expire the sa
   const member = service.create({ memberCode: "M6", displayName: "F" }, "owner");
   member.points = 50;
   store.memberPointTransactions.push({ id: "t1", memberId: member.id, type: "EARN", points: 50, expiresAt: "2026-01-01T00:00:00.000Z", createdAt: "2025-07-01T00:00:00.000Z", balanceBefore: 0, balanceAfter: 50 });
+  service.backfillPointExpirySummaries(new Date("2026-06-01T00:00:00.000Z"));
   service.sweepExpiredPoints(member, new Date("2026-06-01T00:00:00.000Z"));
   assert.equal(member.points, 0);
   const second = service.sweepExpiredPoints(member, new Date("2026-07-01T00:00:00.000Z"));

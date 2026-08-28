@@ -43,19 +43,61 @@ class MemberService{
   // Each earned "batch" remembers its own expiry (earn date + pointExpiryMonths at the time it was
   // earned) — changing the setting later does not retroactively change already-earned batches.
   const expiryMonths=Number((settings.loyalty||settings).pointExpiryMonths||0),now=this.now(),expiresAt=earned.points&&expiryMonths>0?addMonthsIso(now,expiryMonths):null;
-  m.points+=earned.points;m.totalHoursPlayed=Number(m.totalHoursPlayed||0)+(earned.playSeconds/3600);m.totalTablePoints=Number(m.totalTablePoints||0)+earned.points;m.visitCount=Number(m.visitCount||0)+1;m.lastVisitAt=now;m.updatedAt=now;m.updatedBy=actor;Object.assign(bill,{tablePointsEarned:earned.points,tablePlaySecondsSnapshot:earned.playSeconds,tablePlayHoursSnapshot:earned.playSeconds/3600,loyaltyPolicySnapshot:earned.policy,pointsEarned:earned.points,pointsBalance:m.points,pointsEarnedApplied:true});this.repository.saveMember(m);this.repository.addPoint({id:crypto.randomUUID(),memberId:m.id,billId:bill.id,type:"EARN",reason:"TABLE_TIME",points:earned.points,expiresAt,balanceBefore:before,balanceAfter:m.points,createdAt:now,createdBy:actor});this.audit("POINT_EARNED",actor,{memberId:m.id,billId:bill.id,points:earned.points,reason:"TABLE_TIME",expiresAt});return m;}
+  m.points+=earned.points;m.totalHoursPlayed=Number(m.totalHoursPlayed||0)+(earned.playSeconds/3600);m.totalTablePoints=Number(m.totalTablePoints||0)+earned.points;m.visitCount=Number(m.visitCount||0)+1;m.lastVisitAt=now;m.updatedAt=now;m.updatedBy=actor;Object.assign(bill,{tablePointsEarned:earned.points,tablePlaySecondsSnapshot:earned.playSeconds,tablePlayHoursSnapshot:earned.playSeconds/3600,loyaltyPolicySnapshot:earned.policy,pointsEarned:earned.points,pointsBalance:m.points,pointsEarnedApplied:true});if(expiresAt&&earned.points){if(!Array.isArray(m.pointBatches))m.pointBatches=[];m.pointBatches.push({expiresAt,points:earned.points});}this.repository.saveMember(m);this.repository.addPoint({id:crypto.randomUUID(),memberId:m.id,billId:bill.id,type:"EARN",reason:"TABLE_TIME",points:earned.points,expiresAt,balanceBefore:before,balanceAfter:m.points,createdAt:now,createdBy:actor});this.audit("POINT_EARNED",actor,{memberId:m.id,billId:bill.id,points:earned.points,reason:"TABLE_TIME",expiresAt});return m;}
  // Expires due EARN batches for one member — "oldest batch first, never below the current balance"
  // (a deliberate approximation: it doesn't track exactly which batch a REDEEM/VOID drew down, so a
  // partial redemption that happens to straddle two batches' boundaries is only approximately right —
  // acceptable at this scale; see repository.points() for the full transaction trail if ever audited).
+ // The two figures this needs — "how many earned points have come due" and "how many have already
+ // been expired" — used to be recomputed by scanning the member's entire transaction history on
+ // every sweep, which is why that history had to stay in the file rewritten on every click. They
+ // are now carried on the member record itself and updated as things happen:
+ //
+ //   pointBatches       earned batches not yet due, {expiresAt, points} — bounded by the expiry
+ //                      window, not by how long the shop has traded
+ //   pointsDueTotal     running total of batch points that have come due
+ //   pointsExpiredTotal running total of points actually taken away
+ //
+ // The arithmetic below is deliberately identical to the old scan: dueTotal - expiredTotal, capped
+ // at the member's current balance. Capping matters — a member who spent their points before a
+ // batch came due has less balance than is due, and the shortfall must stay owed so it is taken
+ // from the next points they earn, exactly as before. Backfilled from the ledger by
+ // backfillPointExpirySummaries() before that ledger is archived.
+ // One-time rebuild of the three summary fields above from the full transaction ledger. It has to
+ // run while that ledger is still in store.json — i.e. before the history migration archives it —
+ // and it is what makes the switch away from scanning safe for a shop that already has points on
+ // the books. Idempotent: it derives the fields from scratch rather than adding to them.
+ backfillPointExpirySummaries(now=new Date()){
+  const byMember=new Map();
+  for(const tx of this.repository.points()){
+   if(!byMember.has(tx.memberId))byMember.set(tx.memberId,[]);
+   byMember.get(tx.memberId).push(tx);
+  }
+  let touched=0;
+  for(const member of this.repository.members()){
+   const transactions=byMember.get(member.id)||[];
+   const earned=transactions.filter(tx=>tx.type==="EARN"&&tx.expiresAt);
+   member.pointBatches=earned.filter(tx=>new Date(tx.expiresAt)>now).map(tx=>({expiresAt:tx.expiresAt,points:Number(tx.points||0)}));
+   member.pointsDueTotal=earned.filter(tx=>new Date(tx.expiresAt)<=now).reduce((sum,tx)=>sum+Number(tx.points||0),0);
+   member.pointsExpiredTotal=Math.abs(transactions.filter(tx=>tx.type==="EXPIRE").reduce((sum,tx)=>sum+Number(tx.points||0),0));
+   touched+=1;
+  }
+  if(touched)this.repository.save();
+  return {members:touched};
+ }
  sweepExpiredPoints(member,now=new Date()){
-  const transactions=this.repository.points().filter(tx=>tx.memberId===member.id);
-  const dueSatang=transactions.filter(tx=>tx.type==="EARN"&&tx.expiresAt&&new Date(tx.expiresAt)<=now).reduce((sum,tx)=>sum+Number(tx.points||0),0);
-  const alreadyExpired=Math.abs(transactions.filter(tx=>tx.type==="EXPIRE").reduce((sum,tx)=>sum+Number(tx.points||0),0));
-  const amount=Math.max(0,Math.min(dueSatang-alreadyExpired,Number(member.points||0)));
-  if(!amount)return null;
+  const batches=Array.isArray(member.pointBatches)?member.pointBatches:[];
+  const due=batches.filter(batch=>batch.expiresAt&&new Date(batch.expiresAt)<=now);
+  if(due.length){
+   member.pointBatches=batches.filter(batch=>!(batch.expiresAt&&new Date(batch.expiresAt)<=now));
+   member.pointsDueTotal=Number(member.pointsDueTotal||0)+due.reduce((sum,batch)=>sum+Number(batch.points||0),0);
+  }
+  const amount=Math.max(0,Math.min(Number(member.pointsDueTotal||0)-Number(member.pointsExpiredTotal||0),Number(member.points||0)));
+  // Batches that came due still have to be recorded as due even when nothing can be taken yet,
+  // or they would be counted again on the next sweep.
+  if(!amount){if(due.length)this.repository.saveMember(member);return null;}
   const before=Number(member.points||0);
-  member.points=before-amount;member.updatedAt=this.now();member.updatedBy="SYSTEM";
+  member.points=before-amount;member.pointsExpiredTotal=Number(member.pointsExpiredTotal||0)+amount;member.updatedAt=this.now();member.updatedBy="SYSTEM";
   this.repository.saveMember(member);
   this.repository.addPoint({id:crypto.randomUUID(),memberId:member.id,billId:null,type:"EXPIRE",reason:"POINT_EXPIRY",points:-amount,balanceBefore:before,balanceAfter:member.points,createdAt:this.now(),createdBy:"SYSTEM"});
   this.audit("POINT_EXPIRED","SYSTEM",{memberId:member.id,points:-amount});
@@ -68,6 +110,9 @@ class MemberService{
   return this.repository.members().map(member=>this.sweepExpiredPoints(member,now)).filter(Boolean);
  }
  void(bill,actor){if(!bill.memberId||!bill.pointsEarnedApplied||bill.pointsVoided)return null;const m=this.repository.findById(bill.memberId);if(!m)return null;const p=Number((bill.tablePointsEarned??bill.pointsEarned)||0),seconds=Number((bill.tablePlaySecondsSnapshot??bill.playDurationSeconds)||0),before=Number(m.points||0);m.points=Math.max(0,before-p);m.totalHoursPlayed=Math.max(0,Number(m.totalHoursPlayed||0)-(seconds/3600));m.totalTablePoints=Math.max(0,Number(m.totalTablePoints||0)-p);m.updatedAt=this.now();m.updatedBy=actor;bill.pointsVoided=true;this.repository.saveMember(m);this.repository.addPoint({id:crypto.randomUUID(),memberId:m.id,billId:bill.id,type:"VOID",reason:"TABLE_TIME",points:-p,balanceBefore:before,balanceAfter:m.points,createdAt:this.now(),createdBy:actor});this.audit("POINT_VOID",actor,{memberId:m.id,billId:bill.id,points:-p,reason:"TABLE_TIME"});return m;}
- history(id){return this.repository.points().filter(t=>t.memberId===id);}
+ // A member's point trail spans the working set and the month files. With no date range this
+ // reads the last twelve months, which is the window an owner actually questions a balance over;
+ // older entries are still there and come back when a range is given.
+ history(id,query={}){return this.repository.pointsForMember(id,query);}
 }
 module.exports={MemberService};
