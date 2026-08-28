@@ -104,6 +104,15 @@ const settingsService = new SettingsService(settingsRepository);
 const sessionRepository = new JsonSessionRepository({ getStore: () => store, save, history: historyStore });
 const sessionService = new TableSessionService(sessionRepository);
 const billingRepository = new JsonBillingRepository({ getStore: () => store, save, history: historyStore });
+const billingService = new BillingService(billingRepository);
+const memberRepository = new JsonMemberRepository({ getStore: () => store, save, history: historyStore });
+const memberService = new MemberService(memberRepository,{audit:(event,actor,data)=>billingService.audit(event,{actorId:actor,data})});
+// Ordering matters here. Point expiry no longer scans a member's whole transaction ledger — it
+// reads running totals carried on the member record — and those totals are rebuilt FROM that ledger
+// the first time this version runs. So the rebuild has to happen while the ledger is still in
+// store.json, before the migration below moves it into month files.
+const pointBackfill = historyStore.needsMigration() ? memberService.backfillPointExpirySummaries() : null;
+if (pointBackfill) operationalLog("INFO", "POINT_EXPIRY_SUMMARIES_BACKFILLED", pointBackfill);
 // First boot after the upgrade: move the history that is sitting in store.json out into month
 // files, once, so the shop's very next click is already cheap. No-op on every boot after that.
 const historyMigration = historyStore.migrateLegacyStore();
@@ -111,9 +120,6 @@ const historyMigration = historyStore.migrateLegacyStore();
 // the retention window are cleared even if the server sat off for a while before this start.
 const prunedAuditMonths = billingRepository.pruneAuditLogs();
 if (historyMigration || prunedAuditMonths > 0) save();
-const billingService = new BillingService(billingRepository);
-const memberRepository = new JsonMemberRepository({ getStore: () => store, save });
-const memberService = new MemberService(memberRepository,{audit:(event,actor,data)=>billingService.audit(event,{actorId:actor,data})});
 memberService.normalize();
 // Unconditional sweep at boot (on top of the periodic timer below) so batches that came due while
 // the server sat off for a while are still expired promptly. No-op when pointExpiryMonths=0.
@@ -495,7 +501,7 @@ function memberReadQuery(req){ const query={...req.query}; if(req.user?.role==="
 app.get("/api/members", requireAuth,(req,res)=>res.json({items:memberService.list(memberReadQuery(req))}));
 app.get("/api/members/search", requireAuth,(req,res)=>res.json({items:memberService.list(memberReadQuery(req))}));
 app.get("/api/members/:id", requireAuth,(req,res)=>{const member=memberRepository.findById(req.params.id);if(!member)return res.status(404).json({error:"Member not found"});res.json({member});});
-app.get("/api/members/:id/points", requireAuth,(req,res)=>res.json({items:memberService.history(req.params.id)}));
+app.get("/api/members/:id/points", requireAuth,(req,res)=>res.json({items:memberService.history(req.params.id,req.query)}));
 app.post("/api/members", requireAuth,requireMemberManage,(req,res)=>{try{res.status(201).json({member:memberService.create(req.body||{},actorId(req))});}catch(error){res.status(409).json({error:error.message});}});
 app.patch("/api/members/:id", requireAuth,requireMemberManage,(req,res)=>{try{res.json({member:memberService.update(req.params.id,req.body||{},actorId(req))});}catch(error){res.status(/not found/i.test(error.message)?404:409).json({error:error.message});}});
 app.patch("/api/members/:id/status", requireAuth,requireMemberManage,(req,res)=>{try{res.json({member:memberService.status(req.params.id,req.body?.status,actorId(req))});}catch(error){res.status(/not found/i.test(error.message)?404:400).json({error:error.message});}});
@@ -934,7 +940,7 @@ app.get("/api/reports/analytics", (req, res) => {
   const products = {}, members = {};
   bills.forEach(b => { const p = part(billReportingTimestamp(b)); const hour = Number(p.hour); const day = new Date(`${p.year}-${p.month}-${p.day}T12:00:00+07:00`).getDay(); hours[hour].bills++; hours[hour].revenue += b.total; weekdays[day].bills++; weekdays[day].revenue += b.total; const key = dateKey(b); const bucket = daily[key] || (daily[key] = { revenue: 0, tableRevenue: 0, posRevenue: 0 }); bucket.revenue += Number(b.total || 0); bucket.tableRevenue += Number(b.playAmount || 0); bucket.posRevenue += Number(b.foodAmount || 0); if(b.memberId){const m=members[b.memberId]||{memberId:b.memberId,memberCode:b.memberCode||null,name:b.memberName||"-",revenue:0,visits:0};m.revenue+=Number(b.total||0);m.visits++;members[b.memberId]=m;}(b.items || []).forEach(item => { const x = products[item.name] || { name: item.name, quantity: 0, revenue: 0, cost: 0 }; x.quantity += item.quantity; x.revenue += item.total; x.cost += itemCost(item); products[item.name] = x; }); });
   const top = list => list.reduce((best, item) => item.bills > best.bills || (item.bills === best.bills && item.revenue > best.revenue) ? item : best, { bills: 0, revenue: 0 });
-  const memberRevenue=bills.filter(b=>b.memberId).reduce((total,b)=>total+Number(b.total||0),0), points=(store.memberPointTransactions||[]).filter(tx=>matches(tx.createdAt)), newMembers=(store.members||[]).filter(member=>matches(member.createdAt||"")).length, redeemers={}; bills.forEach(b=>{if(!b.memberId||!b.redeemedPoints)return;const x=redeemers[b.memberId]||{memberId:b.memberId,memberCode:b.memberCode||null,name:b.memberName||"-",points:0,discount:0};x.points+=Number(b.redeemedPoints||0);x.discount+=Number(b.redeemValue||0);redeemers[b.memberId]=x;});
+  const memberRevenue=bills.filter(b=>b.memberId).reduce((total,b)=>total+Number(b.total||0),0), points=memberRepository.pointsInRange(shiftDay(periodDays[0],-2),shiftDay(periodDays[1],2)).filter(tx=>matches(tx.createdAt)), newMembers=(store.members||[]).filter(member=>matches(member.createdAt||"")).length, redeemers={}; bills.forEach(b=>{if(!b.memberId||!b.redeemedPoints)return;const x=redeemers[b.memberId]||{memberId:b.memberId,memberCode:b.memberCode||null,name:b.memberName||"-",points:0,discount:0};x.points+=Number(b.redeemedPoints||0);x.discount+=Number(b.redeemValue||0);redeemers[b.memberId]=x;});
   // Attributed from the actual payment records (not bill.paymentMethod, which reads "mixed" for a
   // split bill) so a cash+transfer split bill correctly contributes to BOTH methods' totals.
   const billIds=new Set(bills.map(b=>b.id)), paidPayments=(store.payments||[]).filter(p=>p.status==="paid"&&billIds.has(p.billId));

@@ -11,11 +11,10 @@ const { MonthlyArchive, monthOf, monthsBetween } = require("./monthly-archive");
 //
 // What deliberately stays in store.json, and why: `products`, `productCategories`, `tables`,
 // `users` and `settings` are the shop's configuration — small, fixed, and read on every request.
-// `members` grows with the customer list rather than with transactions. `memberPointTransactions`
-// and `couponRedemptions` are transactional and do grow, but both are read as a complete per-member
-// history (point expiry sums a member's whole ledger; coupon limits are "once per member"), so
-// archiving them needs those calculations reworked first — they add roughly 5 MB over twenty
-// years, against the 42 MB that stockMovements alone would have added.
+// `members` grows with the customer list rather than with transactions, and is looked up on nearly
+// every request. `couponRedemptions` is transactional and does grow, but it is read as a complete
+// per-member history ("this coupon is once per member"), so archiving it means reworking that check
+// first; at the shop's observed rate it is a fraction of a megabyte over twenty years.
 //
 // "Terminal" means the record has reached a state it will not normally leave. Terminal records are
 // not archived immediately: they stay in store.json for HOT_DAYS so that same-day work — today's
@@ -33,7 +32,7 @@ const STALE_DAYS = 180;
 const DAY_MS = 86400000;
 // Bumped whenever a collection is added below, so the one-time migration runs again and sweeps the
 // newcomer out of an already-migrated store.
-const HISTORY_SCHEMA_VERSION = 2;
+const HISTORY_SCHEMA_VERSION = 3;
 
 const COLLECTIONS = Object.freeze({
   bills: {
@@ -47,6 +46,15 @@ const COLLECTIONS = Object.freeze({
   // more often than it is read, which is exactly what an append-only month file is for.
   stockMovements: {
     key: "stockMovements", archiveName: "stock-movements", durable: true,
+    timestampOf: record => record.createdAt,
+    isTerminal: () => true
+  },
+  // The loyalty point ledger: one row per earn, redeem, void or expiry. Point expiry used to
+  // recompute its two running totals by scanning a member's whole ledger, which is what kept this
+  // in the working set; those totals now live on the member record (see MemberService), so the
+  // ledger is free to become what it always was — an append-only history.
+  memberPointTransactions: {
+    key: "memberPointTransactions", archiveName: "member-points", durable: true,
     timestampOf: record => record.createdAt,
     isTerminal: () => true
   },
@@ -210,9 +218,15 @@ class HistoryStore {
   // ---- one-time migration ---------------------------------------------------------------------
   // Existing installations have all of this history sitting in store.json. Move it out on the
   // first boot after the upgrade, in one pass, so the shop's very next click is already cheap.
+  // True while there is still history sitting in store.json that this version knows how to move
+  // out. Callers that must prepare something before their collection is archived — the loyalty
+  // point summaries are rebuilt from the ledger, and only work while the ledger is still here —
+  // check this first.
+  needsMigration() { return Number(this.getStore().historySchemaVersion || 0) < HISTORY_SCHEMA_VERSION; }
+
   migrateLegacyStore(now = new Date()) {
     const store = this.getStore();
-    if (Number(store.historySchemaVersion) >= HISTORY_SCHEMA_VERSION) return null;
+    if (!this.needsMigration()) return null;
     // The Audit screen's event filter is fed by a small registry kept alongside the working set
     // rather than derived from the trail. Seed it from the entries about to be archived, or the
     // dropdown would come up empty on an upgraded shop until every event type happened again.
