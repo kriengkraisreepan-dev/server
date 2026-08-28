@@ -5,9 +5,17 @@ const { MonthlyArchive, monthOf, monthsBetween } = require("./monthly-archive");
 // Which collections are history rather than working state, and when a record stops changing.
 //
 // Everything here used to live inside store.json, which is rewritten in full on every click. These
-// five are the collections that grow without limit — a shop taking 30 bills a day accumulates
-// ~220,000 of them over twenty years — so keeping them there makes every relay toggle slower than
-// the last. They move into month files instead, and store.json keeps only what is still in play.
+// are the collections that grow without limit — a shop taking 30 bills a day accumulates ~220,000
+// of them over twenty years — so keeping them there makes every relay toggle slower than the last.
+// They move into month files instead, and store.json keeps only what is still in play.
+//
+// What deliberately stays in store.json, and why: `products`, `productCategories`, `tables`,
+// `users` and `settings` are the shop's configuration — small, fixed, and read on every request.
+// `members` grows with the customer list rather than with transactions. `memberPointTransactions`
+// and `couponRedemptions` are transactional and do grow, but both are read as a complete per-member
+// history (point expiry sums a member's whole ledger; coupon limits are "once per member"), so
+// archiving them needs those calculations reworked first — they add roughly 5 MB over twenty
+// years, against the 42 MB that stockMovements alone would have added.
 //
 // "Terminal" means the record has reached a state it will not normally leave. Terminal records are
 // not archived immediately: they stay in store.json for HOT_DAYS so that same-day work — today's
@@ -15,13 +23,32 @@ const { MonthlyArchive, monthOf, monthsBetween } = require("./monthly-archive");
 // touch a file. The window is deliberately wider than one day because the shop trades past
 // midnight and the business day rolls at 06:00.
 const HOT_DAYS = 3;
+// Safety valve for records that never reach a terminal state because a person walked away from
+// them: a bill left "awaiting payment" or an order confirmed onto a tab that was never billed.
+// The shop's own data showed roughly eight of each accumulating per month, and every one of them
+// would otherwise sit in the file rewritten on every click for the lifetime of the installation.
+// Six months is far beyond any point at which such a record is still being worked on, and it stays
+// fully searchable in its month file afterwards.
+const STALE_DAYS = 180;
 const DAY_MS = 86400000;
+// Bumped whenever a collection is added below, so the one-time migration runs again and sweeps the
+// newcomer out of an already-migrated store.
+const HISTORY_SCHEMA_VERSION = 2;
 
 const COLLECTIONS = Object.freeze({
   bills: {
-    key: "bills", archiveName: "bills", durable: true,
+    key: "bills", archiveName: "bills", durable: true, stale: true,
     timestampOf: record => record.createdAt,
     isTerminal: record => record.status === "paid" || record.status === "void"
+  },
+  // Immutable ledger of every stock change, one or more rows per POS sale. Originally left in
+  // store.json as "grows slowly" — the shop's first month proved that wrong at ~17 rows a day,
+  // which is 124,000 rows and 42 MB of per-click rewriting over twenty years. It is written far
+  // more often than it is read, which is exactly what an append-only month file is for.
+  stockMovements: {
+    key: "stockMovements", archiveName: "stock-movements", durable: true,
+    timestampOf: record => record.createdAt,
+    isTerminal: () => true
   },
   payments: {
     key: "payments", archiveName: "payments", durable: true,
@@ -29,7 +56,7 @@ const COLLECTIONS = Object.freeze({
     isTerminal: record => ["paid", "cancelled", "failed", "refunded"].includes(record.status)
   },
   posOrders: {
-    key: "posOrders", archiveName: "pos-orders", durable: true,
+    key: "posOrders", archiveName: "pos-orders", durable: true, stale: true,
     timestampOf: record => record.createdAt,
     isTerminal: record => record.status === "CANCELLED" || (record.status === "CONFIRMED" && record.billingStatus === "BILLED")
   },
@@ -69,21 +96,29 @@ class HistoryStore {
 
   // The oldest wall-clock day that is still considered "in play".
   hotCutoffIso(now = new Date()) { return new Date(now.getTime() - HOT_DAYS * DAY_MS).toISOString(); }
+  staleCutoffIso(now = new Date()) { return new Date(now.getTime() - STALE_DAYS * DAY_MS).toISOString(); }
+
+  // A record leaves the working set when it is finished and past the hot window, or — for the
+  // collections marked `stale` — when it is so old that nobody is coming back to finish it.
+  // Table sessions are deliberately not marked stale: an open session drives what the table cards
+  // show, and must stay where the running shop can see it however long it has been open.
+  isArchivable(definition, record, now = new Date()) {
+    const timestamp = String(definition.timestampOf(record) || "");
+    if (!timestamp || !monthOf(timestamp)) return false;
+    if (definition.alwaysCold) return true;
+    if (definition.isTerminal(record)) return timestamp < this.hotCutoffIso(now);
+    return Boolean(definition.stale) && timestamp < this.staleCutoffIso(now);
+  }
 
   // Moves finished records out of store.json and into their month files. Run at boot and on a
   // timer; the caller persists the shrunken store afterwards. Returns how many of each moved.
   sweep(now = new Date()) {
-    const cutoff = this.hotCutoffIso(now);
     const moved = {};
     for (const definition of Object.values(COLLECTIONS)) {
       const records = this.hot(definition.key);
       if (!records.length) continue;
       const cold = [], stillHot = [];
-      for (const record of records) {
-        const timestamp = String(definition.timestampOf(record) || "");
-        const archivable = definition.alwaysCold || (definition.isTerminal(record) && timestamp && timestamp < cutoff);
-        (archivable && monthOf(timestamp) ? cold : stillHot).push(record);
-      }
+      for (const record of records) (this.isArchivable(definition, record, now) ? cold : stillHot).push(record);
       if (!cold.length) continue;
       this.archives[definition.key].appendMany(cold);
       this.getStore()[definition.key] = stillHot;
@@ -161,6 +196,8 @@ class HistoryStore {
     const definition = COLLECTIONS[key];
     if (!definition) return false;
     const timestamp = String(definition.timestampOf(record) || "");
+    // Deliberately looser than isArchivable(): this only has to be true for anything that COULD
+    // already be in a month file, and a record's state may have changed since it was swept.
     return Boolean(timestamp) && (definition.alwaysCold || timestamp < this.hotCutoffIso(now));
   }
 
@@ -175,7 +212,7 @@ class HistoryStore {
   // first boot after the upgrade, in one pass, so the shop's very next click is already cheap.
   migrateLegacyStore(now = new Date()) {
     const store = this.getStore();
-    if (store.historySchemaVersion === 1) return null;
+    if (Number(store.historySchemaVersion) >= HISTORY_SCHEMA_VERSION) return null;
     // The Audit screen's event filter is fed by a small registry kept alongside the working set
     // rather than derived from the trail. Seed it from the entries about to be archived, or the
     // dropdown would come up empty on an upgraded shop until every event type happened again.
@@ -183,7 +220,7 @@ class HistoryStore {
     for (const entry of this.hot("auditLogs")) if (entry.event) eventTypes.add(entry.event);
     store.auditEventTypes = [...eventTypes].sort();
     const moved = this.sweep(now);
-    store.historySchemaVersion = 1;
+    store.historySchemaVersion = HISTORY_SCHEMA_VERSION;
     store.historyMigratedAt = now.toISOString();
     const total = Object.values(moved).reduce((sum, count) => sum + count, 0);
     this.log("INFO", "HISTORY_ARCHIVE_MIGRATED", { moved, total });
@@ -228,4 +265,4 @@ class HistoryStore {
   }
 }
 
-module.exports = { HistoryStore, COLLECTIONS, HOT_DAYS, monthOf, monthsBetween };
+module.exports = { HistoryStore, COLLECTIONS, HOT_DAYS, STALE_DAYS, HISTORY_SCHEMA_VERSION, monthOf, monthsBetween };

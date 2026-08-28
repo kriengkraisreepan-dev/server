@@ -5,6 +5,7 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
+const { HISTORY_SCHEMA_VERSION } = require("../infrastructure/history-store");
 
 // End-to-end cover for the move of bills, payments, orders, sessions and the audit trail out of
 // store.json and into month files: an existing shop's data must survive the one-time migration and
@@ -71,7 +72,7 @@ test("history moves out of store.json on first boot and stays reachable from eve
 
     // The file rewritten on every click no longer carries the old bill, and the month files do.
     const persisted = JSON.parse(fs.readFileSync(path.join(dataDir, "store.json"), "utf8"));
-    assert.equal(persisted.historySchemaVersion, 1);
+    assert.equal(persisted.historySchemaVersion, HISTORY_SCHEMA_VERSION);
     assert.deepEqual(persisted.bills.map(item => item.id), ["recent-bill"], "only the working set stays hot");
     assert.deepEqual(persisted.auditLogs, [], "the audit trail is not held in the hot file at all");
     const archived = fs.readdirSync(path.join(dataDir, "history"));

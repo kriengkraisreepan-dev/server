@@ -4,7 +4,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { MonthlyArchive, monthsBetween } = require("../infrastructure/monthly-archive");
-const { HistoryStore, HOT_DAYS } = require("../infrastructure/history-store");
+const { HistoryStore, HOT_DAYS, STALE_DAYS, HISTORY_SCHEMA_VERSION } = require("../infrastructure/history-store");
 const { JsonBillingRepository } = require("../repositories/json-billing-repository");
 
 function temporaryDirectory(t) {
@@ -119,6 +119,46 @@ test("a bill stays hot for the whole hot window and is archived once past it", t
   assert.deepEqual(history.archive("bills").read().map(bill => bill.id), ["outside"]);
 });
 
+test("stock movements are archived like any other ledger", t => {
+  // Left in store.json originally as "grows slowly"; the shop's first month showed ~17 rows a day,
+  // which is 42 MB of per-click rewriting over twenty years.
+  const now = new Date("2026-08-20T12:00:00.000Z");
+  const { history, state } = makeHistory(t, {
+    stockMovements: [
+      { id: "old", productId: "p-1", type: "SALE", createdAt: daysAgo(now, 30) },
+      { id: "today", productId: "p-1", type: "SALE", createdAt: daysAgo(now, 0) }
+    ]
+  });
+  history.sweep(now);
+  assert.deepEqual(state.stockMovements.map(item => item.id), ["today"]);
+  assert.deepEqual(history.archive("stockMovements").read().map(item => item.id), ["old"]);
+});
+
+test("a bill abandoned in awaiting_payment is swept once it is clearly never coming back", t => {
+  // These accumulate whenever staff walk away from a checkout. They are not terminal, so the hot
+  // window never releases them, and every one would sit in the per-click file forever.
+  const now = new Date("2026-08-20T12:00:00.000Z");
+  const { history, state } = makeHistory(t, {
+    bills: [
+      { id: "abandoned", status: "awaiting_payment", createdAt: daysAgo(now, STALE_DAYS + 1) },
+      { id: "in-progress", status: "awaiting_payment", createdAt: daysAgo(now, 5) }
+    ],
+    posOrders: [
+      { id: "forgotten-tab", status: "CONFIRMED", billingStatus: "UNBILLED", createdAt: daysAgo(now, STALE_DAYS + 1) },
+      { id: "open-tab", status: "CONFIRMED", billingStatus: "UNBILLED", createdAt: daysAgo(now, 5) }
+    ],
+    tableSessions: [
+      { id: "very-old-open-session", state: "ACTIVE", openedAt: daysAgo(now, STALE_DAYS + 1) }
+    ]
+  });
+  history.sweep(now);
+  assert.deepEqual(state.bills.map(bill => bill.id), ["in-progress"], "a checkout from five days ago is still live work");
+  assert.deepEqual(state.posOrders.map(order => order.id), ["open-tab"]);
+  assert.deepEqual(history.archive("bills").read().map(bill => bill.id), ["abandoned"]);
+  assert.deepEqual(state.tableSessions.map(session => session.id), ["very-old-open-session"],
+    "an open session drives the table cards and is never swept, however old it is");
+});
+
 test("an archived record is found by id and updated by appending to its own month", t => {
   const now = new Date("2026-08-20T12:00:00.000Z");
   const { history, state, saveCount } = makeHistory(t, {
@@ -166,7 +206,7 @@ test("the one-time migration empties a legacy store and does not run twice", t =
   });
   const first = history.migrateLegacyStore(now);
   assert.equal(first.total, 2);
-  assert.equal(state.historySchemaVersion, 1);
+  assert.equal(state.historySchemaVersion, HISTORY_SCHEMA_VERSION);
   assert.deepEqual(state.bills, []);
   assert.deepEqual(state.auditLogs, []);
   assert.equal(history.migrateLegacyStore(now), null, "a migrated store is left alone on later boots");
