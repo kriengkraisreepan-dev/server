@@ -139,7 +139,8 @@ const relayControllerDriver = new RelayControllerDriver();
 const hardwareService = new HardwareService(hardwareRepository, relayControllerDriver, {
   tables: () => store.tables,
   saveTables: save,
-  audit: (event, actorId, data) => billingService.audit(event, { actorId, data })
+  audit: (event, actorId, data) => billingService.audit(event, { actorId, data }),
+  log: operationalLog
 });
 const hardwareController = new HardwareController(hardwareService);
 const hardwareHealthMonitoringService = new HardwareHealthMonitoringService({
@@ -147,6 +148,9 @@ const hardwareHealthMonitoringService = new HardwareHealthMonitoringService({
   driver: relayControllerDriver,
   audit: (event, actorId, data) => billingService.audit(event, { actorId, data }),
   log: operationalLog,
+  // The controller turns every relay off when it boots, so a restart leaves the shop dark with no
+  // way for the box to know better. The health poll is where we notice and put the lights back.
+  reconcileRelays: (deviceId, options) => hardwareService.reconcileRelayStates(deviceId, options),
   enabled: process.env.LUCKY_HARDWARE_HEALTH_POLLING !== "0"
 });
 const hardwareSetupWizardService = new HardwareSetupWizardService({

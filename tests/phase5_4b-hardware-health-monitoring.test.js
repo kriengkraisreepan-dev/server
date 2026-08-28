@@ -92,12 +92,62 @@ test("a REPLACED_ARCHIVED device is never re-probed, so background polling canno
   assert.equal(h.calls(), 0, "the driver should never be contacted for an archived device");
 });
 
-test("health monitoring has no Relay commands and logs contain no secrets", async () => {
+test("health monitoring issues no device commands of its own and logs contain no secrets", async () => {
   const h = harness([failure("DEVICE_TIMEOUT")]); await h.monitor.check("hw-1");
   const source = fs.readFileSync(path.join(__dirname, "../services/hardware-health-monitoring-service.js"), "utf8");
-  assert.doesNotMatch(source, /setRelayState|allOff|\/relays|restart|wifi\/|setup\//);
+  // The guarantee is that this service only ever READS from the controller. Relay recovery after a
+  // restart does command the box, but it goes through the injected reconcileRelays hook into
+  // HardwareService, which owns the table mapping and the coil-stagger — none of that belongs to a
+  // poller. Asserting on the driver methods used says exactly that, where the old substring
+  // blacklist also banned the word "restart" and so banned describing the thing being recovered from.
+  const driverMethods = [...new Set([...source.matchAll(/this\.driver\.(\w+)/g)].map(match => match[1]))];
+  assert.deepEqual(driverMethods, ["health"], `health monitoring may only call driver.health(), saw: ${driverMethods.join(", ")}`);
+  assert.doesNotMatch(source, /\/api\/v1\//, "endpoint paths belong in the driver");
   const serialized = JSON.stringify({ logs: h.logs, audits: h.audits });
   assert.doesNotMatch(serialized, /secret-device-key|X-Lucky-Device-Key|Setup Code|password|HMAC/i);
+});
+
+test("a controller restart is detected from its uptime going backwards, and reported", async () => {
+  const h = harness([healthy({ uptimeSeconds: 3600 }), healthy({ uptimeSeconds: 12 })]);
+  await h.monitor.check("hw-1");
+  assert.equal(h.audits.some(x => x.event === "HARDWARE_CONTROLLER_RESTARTED"), false, "the first reading has nothing to compare against");
+  await h.monitor.check("hw-1");
+  const restart = h.audits.find(x => x.event === "HARDWARE_CONTROLLER_RESTARTED");
+  assert.ok(restart, "a controller whose uptime dropped from 3600s to 12s restarted");
+  assert.equal(restart.data.previousUptimeSeconds, 3600);
+  assert.equal(restart.data.uptimeSeconds, 12);
+});
+
+test("normal uptime growth is never mistaken for a restart", async () => {
+  const h = harness([healthy({ uptimeSeconds: 3600 }), healthy({ uptimeSeconds: 3660 })]);
+  await h.monitor.check("hw-1");
+  await h.monitor.check("hw-1");
+  assert.equal(h.audits.some(x => x.event === "HARDWARE_CONTROLLER_RESTARTED"), false);
+});
+
+test("every successful poll asks HardwareService to reconcile the relays, with the reason why", async () => {
+  const reconciled = [];
+  const h = harness([healthy({ uptimeSeconds: 3600 }), healthy({ uptimeSeconds: 5 })]);
+  h.monitor.reconcileRelays = async (deviceId, options) => { reconciled.push({ deviceId, ...options }); return { corrected: [], failed: [] }; };
+  await h.monitor.check("hw-1");
+  await h.monitor.check("hw-1");
+  assert.deepEqual(reconciled.map(item => item.reason), ["RECONNECTED", "CONTROLLER_RESTARTED"]);
+  assert.deepEqual([...new Set(reconciled.map(item => item.deviceId))], ["hw-1"]);
+});
+
+test("a failing reconcile is logged but never fails the health check itself", async () => {
+  const h = harness([healthy()]);
+  h.monitor.reconcileRelays = async () => { throw Object.assign(new Error("boom"), { code: "RELAY_READ_FAILED" }); };
+  assert.equal((await h.monitor.check("hw-1")).status, "ONLINE");
+  assert.ok(h.logs.some(x => x.event === "HARDWARE_RELAY_RECONCILE_FAILED"));
+});
+
+test("an unreachable controller is never asked to reconcile", async () => {
+  let called = false;
+  const h = harness([failure("DEVICE_TIMEOUT")]);
+  h.monitor.reconcileRelays = async () => { called = true; return { corrected: [], failed: [] }; };
+  await h.monitor.check("hw-1");
+  assert.equal(called, false);
 });
 
 test("UI exposes health details and polling lifecycle without color-only status", () => {
