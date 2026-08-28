@@ -125,7 +125,7 @@ const billHistoryService = new BillHistoryService(billingRepository);
 const auditLogService = new AuditLogService(billingRepository);
 const userRepository = new JsonUserRepository({ getStore: () => store, save });
 const authService = new AuthService(userRepository, () => new Date(), (event, actorId, targetUserId, details = {}) => billingService.audit(event, { actorId, data: { targetUserId, ...details } }), () => settingsService.getSettings().security);
-const inventoryRepository = new JsonInventoryRepository({ getStore: () => store, save });
+const inventoryRepository = new JsonInventoryRepository({ getStore: () => store, save, history: historyStore });
 const inventoryService = new InventoryService(inventoryRepository, { audit: (event, actorId, data) => billingService.audit(event, { actorId, data }) });
 inventoryService.normalizeLegacyProducts();
 inventoryService.ensureDefaultCategories();

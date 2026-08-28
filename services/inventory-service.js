@@ -154,20 +154,20 @@ class InventoryService {
   consumeStockForSale(items, { referenceId, actorId, reason = "POS order confirmed", persist = true } = {}) {
     const requested = new Map();
     for (const item of items) { const product = this.repository.findProduct(item.productId); if (!product) throw new Error("Product not found"); if (product.trackStock) requested.set(item.productId, (requested.get(item.productId) || 0) + item.quantity); }
-    if (this.repository.movements().some(movement => movement.type === "SALE" && movement.referenceType === "POS_ORDER" && movement.referenceId === referenceId)) throw new Error("POS order stock was already deducted");
+    if (this.repository.hasMovementForReference(referenceId, "SALE")) throw new Error("POS order stock was already deducted");
     const products = [];
     for (const [productId, quantity] of requested) { const product = this.repository.findProduct(productId); if (!product) throw new Error("Product not found"); if (product.status !== "ACTIVE") throw new Error("Product is disabled"); if (!product.trackStock || product.stockQuantity < quantity) { const error = new Error(`Insufficient stock for ${product.name}`); error.code = "INSUFFICIENT_STOCK"; error.details = { productId, available: product.stockQuantity, requested: quantity }; throw error; } products.push({ product, quantity }); }
     const movements = products.map(({ product, quantity }) => { const before = product.stockQuantity, after = before - quantity; product.stockQuantity = after; product.updatedAt = this.now(); product.updatedBy = actorId; return { id: crypto.randomUUID(), productId: product.id, type: "SALE", quantityBefore: before, quantityChange: -quantity, quantityAfter: after, reason, referenceType: "POS_ORDER", referenceId, createdAt: this.now(), createdBy: actorId }; });
     this.repository.movements().unshift(...movements); if (persist) this.repository.persist(); return movements;
   }
   restoreStockForCancelledSale(items, { referenceId, actorId, reason = "POS order cancelled", persist = true } = {}) {
-    if (this.repository.movements().some(movement => movement.type === "RETURN" && movement.referenceType === "POS_ORDER" && movement.referenceId === referenceId)) throw new Error("POS order stock was already restored");
-    const sales = this.repository.movements().filter(movement => movement.type === "SALE" && movement.referenceType === "POS_ORDER" && movement.referenceId === referenceId);
+    if (this.repository.hasMovementForReference(referenceId, "RETURN")) throw new Error("POS order stock was already restored");
+    const sales = this.repository.movementsForReference(referenceId, "SALE");
     const requested = new Map(); for (const movement of sales) requested.set(movement.productId, (requested.get(movement.productId) || 0) + Math.abs(movement.quantityChange));
     const movements = []; for (const [productId, quantity] of requested) { const product = this.repository.findProduct(productId); if (!product) throw new Error("Product not found for stock restore"); const before = product.stockQuantity, after = before + quantity; product.stockQuantity = after; product.updatedAt = this.now(); product.updatedBy = actorId; movements.push({ id: crypto.randomUUID(), productId, type: "RETURN", quantityBefore: before, quantityChange: quantity, quantityAfter: after, reason, referenceType: "POS_ORDER", referenceId, createdAt: this.now(), createdBy: actorId }); }
     this.repository.movements().unshift(...movements); if (persist) this.repository.persist(); return movements;
   }
-  getStockMovements(id, query = {}) { if (!this.repository.findProduct(id)) throw new Error("Product not found"); const page = Math.max(1, Number.parseInt(query.page, 10) || 1), pageSize = Math.min(100, Math.max(1, Number.parseInt(query.pageSize, 10) || 50)), total = this.repository.movements().filter(item => item.productId === id).length, all = this.repository.movements().filter(item => item.productId === id); return { items: all.slice((page - 1) * pageSize, page * pageSize), total, page, pageSize, pagination: { page, pageSize, total, totalPages: total === 0 ? 0 : Math.ceil(total / pageSize) } }; }
+  getStockMovements(id, query = {}) { if (!this.repository.findProduct(id)) throw new Error("Product not found"); const page = Math.max(1, Number.parseInt(query.page, 10) || 1), pageSize = Math.min(100, Math.max(1, Number.parseInt(query.pageSize, 10) || 50)), all = this.repository.movementsForProduct(id, { from: String(query.from || ""), to: String(query.to || "") }), total = all.length; return { items: all.slice((page - 1) * pageSize, page * pageSize), total, page, pageSize, pagination: { page, pageSize, total, totalPages: total === 0 ? 0 : Math.ceil(total / pageSize) } }; }
 }
 
 module.exports = { InventoryService, DEFAULT_CATEGORIES, MOVEMENT_TYPES };
