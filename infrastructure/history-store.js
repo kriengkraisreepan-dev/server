@@ -29,10 +29,16 @@ const HOT_DAYS = 3;
 // Six months is far beyond any point at which such a record is still being worked on, and it stays
 // fully searchable in its month file afterwards.
 const STALE_DAYS = 180;
+// A member who has not been in for three years is not part of the working shop any more. Their
+// record moves to a month file and a one-line entry stays behind in `archivedMembers` — enough to
+// keep the "no duplicate code/phone/email" checks honest and their points counted as still owed.
+// The moment anything is written about them, or a search matches them, the full record comes
+// straight back (see JsonMemberRepository), so from behind the counter nothing has changed.
+const MEMBER_INACTIVE_DAYS = 3 * 365;
 const DAY_MS = 86400000;
 // Bumped whenever a collection is added below, so the one-time migration runs again and sweeps the
 // newcomer out of an already-migrated store.
-const HISTORY_SCHEMA_VERSION = 3;
+const HISTORY_SCHEMA_VERSION = 4;
 
 const COLLECTIONS = Object.freeze({
   bills: {
@@ -57,6 +63,21 @@ const COLLECTIONS = Object.freeze({
     key: "memberPointTransactions", archiveName: "member-points", durable: true,
     timestampOf: record => record.createdAt,
     isTerminal: () => true
+  },
+  // Unlike everything else here, members are not history — they are a directory. This entry moves
+  // only the long-inactive ones, and leaves the index row behind that makes that reversible.
+  members: {
+    key: "members", archiveName: "members", durable: true, hotDays: MEMBER_INACTIVE_DAYS,
+    timestampOf: member => member.lastVisitAt || member.updatedAt || member.createdAt,
+    isTerminal: () => true,
+    onArchive: (records, store) => {
+      if (!Array.isArray(store.archivedMembers)) store.archivedMembers = [];
+      const known = new Set(store.archivedMembers.map(entry => entry.id));
+      for (const member of records) {
+        if (known.has(member.id)) continue;
+        store.archivedMembers.push({ id: member.id, memberCode: member.memberCode || member.code || "", phone: member.phone || "", email: member.email || "", displayName: member.displayName || member.name || "", points: Number(member.points || 0) });
+      }
+    }
   },
   payments: {
     key: "payments", archiveName: "payments", durable: true,
@@ -103,7 +124,7 @@ class HistoryStore {
   hot(key) { const store = this.getStore(); if (!Array.isArray(store[key])) store[key] = []; return store[key]; }
 
   // The oldest wall-clock day that is still considered "in play".
-  hotCutoffIso(now = new Date()) { return new Date(now.getTime() - HOT_DAYS * DAY_MS).toISOString(); }
+  hotCutoffIso(now = new Date(), days = HOT_DAYS) { return new Date(now.getTime() - days * DAY_MS).toISOString(); }
   staleCutoffIso(now = new Date()) { return new Date(now.getTime() - STALE_DAYS * DAY_MS).toISOString(); }
 
   // A record leaves the working set when it is finished and past the hot window, or — for the
@@ -114,7 +135,7 @@ class HistoryStore {
     const timestamp = String(definition.timestampOf(record) || "");
     if (!timestamp || !monthOf(timestamp)) return false;
     if (definition.alwaysCold) return true;
-    if (definition.isTerminal(record)) return timestamp < this.hotCutoffIso(now);
+    if (definition.isTerminal(record)) return timestamp < this.hotCutoffIso(now, definition.hotDays ?? HOT_DAYS);
     return Boolean(definition.stale) && timestamp < this.staleCutoffIso(now);
   }
 
@@ -129,6 +150,7 @@ class HistoryStore {
       for (const record of records) (this.isArchivable(definition, record, now) ? cold : stillHot).push(record);
       if (!cold.length) continue;
       this.archives[definition.key].appendMany(cold);
+      if (definition.onArchive) definition.onArchive(cold, this.getStore());
       this.getStore()[definition.key] = stillHot;
       moved[definition.key] = cold.length;
     }
@@ -279,4 +301,4 @@ class HistoryStore {
   }
 }
 
-module.exports = { HistoryStore, COLLECTIONS, HOT_DAYS, STALE_DAYS, HISTORY_SCHEMA_VERSION, monthOf, monthsBetween };
+module.exports = { HistoryStore, COLLECTIONS, HOT_DAYS, STALE_DAYS, MEMBER_INACTIVE_DAYS, HISTORY_SCHEMA_VERSION, monthOf, monthsBetween };

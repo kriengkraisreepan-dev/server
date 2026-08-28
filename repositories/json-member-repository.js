@@ -11,8 +11,57 @@ class JsonMemberRepository {
   constructor({ getStore, save, history = null }) { this.getStore=getStore; this.save=save; this.history=history; }
   members(){const s=this.getStore();if(!Array.isArray(s.members))s.members=[];return s.members;}
   points(){const s=this.getStore();if(!Array.isArray(s.memberPointTransactions))s.memberPointTransactions=[];return s.memberPointTransactions;}
-  findById(id){return this.members().find(m=>m.id===id)||null;}
-  saveMember(member){const a=this.members(),i=a.findIndex(m=>m.id===member.id);if(i<0)a.unshift(member);else a[i]=member;this.save();return member;}
+
+  // One line per member whose full record has been moved to a month file after three years without
+  // a visit: id, code, phone, email, name and points. Everything the shop still needs them for
+  // while they are away — refusing a duplicate code or phone, and counting their points as owed.
+  archivedIndex(){const s=this.getStore();if(!Array.isArray(s.archivedMembers))s.archivedMembers=[];return s.archivedMembers;}
+  archivedEntry(id){return this.archivedIndex().find(entry=>entry.id===id)||null;}
+  // Points held by members who are not in the working set, so the outstanding-points figure stays
+  // whole. They are still owed to a customer who could walk back in tomorrow.
+  archivedPoints(){return this.archivedIndex().reduce((sum,entry)=>sum+Number(entry.points||0),0);}
+
+  // Reads do not resurrect anyone: a three-year-old bill being looked at should not quietly rewrite
+  // the member list. Coming back is a write (see saveMember) or a deliberate search (restoreMatching).
+  findById(id){
+    const hot=this.members().find(m=>m.id===id);
+    if(hot||!this.history)return hot||null;
+    if(!this.archivedEntry(id))return null;
+    return this.history.findById("members",id).record;
+  }
+
+  // Any write about a member puts them back in the working set — earning points, a profile edit,
+  // opening a table. That is what "they are a customer again" actually looks like.
+  saveMember(member){
+    const a=this.members(),i=a.findIndex(m=>m.id===member.id);
+    if(i<0){a.unshift(member);this.forgetArchived(member.id);}else a[i]=member;
+    this.save();return member;
+  }
+  forgetArchived(id){
+    const index=this.archivedIndex();
+    const at=index.findIndex(entry=>entry.id===id);
+    if(at>=0)index.splice(at,1);
+  }
+
+  // Staff searching for someone means they are about to serve them, so a match on the index pulls
+  // the whole record back rather than showing a half-populated row.
+  restoreMatching(text){
+    if(!this.history||!text)return [];
+    const needle=String(text).trim().toLowerCase();
+    if(!needle)return [];
+    const matches=this.archivedIndex().filter(entry=>[entry.memberCode,entry.displayName,entry.phone,entry.email].some(value=>String(value||"").toLowerCase().includes(needle)));
+    const restored=[];
+    for(const entry of matches){
+      const record=this.history.findById("members",entry.id).record;
+      if(!record)continue;
+      this.members().unshift(record);
+      this.forgetArchived(entry.id);
+      restored.push(record);
+    }
+    if(restored.length)this.save();
+    return restored;
+  }
+
   addPoint(tx){this.points().unshift(tx);this.save();return tx;}
 
   // One member's transactions, newest first, across the working set and the archive.
