@@ -11,8 +11,11 @@ const ERROR_MESSAGES = Object.freeze({
 });
 
 class HardwareHealthMonitoringService {
-  constructor({ repository, driver, audit = () => {}, log = () => {}, now = () => new Date(), timeoutMs = 5000, offlineThreshold = 3, staleMs = 90000, backgroundIntervalMs = 60000, manualCooldownMs = 3000, maxConcurrent = 4, enabled = true } = {}) {
-    Object.assign(this, { repository, driver, audit, log, now, timeoutMs, offlineThreshold, staleMs, backgroundIntervalMs, manualCooldownMs, maxConcurrent, enabled });
+  // `reconcileRelays(deviceId, { reason })` is HardwareService's relay reconciler. It is injected
+  // rather than imported so this service keeps knowing nothing about tables or billing; see the
+  // call in perform() for why a health poll is the right place to run it.
+  constructor({ repository, driver, audit = () => {}, log = () => {}, now = () => new Date(), timeoutMs = 5000, offlineThreshold = 3, staleMs = 90000, backgroundIntervalMs = 60000, manualCooldownMs = 3000, maxConcurrent = 4, enabled = true, reconcileRelays = null } = {}) {
+    Object.assign(this, { repository, driver, audit, log, now, timeoutMs, offlineThreshold, staleMs, backgroundIntervalMs, manualCooldownMs, maxConcurrent, enabled, reconcileRelays });
     this.inFlight = new Map();
     this.manualChecks = new Map();
     this.timer = null;
@@ -79,10 +82,25 @@ class HardwareHealthMonitoringService {
       const health = this.validate(device, await this.driver.health(device, { timeoutMs: this.timeoutMs }));
       const completed = this.now(), latencyMs = Math.max(0, completed.getTime() - started);
       const fields = { status: "ONLINE", lastSeen: completed.toISOString(), lastOnlineAt: completed.toISOString(), lastCheckedAt: completed.toISOString(), lastErrorCode: null, consecutiveFailures: 0, firmwareVersion: health.firmwareVersion || device.firmwareVersion, relayCount: Number(health.relayCount), health: { uptimeSeconds: health.uptimeSeconds ?? health.uptime, rssi: health.rssi, freeHeapBytes: health.freeHeapBytes, latencyMs }, updatedAt: completed.toISOString() };
+      const restart = this.detectRestart(device, fields.health.uptimeSeconds);
       const updated = this.repository.update(device.id, fields);
       if (previousStatus !== "ONLINE") {
         this.audit("HARDWARE_STATUS_RECOVERED", "SYSTEM", { deviceId: device.id, controllerDeviceId: device.deviceId, previousStatus, newStatus: "ONLINE", durationMs: latencyMs });
         this.log("INFO", "HARDWARE_HEALTH_CHECK_SUCCEEDED", { hardwareRecordId: device.id, deviceId: device.deviceId, ip: device.ipAddress, durationMs: latencyMs, previousStatus, newStatus: "ONLINE" });
+      }
+      // A restart is worth recording on its own: it is the evidence that explains "every light in
+      // the shop went out at once", which otherwise looks like an application fault.
+      if (restart) {
+        this.audit("HARDWARE_CONTROLLER_RESTARTED", "SYSTEM", { deviceId: device.id, controllerDeviceId: device.deviceId, previousUptimeSeconds: restart.previous, uptimeSeconds: restart.current });
+        this.log("WARN", "HARDWARE_CONTROLLER_RESTARTED", { hardwareRecordId: device.id, deviceId: device.deviceId, ip: device.ipAddress, previousUptimeSeconds: restart.previous, uptimeSeconds: restart.current });
+      }
+      // Runs on every successful poll, not only after a detected restart: a reboot that happens
+      // and completes between two polls leaves no uptime evidence, and the relays are wrong either
+      // way. Reconciling reads the board's actual states and touches only what disagrees, so on a
+      // healthy controller this is a single extra GET and nothing else.
+      if (this.reconcileRelays) {
+        try { await this.reconcileRelays(device.id, { reason: restart ? "CONTROLLER_RESTARTED" : previousStatus !== "ONLINE" ? "RECONNECTED" : "DRIFT" }); }
+        catch (error) { this.log("ERROR", "HARDWARE_RELAY_RECONCILE_FAILED", { hardwareRecordId: device.id, errorCode: error.code || "RELAY_RECONCILE_FAILED" }); }
       }
       return this.publicDevice(updated);
     } catch (rawError) {
@@ -95,6 +113,16 @@ class HardwareHealthMonitoringService {
       if (status !== previousStatus || mismatch) this.audit(event, "SYSTEM", { deviceId: device.id, controllerDeviceId: device.deviceId, result: error.code, previousStatus, newStatus: status, failureCount: failures });
       return this.publicDevice(updated);
     }
+  }
+
+  // The controller reports uptime from its own millis(), so a restart is the one thing that can
+  // make it go backwards. A small tolerance absorbs the second-resolution rounding between two
+  // polls; anything beyond that is a genuine reboot.
+  detectRestart(device, currentUptimeSeconds) {
+    const previous = Number(device.health?.uptimeSeconds);
+    const current = Number(currentUptimeSeconds);
+    if (!Number.isFinite(previous) || !Number.isFinite(current)) return null;
+    return current + 5 < previous ? { previous, current } : null;
   }
 
   async checkAll() {

@@ -2,9 +2,15 @@ const { DEVICE_TYPES, DEVICE_STATUS, SUPPORTED_RELAY_COUNTS } = require("../doma
 const { HardwareError } = require("../drivers/relay-controller-driver");
 const crypto = require("crypto");
 
+// Relay coils are switched one at a time with this gap between them. Energising several at once is
+// a well-known way to brown out a controller sharing a supply with the relay board — and the
+// moment we most want to avoid that is exactly when this runs, right after the controller has
+// come back from a restart.
+const RELAY_RECONCILE_STAGGER_MS = 250;
+
 class HardwareService {
-  constructor(repository, driver, { tables, saveTables, audit = () => {} } = {}) {
-    Object.assign(this, { repository, driver, tables, saveTables, audit });
+  constructor(repository, driver, { tables, saveTables, audit = () => {}, log = () => {}, wait = ms => new Promise(resolve => setTimeout(resolve, ms)) } = {}) {
+    Object.assign(this, { repository, driver, tables, saveTables, audit, log, wait });
   }
   publicDevice(device) {
     if (!device) return null;
@@ -225,6 +231,64 @@ class HardwareService {
       throw error;
     }
   }
+  // What the light on this table is supposed to be doing. relayDesiredState is stamped by every
+  // deliberate command (opening a table, the manual Relay button, closing a bill). relayState is
+  // the older field kept in step with it. A table nobody has ever commanded has no opinion, and
+  // must be left alone rather than switched — hence null, not "off".
+  desiredRelayState(table) {
+    const recorded = table.relayDesiredState || table.relayState;
+    if (recorded === "on" || recorded === "off") return recorded;
+    return ["playing", "paused", "awaiting_payment"].includes(table.status) ? "on" : null;
+  }
+
+  // The controller deactivates every relay output when it boots and has no way of knowing which
+  // tables were lit, so any restart — a brownout when a coil switches, a watchdog reset, a power
+  // dip — leaves the whole shop dark while the app still shows tables playing. Nothing used to put
+  // them back: staff had to toggle each table by hand. This compares what the board is actually
+  // doing against what the app asked for and corrects only the channels that disagree, so it is a
+  // no-op on a healthy controller and costs one read per health poll.
+  async reconcileRelayStates(deviceId, { reason = "DRIFT" } = {}) {
+    const device = this.repository.findById(deviceId);
+    if (!device || device.status !== DEVICE_STATUS.ONLINE || !device.apiKey) return { corrected: [], failed: [] };
+    const mapped = this.tables().filter(table => table.hardwareDeviceId === deviceId && Number(table.relayChannel) > 0 && this.desiredRelayState(table));
+    if (!mapped.length) return { corrected: [], failed: [] };
+
+    let actual;
+    try {
+      const snapshot = await this.driver.relays(device);
+      actual = new Map((snapshot?.relays || []).map(relay => [Number(relay.channel), String(relay.state).toUpperCase() === "ON" ? "on" : "off"]));
+    } catch (error) {
+      this.log("WARN", "HARDWARE_RELAY_RECONCILE_READ_FAILED", { deviceId, errorCode: error.code || "RELAY_READ_FAILED" });
+      return { corrected: [], failed: [], unreachable: true };
+    }
+
+    const corrected = [], failed = [];
+    for (const table of mapped) {
+      const desired = this.desiredRelayState(table);
+      const channel = Number(table.relayChannel);
+      const observed = actual.get(channel);
+      // A channel the board did not report is outside its configured relay count — a mapping
+      // problem, not a drift problem, and re-driving it would only log an invalid-channel error.
+      if (observed === undefined || observed === desired) continue;
+      try {
+        await this.driver.setRelayState(device, channel, desired === "on");
+        table.relayState = desired; table.relayActualState = desired; table.relayPending = false;
+        if (desired === "on") table.relayChangedAt = Date.now();
+        corrected.push({ tableId: table.id, channel, from: observed, to: desired });
+      } catch (error) {
+        table.relayPending = true;
+        failed.push({ tableId: table.id, channel, errorCode: error.code || "RELAY_RESTORE_FAILED" });
+      }
+      await this.wait(RELAY_RECONCILE_STAGGER_MS);
+    }
+    if (corrected.length || failed.length) {
+      this.saveTables();
+      this.audit("HARDWARE_RELAY_STATE_RESTORED", "SYSTEM", { deviceId, controllerDeviceId: device.deviceId, reason, corrected, failed });
+      this.log(failed.length ? "ERROR" : "INFO", "HARDWARE_RELAY_STATE_RESTORED", { deviceId, reason, correctedCount: corrected.length, failedCount: failed.length });
+    }
+    return { corrected, failed };
+  }
+
   relays(id) { return this.driver.relays(this.getAuthenticated(id)); }
   relayConfig(id) { return this.driver.relayConfig(this.getRequired(id)); }
   async setRelayCount(id, relayCount, actorId = "SYSTEM", activeHigh) {
