@@ -1,11 +1,16 @@
 const { requireNonNegativeSatang } = require("./money");
 const UNITS = new Set(["HOUR", "MINUTE"]), ROUNDING = new Set(["NONE", "UP_TO_BAHT", "NEAREST_BAHT"]);
+// Optional per-profile figures. `null` is a real value here and means "not set": a profile with no
+// practice rate does not offer the ซ้อม button at all, and a rate with no pointsPerInterval falls
+// back to the shop-wide loyalty setting rather than earning nothing.
+function optionalSatang(value, label) { if (value === null || value === undefined || value === "") return null; return requireNonNegativeSatang(Number(value), label); }
+function optionalPoints(value, label) { if (value === null || value === undefined || value === "") return null; const points = Number(value); if (!Number.isInteger(points) || points < 0) throw new Error(`${label} must be a non-negative integer`); return points; }
 function normalizePricingProfile(profile) {
   if (!profile || typeof profile !== "object") throw new Error("Pricing profile is required");
   // pricingMode is carried through normalisation on purpose: it is how a session snapshot taken
   // after segmented billing shipped is told apart from one taken before it. Absent = the old
   // single-rate behaviour, which sessions already open at upgrade time must keep.
-  const normalized = { id: String(profile.id || "default"), name: String(profile.name || "Default"), unit: profile.unit || "HOUR", rateSatang: profile.rateSatang, minimumChargeSatang: profile.minimumChargeSatang ?? 0, roundingRule: profile.roundingRule || "NONE", weekdayRules: profile.weekdayRules || [], timeRules: profile.timeRules || [], pricingMode: profile.pricingMode || "FLAT" };
+  const normalized = { id: String(profile.id || "default"), name: String(profile.name || "Default"), unit: profile.unit || "HOUR", rateSatang: profile.rateSatang, minimumChargeSatang: profile.minimumChargeSatang ?? 0, roundingRule: profile.roundingRule || "NONE", weekdayRules: profile.weekdayRules || [], timeRules: profile.timeRules || [], pricingMode: profile.pricingMode || "FLAT", practiceRateSatang: optionalSatang(profile.practiceRateSatang, "practiceRateSatang"), pointsPerInterval: optionalPoints(profile.pointsPerInterval, "pointsPerInterval"), practicePointsPerInterval: optionalPoints(profile.practicePointsPerInterval, "practicePointsPerInterval"), practice: Boolean(profile.practice) };
   if (!UNITS.has(normalized.unit)) throw new Error("Unsupported pricing unit");
   if (!ROUNDING.has(normalized.roundingRule)) throw new Error("Unsupported rounding rule");
   requireNonNegativeSatang(normalized.rateSatang, "rateSatang"); requireNonNegativeSatang(normalized.minimumChargeSatang, "minimumChargeSatang");
@@ -50,7 +55,7 @@ function resolveEffectiveProfile(profile, at = new Date()) {
   const weekday = thaiLocal.getUTCDay(), minutes = thaiLocal.getUTCHours() * 60 + thaiLocal.getUTCMinutes();
   const rule = (normalized.timeRules || []).find(candidate => ruleMatches(candidate, weekday, minutes));
   if (!rule) return normalized;
-  return Object.freeze({ ...normalized, rateSatang: requireNonNegativeSatang(Number(rule.rateSatang), "rule rateSatang"), appliedRuleId: rule.id || null });
+  return Object.freeze({ ...normalized, rateSatang: requireNonNegativeSatang(Number(rule.rateSatang), "rule rateSatang"), pointsPerInterval: optionalPoints(rule.pointsPerInterval, "rule pointsPerInterval") ?? normalized.pointsPerInterval, appliedRuleId: rule.id || null });
 }
 // ---------------------------------------------------------------------------
 // Segmented (time-of-day) billing
@@ -74,7 +79,7 @@ function ruleAt(profile, instant) {
   const { weekday, minutes } = thaiParts(instant);
   return (profile.timeRules || []).find(candidate => ruleMatches(candidate, weekday, minutes)) || null;
 }
-function rateAt(profile, instant) { const rule = ruleAt(profile, instant); return rule ? { rateSatang: requireNonNegativeSatang(Number(rule.rateSatang), "rule rateSatang"), ruleId: rule.id || null, ruleName: rule.name || "" } : { rateSatang: profile.rateSatang, ruleId: null, ruleName: "" }; }
+function rateAt(profile, instant) { const rule = ruleAt(profile, instant); return rule ? { rateSatang: requireNonNegativeSatang(Number(rule.rateSatang), "rule rateSatang"), ruleId: rule.id || null, ruleName: rule.name || "", pointsPerInterval: optionalPoints(rule.pointsPerInterval, "rule pointsPerInterval") } : { rateSatang: profile.rateSatang, ruleId: null, ruleName: "", pointsPerInterval: profile.pointsPerInterval }; }
 
 // Splits [openedAt, endsAt] wherever the applicable rate changes. Rule boundaries are HH:MM, so a
 // minute-by-minute scan finds every one of them exactly; the session's own start and end keep their
@@ -90,7 +95,9 @@ function calculateRateSegments(snapshot, { openedAt, endsAt, pauseIntervals = []
   let current = rateAt(profile, start);
   for (let tick = Math.ceil(start.getTime() / MINUTE_MS) * MINUTE_MS; tick < end.getTime(); tick += MINUTE_MS) {
     const at = new Date(tick), next = rateAt(profile, at);
-    if (next.rateSatang !== current.rateSatang || next.ruleId !== current.ruleId) { boundaries.push(at); current = next; }
+    // Two rules can charge the same baht and still award different points, so the points rate is
+    // part of what makes a boundary — otherwise those hours would all be awarded at the first one's.
+    if (next.rateSatang !== current.rateSatang || next.ruleId !== current.ruleId || next.pointsPerInterval !== current.pointsPerInterval) { boundaries.push(at); current = next; }
   }
   boundaries.push(end);
   const spans = [];
@@ -108,7 +115,7 @@ function calculateRateSegments(snapshot, { openedAt, endsAt, pauseIntervals = []
       ? recorded.reduce((sum, interval) => sum + Math.max(0, Math.floor((Math.min(span.to, interval.to) - Math.max(span.from, interval.from)) / 1000)), 0)
       : (totalElapsed ? Math.round(pausedSeconds * (span.elapsedSeconds / totalElapsed)) : 0);
     const seconds = Math.max(0, span.elapsedSeconds - paused);
-    return { from: span.from.toISOString(), to: span.to.toISOString(), rateSatang: span.rateSatang, ruleId: span.ruleId, ruleName: span.ruleName, elapsedSeconds: span.elapsedSeconds, pausedSeconds: paused, seconds, satang: Math.ceil((span.rateSatang * seconds) / denominator) };
+    return { from: span.from.toISOString(), to: span.to.toISOString(), rateSatang: span.rateSatang, ruleId: span.ruleId, ruleName: span.ruleName, pointsPerInterval: span.pointsPerInterval ?? null, elapsedSeconds: span.elapsedSeconds, pausedSeconds: paused, seconds, satang: Math.ceil((span.rateSatang * seconds) / denominator) };
   }).filter(segment => segment.seconds > 0);
   return segments;
 }
@@ -126,4 +133,19 @@ function calculateSegmentedCharge(snapshot, session) {
   const previewSatang = Math.max(profile.minimumChargeSatang, subtotalSatang);
   return { segments, billableSeconds, subtotalSatang, previewSatang, chargeSatang: applyRounding(previewSatang, profile.roundingRule) };
 }
-module.exports = { normalizePricingProfile, calculateSessionCharge, calculateSessionPreview, snapshotPricing, applyRounding, resolveEffectiveProfile, snapshotSegmentedPricing, isSegmented, calculateRateSegments, calculateSegmentedCharge };
+// ---------------------------------------------------------------------------
+// ซ้อมเดี่ยว — one person practising alone, charged a flat lower rate.
+//
+// It is a DERIVED profile rather than another entry in the picker: the practice rate belongs to the
+// table's own profile (a VIP room can practise at a different price from the main floor), and the
+// customer chooses it by pressing a different button, not by the cashier remembering which profile
+// means what. Happy Hour is stripped deliberately — the practice rate is already the cheapest thing
+// on the board, and a rule that undercut it would be a mistake rather than a discount. What comes
+// back is an ordinary single-rate profile, so every segment/charge path above still works unchanged.
+function practicePricingProfile(profile) {
+  const normalized = normalizePricingProfile(profile);
+  if (normalized.practiceRateSatang === null) { const error = new Error("This pricing profile has no practice rate configured"); error.code = "PRACTICE_RATE_NOT_CONFIGURED"; throw error; }
+  return normalizePricingProfile({ ...normalized, rateSatang: normalized.practiceRateSatang, timeRules: [], weekdayRules: [], pointsPerInterval: normalized.practicePointsPerInterval, practice: true });
+}
+function isPractice(snapshot) { return Boolean(snapshot?.practice); }
+module.exports = { normalizePricingProfile, practicePricingProfile, isPractice, calculateSessionCharge, calculateSessionPreview, snapshotPricing, applyRounding, resolveEffectiveProfile, snapshotSegmentedPricing, isSegmented, calculateRateSegments, calculateSegmentedCharge };

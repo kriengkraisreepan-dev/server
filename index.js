@@ -29,7 +29,7 @@ const { ReservationDepositService } = require("./services/reservation-deposit-se
 const { DepositSettlementService } = require("./services/deposit-settlement-service");
 const { PERMISSIONS, hasPermission } = require("./domain/permissions");
 const { bahtToSatang, satangToBaht } = require("./domain/money");
-const { resolveEffectiveProfile } = require("./domain/pricing");
+const { resolveEffectiveProfile, practicePricingProfile } = require("./domain/pricing");
 const { atomicWriteJson, readJsonWithRecovery, activeJsonWrites } = require("./infrastructure/safe-json-file");
 const { resolveServerDataLayout } = require("./infrastructure/trusted-data-root");
 const { HistoryStore } = require("./infrastructure/history-store");
@@ -383,7 +383,7 @@ function elapsedSeconds(table) { return table.startTime ? Math.max(0, Math.floor
 function legacyTableChargeSatang(table) { return bahtToSatang(Math.max(store.settings.minimumCharge, elapsedSeconds(table) / 3600 * store.settings.hourlyRate)); }
 function tableChargeSatang(table) { const session = sessionRepository.findSessionByTable(table.id); return session ? sessionService.previewCharge(session.id) : legacyTableChargeSatang(table); }
 function apiBaht(satang) { return Number(satangToBaht(satang)); }
-function enrichTable(table) { const session = sessionRepository.findSessionByTable(table.id); const active = table.status === "playing" || table.status === "paused" || table.status === "awaiting_payment"; return { ...table, ...hardwareService.tableHardware(table), elapsedSeconds: session ? sessionService.billableSeconds(session) : elapsedSeconds(table), currentPrice: active ? apiBaht(tableChargeSatang(table)) : 0, member: memberById(table.memberId) || null, sessionState: session?.state || null, plannedSeconds: Number(session?.plannedSeconds || 0), remainingSeconds: session ? sessionService.remainingSeconds(session) : null }; }
+function enrichTable(table) { const session = sessionRepository.findSessionByTable(table.id); const active = table.status === "playing" || table.status === "paused" || table.status === "awaiting_payment"; const profile = resolvePricingProfileForTable(table, settingsService.getSettings()); return { ...table, ...hardwareService.tableHardware(table), elapsedSeconds: session ? sessionService.billableSeconds(session) : elapsedSeconds(table), currentPrice: active ? apiBaht(tableChargeSatang(table)) : 0, member: memberById(table.memberId) || null, sessionState: session?.state || null, sessionMode: session?.mode || (session?.pricingSnapshot?.practice ? "PRACTICE" : null), rateSatang: profile?.rateSatang ?? null, practiceRateSatang: profile?.practiceRateSatang ?? null, plannedSeconds: Number(session?.plannedSeconds || 0), remainingSeconds: session ? sessionService.remainingSeconds(session) : null }; }
 function createBill(table, closedSession, loggedInActorId = "SYSTEM") { return billingService.createBillDraft({ table, session: closedSession, memberName: memberById(table.memberId)?.name || "ลูกค้าทั่วไป", actorId: loggedInActorId }); }
 // Resolves the pricing profile to snapshot at table-start time: the table's own override
 // (table.pricingProfileId) if set and still valid, else settings.defaultPricingProfileId.
@@ -640,10 +640,14 @@ app.post("/api/tables/:id/start", requirePermission(PERMISSIONS.TABLE_OPEN), asy
   // (wrong code, no member, expired) never opens and then cancels a table.
   const couponCode = String(req.body?.couponCode || "").trim();
   if (couponCode) couponService.validate({ code: couponCode, memberId: req.body.memberId || null, channel: "TABLE" });
-  const settings = settingsService.getSettings(); const profile = resolvePricingProfileForTable(table, settings); const session = sessionService.openSession({ tableId: table.id, memberId: req.body.memberId || null, pricingProfile: profile, plannedSeconds: Math.round(Number(req.body?.plannedMinutes || 0) * 60) });
+  const settings = settingsService.getSettings(); const practice = String(req.body?.mode || "").toUpperCase() === "PRACTICE"; let profile = resolvePricingProfileForTable(table, settings);
+  // A shop that has not set a practice rate must not silently open at the full rate — the cashier
+  // told the customer ฿80 and would only find out on the bill.
+  if (practice) { try { profile = practicePricingProfile(profile); } catch (error) { if (error.code === "PRACTICE_RATE_NOT_CONFIGURED") return res.status(400).json({ error: error.code, message: "โต๊ะนี้ยังไม่ได้ตั้งราคาซ้อมเดี่ยว — ตั้งค่าที่ โปรไฟล์ราคา ก่อน" }); throw error; } }
+  const session = sessionService.openSession({ tableId: table.id, memberId: req.body.memberId || null, pricingProfile: profile, plannedSeconds: Math.round(Number(req.body?.plannedMinutes || 0) * 60) });
   let coupon = null;
   if (couponCode) { try { coupon = couponService.reserve({ code: couponCode, memberId: req.body.memberId || null, channel: "TABLE", tableSessionId: session.id }, actorId(req)); } catch (error) { sessionService.cancelSession(session.id); save(); throw error; } }
-  billingService.audit("TABLE_OPENED", { tableId: table.id, sessionId: session.id, actorId: actorId(req), data: { plannedSeconds: Number(session.plannedSeconds || 0) } }); const relay = await setRelayState(table, "on"); save(); res.json({ ...enrichTable(table), coupon, warning: relay.failed ? "เปิดโต๊ะแล้ว แต่ติดต่อ ESP32 เพื่อเปิด Relay ไม่สำเร็จ" : undefined }); } catch (error) { if (String(error.code || "").startsWith("COUPON_")) return couponError(res, error); res.status(409).json({ error: error.message }); } });
+  billingService.audit("TABLE_OPENED", { tableId: table.id, sessionId: session.id, actorId: actorId(req), data: { plannedSeconds: Number(session.plannedSeconds || 0), mode: session.mode || "NORMAL", rateSatang: session.pricingSnapshot?.rateSatang ?? null } }); const relay = await setRelayState(table, "on"); save(); res.json({ ...enrichTable(table), coupon, warning: relay.failed ? "เปิดโต๊ะแล้ว แต่ติดต่อ ESP32 เพื่อเปิด Relay ไม่สำเร็จ" : undefined }); } catch (error) { if (String(error.code || "").startsWith("COUPON_")) return couponError(res, error); res.status(409).json({ error: error.message }); } });
 app.post("/api/tables/:id/pause", requirePermission(PERMISSIONS.TABLE_PAUSE), (req, res) => { try { const session = sessionRepository.findOpenSessionByTable(req.params.id); if (!session) return res.status(409).json({ error: "โต๊ะยังไม่ได้เปิดใช้งาน" }); sessionService.pauseSession(session.id); billingService.audit("TABLE_PAUSED", { tableId: Number(req.params.id), sessionId: session.id, actorId: actorId(req) }); res.json(enrichTable(tableById(req.params.id))); } catch (error) { res.status(409).json({ error: error.message }); } });
 app.post("/api/tables/:id/resume", requirePermission(PERMISSIONS.TABLE_RESUME), (req, res) => { try { const session = sessionRepository.findOpenSessionByTable(req.params.id); if (!session) return res.status(409).json({ error: "โต๊ะยังไม่ได้เปิดใช้งาน" }); sessionService.resumeSession(session.id); billingService.audit("TABLE_RESUMED", { tableId: Number(req.params.id), sessionId: session.id, actorId: actorId(req) }); res.json(enrichTable(tableById(req.params.id))); } catch (error) { res.status(409).json({ error: error.message }); } });
 // ย้ายโต๊ะ — the customer moves mid-game. The session keeps its id, its clock and its quoted rate;
@@ -763,6 +767,9 @@ app.get("/api/table-sessions/:id/billing-preview", requirePermission(PERMISSIONS
   const netTotalSatang=Math.max(0,preview.breakdown.totalSatang-(preview.coupon?.discountSatang||0));
   const applicable=settingsService.getSettings().reservation.autoApplyDeposit&&deposit?.status==="AVAILABLE"?Math.min(deposit.amountSatang,netTotalSatang):0;
   preview.netTotalSatang=netTotalSatang;
+  preview.pointsEstimate=memberService.calculateTablePoints(preview.playDurationSeconds,settingsService.getSettings(),{segments:preview.rateSegments});
+  preview.estimatedPoints=preview.memberId?preview.pointsEstimate.points:0;
+  preview.sessionMode=session?.mode||null;
   preview.deposit={reservationId:session?.reservationId||null,depositId:deposit?.id||null,status:deposit?.status||null,depositAppliedSatang:applicable,remainingPaymentSatang:netTotalSatang-applicable}; res.json({preview}); } catch (error) { res.status(error.code === "DUPLICATE_BILL" ? 409 : 400).json({ error: error.code || "BILLING_PREVIEW_ERROR", message: error.message }); } });
 // Taking the coupon off at the counter hands the quota straight back, and puts a printed voucher
 // back in circulation, so the customer can still use it on their next visit.
