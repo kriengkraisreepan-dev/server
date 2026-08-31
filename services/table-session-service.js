@@ -1,11 +1,14 @@
 const crypto = require("crypto");
-const { calculateSessionCharge, calculateSessionPreview, snapshotSegmentedPricing, isSegmented, calculateSegmentedCharge } = require("../domain/pricing");
+const { calculateSessionCharge, calculateSessionPreview, snapshotSegmentedPricing, isSegmented, calculateSegmentedCharge, isPractice } = require("../domain/pricing");
 const { STATES, nextState } = require("../domain/session-state");
 class TableSessionService {
   constructor(repository, clock = () => new Date()) { this.repository = repository; this.clock = clock; }
   now() { return this.clock().toISOString(); }
   requireTable(tableId) { const table = this.repository.findTable(tableId); if (!table) throw new Error("Table not found"); return table; }
-  openSession({ tableId, memberId = null, pricingProfile, plannedSeconds = 0 }) { this.requireTable(tableId); if (this.repository.findOpenSessionByTable(tableId)) throw new Error("Table already has an active session"); const session = { id: crypto.randomUUID(), tableId, memberId, state: STATES.ACTIVE, openedAt: this.now(), pausedAt: null, pausedSeconds: 0, pricingSnapshot: snapshotSegmentedPricing(pricingProfile), pauseIntervals: [], closedAt: null, finalChargeSatang: null, plannedSeconds: this.normalizePlannedSeconds(plannedSeconds) }; return this.repository.createSession(session); }
+  // `mode` is derived from the snapshot rather than passed in: the caller chooses ซ้อม by handing
+  // over the practice profile, and a session whose snapshot says practice IS a practice session —
+  // there is no way for the label on the card and the rate on the bill to drift apart.
+  openSession({ tableId, memberId = null, pricingProfile, plannedSeconds = 0 }) { this.requireTable(tableId); if (this.repository.findOpenSessionByTable(tableId)) throw new Error("Table already has an active session"); const pricingSnapshot = snapshotSegmentedPricing(pricingProfile); const session = { id: crypto.randomUUID(), tableId, memberId, state: STATES.ACTIVE, openedAt: this.now(), pausedAt: null, pausedSeconds: 0, pricingSnapshot, mode: isPractice(pricingSnapshot) ? "PRACTICE" : "NORMAL", pauseIntervals: [], closedAt: null, finalChargeSatang: null, plannedSeconds: this.normalizePlannedSeconds(plannedSeconds) }; return this.repository.createSession(session); }
   // An optional "we told them two hours" limit on a session. It is a reminder and nothing else: the
   // charge is still whatever they actually played, so this never touches billing. 0 means no limit.
   //

@@ -218,32 +218,45 @@ let settingsTabView="general";
 function settingsGeneralPanel(){ const s=state.settings; return `<div class="card form"><h3>ตั้งค่าร้าน</h3><form id="settingsForm"><label>ชื่อร้าน</label><input name="shopName" value="${s.shopName}"><label>จำนวนโต๊ะ</label><input name="tableCount" type="number" min="1" max="100" step="1" required value="${state.tables.length}"><small class="muted">เมื่อเพิ่ม ระบบจะสร้างโต๊ะใหม่อัตโนมัติ เมื่อลด ระบบจะลบโต๊ะลำดับท้ายที่ว่างเท่านั้นและสร้าง Backup ก่อนเปลี่ยน</small><label>อัตราค่าโต๊ะต่อชั่วโมง</label><input name="hourlyRate" type="number" min="0" value="${s.hourlyRate}"><label>ค่าบริการขั้นต่ำ</label><input name="minimumCharge" type="number" min="0" value="${s.minimumCharge}"><label>ตัดยอดรายวันเวลา (นาฬิกา)</label><input name="businessDayStartHour" type="number" min="0" max="23" step="1" required value="${s.businessDayStartHour??6}"><small class="muted">บิลที่เกิดก่อนเวลานี้จะนับเป็นยอดของวันก่อนหน้า เช่น ตั้ง 6 แปลว่าลูกค้าที่เล่นถึงตี 2 จะรวมอยู่ในยอดของเมื่อวาน ตั้ง 0 คือตัดยอดเที่ยงคืนแบบปฏิทินปกติ</small><label>PromptPay ID (สำหรับแสดงในขั้นต่อไป)</label><input name="promptPayId" value="${s.promptPayId||""}"><label>โฟลเดอร์สำรองข้อมูลภายนอก (ไม่บังคับ)</label><input name="backupExternalPath" placeholder="เช่น D:\\Backups หรือ \\\\NAS\\backups" value="${escapeHtml(s.backupExternalPath||"")}"><small class="muted">ถ้าระบุ ระบบจะคัดลอกไฟล์สำรองไปที่นี่ด้วยทุกครั้งที่สำรองข้อมูล (เช่น ไดรฟ์ USB ที่เสียบค้างไว้) โดยไม่กระทบการสำรองข้อมูลหลักถ้าไดรฟ์นี้ไม่พร้อมใช้งาน</small><button>บันทึก</button></form><p class="muted">หลังเพิ่มโต๊ะ ให้ไป Hardware Manager เพื่อผูกโต๊ะใหม่กับ Device และช่อง Relay</p></div>${backupSection()}`; }
 // Pricing profiles + per-table override + Happy Hour rules. See domain/pricing.js#resolveEffectiveProfile.
 const PRICING_WEEKDAY_LABELS=["อา","จ","อ","พ","พฤ","ศ","ส"];
+// "3 แต้ม/รอบ" or "แต้มตามค่าเริ่มต้น" — an empty points field means the shop-wide loyalty setting,
+// which has to read as a deliberate choice rather than as zero points.
+function pointsPerIntervalInWords(points){
+  const shopWide=state.settings.loyalty?.tablePointsPerHour??5;
+  return points==null||points===""?`แต้มตามค่าเริ่มต้น (${shopWide})`:`${Number(points)} แต้ม/รอบ`;
+}
 function pricingProfileRuleSummary(rule){
   const days=Array.isArray(rule.weekdays)&&rule.weekdays.length?rule.weekdays.map(d=>PRICING_WEEKDAY_LABELS[d]).join(","):"ทุกวัน";
   const time=rule.startTime||rule.endTime?`${rule.startTime||"00:00"}-${rule.endTime||"24:00"}`:"ทั้งวัน";
-  return `${escapeHtml(days)} ${escapeHtml(time)} — ${money(rule.rateSatang/100)}/ชม.`;
+  return `${escapeHtml(days)} ${escapeHtml(time)} — ${money(rule.rateSatang/100)}/ชม. · ${pointsPerIntervalInWords(rule.pointsPerInterval)}`;
 }
 function pricingProfilesPanel(){
   const profiles=state.settings.pricingProfiles||[], defaultId=state.settings.defaultPricingProfileId;
-  const profileCards=profiles.map(p=>`<div class="card"><h3>${escapeHtml(p.name)}${p.id===defaultId?' <span class="badge">ค่าเริ่มต้น</span>':""}</h3><p>อัตรา ${money(p.rateSatang/100)}/ชม. · ขั้นต่ำ ${money(p.minimumChargeSatang/100)}</p>${(p.timeRules||[]).length?`<ul>${(p.timeRules||[]).map(r=>`<li>${pricingProfileRuleSummary(r)}</li>`).join("")}</ul>`:'<p class="muted">ไม่มีกฎราคาพิเศษ</p>'}<div class="actions"><button type="button" class="outline" data-edit-profile="${p.id}">แก้ไข</button>${p.id!==defaultId?`<button type="button" class="danger" data-delete-profile="${p.id}">ลบ</button>`:""}</div></div>`).join("");
+  const profileCards=profiles.map(p=>`<div class="card"><h3>${escapeHtml(p.name)}${p.id===defaultId?' <span class="badge">ค่าเริ่มต้น</span>':""}</h3><p>อัตรา ${money(p.rateSatang/100)}/ชม. · ${pointsPerIntervalInWords(p.pointsPerInterval)} · ขั้นต่ำ ${money(p.minimumChargeSatang/100)}</p><p>ซ้อมเดี่ยว: ${p.practiceRateSatang==null?'<span class="muted">ไม่เปิดใช้</span>':`<b>${money(p.practiceRateSatang/100)}/ชม.</b> · ${pointsPerIntervalInWords(p.practicePointsPerInterval)}`}</p>${(p.timeRules||[]).length?`<ul>${(p.timeRules||[]).map(r=>`<li>${pricingProfileRuleSummary(r)}</li>`).join("")}</ul>`:'<p class="muted">ไม่มีกฎราคาพิเศษ</p>'}<div class="actions"><button type="button" class="outline" data-edit-profile="${p.id}">แก้ไข</button>${p.id!==defaultId?`<button type="button" class="danger" data-delete-profile="${p.id}">ลบ</button>`:""}</div></div>`).join("");
   const tableRows=state.tables.map(t=>`<tr><td>${escapeHtml(t.name)}</td><td><select data-table-profile="${t.id}">${profiles.map(p=>`<option value="${p.id}" ${(t.pricingProfileId||defaultId)===p.id?"selected":""}>${escapeHtml(p.name)}${p.id===defaultId?" (ค่าเริ่มต้น)":""}</option>`).join("")}</select></td></tr>`).join("");
   return `<div class="card"><h3>โปรไฟล์ราคา</h3><p class="muted">แต่ละโปรไฟล์ตั้งอัตราค่าโต๊ะและกฎราคาพิเศษ (Happy Hour) ของตัวเองได้แยกกัน — โปรไฟล์ราคาถูกล็อกตอนกด "เปิดโต๊ะ" (แก้โปรไฟล์ทีหลังไม่กระทบโต๊ะที่เปิดอยู่) แต่ค่าโต๊ะคิดตามราคาของแต่ละช่วงเวลาจริง — เล่นคร่อม Happy Hour จะถูกแบ่งคิดตามเรตของแต่ละช่วง และใบเสร็จจะแสดงแยกบรรทัดให้เห็นชัด</p><div class="grid">${profileCards}</div><button type="button" id="addPricingProfile">+ เพิ่มโปรไฟล์</button></div><div class="card form" style="margin-top:18px"><h3>ราคาโต๊ะแยกตามโต๊ะ</h3><p class="muted">เช่น ห้อง VIP ที่ตั้งราคาไม่เหมือนโต๊ะทั่วไป — ไม่เลือกจะใช้โปรไฟล์เริ่มต้น</p><table><tr><th>โต๊ะ</th><th>โปรไฟล์ราคา</th></tr>${tableRows}</table></div>`;
 }
 function pricingProfileRuleRowHtml(rule={},index){
-  return `<div class="card pricing-rule-row" data-rule-index="${index}" style="margin-top:10px"><div class="two">${PRICING_WEEKDAY_LABELS.map((label,day)=>`<label class="checkbox-line"><input type="checkbox" class="rule-weekday" value="${day}" ${Array.isArray(rule.weekdays)&&rule.weekdays.includes(day)?"checked":""}> ${label}</label>`).join("")}</div><label>เวลาเริ่ม (ว่าง = ทั้งวัน)</label>${hourMinuteFieldHtml({hiddenAttributes:'class="rule-start"',value:rule.startTime||"",emptyLabel:"ทั้งวัน"})}<label>เวลาสิ้นสุด</label>${hourMinuteFieldHtml({hiddenAttributes:'class="rule-end"',value:rule.endTime||"",emptyLabel:"ทั้งวัน"})}<label>อัตราพิเศษ (บาท/ชม.)</label><input type="number" min="0" step="1" class="rule-rate" required value="${rule.rateSatang!=null?rule.rateSatang/100:""}"><button type="button" class="outline danger" data-remove-rule="${index}">ลบกฎนี้</button></div>`;
+  return `<div class="card pricing-rule-row" data-rule-index="${index}" style="margin-top:10px"><div class="two">${PRICING_WEEKDAY_LABELS.map((label,day)=>`<label class="checkbox-line"><input type="checkbox" class="rule-weekday" value="${day}" ${Array.isArray(rule.weekdays)&&rule.weekdays.includes(day)?"checked":""}> ${label}</label>`).join("")}</div><label>เวลาเริ่ม (ว่าง = ทั้งวัน)</label>${hourMinuteFieldHtml({hiddenAttributes:'class="rule-start"',value:rule.startTime||"",emptyLabel:"ทั้งวัน"})}<label>เวลาสิ้นสุด</label>${hourMinuteFieldHtml({hiddenAttributes:'class="rule-end"',value:rule.endTime||"",emptyLabel:"ทั้งวัน"})}<label>อัตราพิเศษ (บาท/ชม.)</label><input type="number" min="0" step="1" class="rule-rate" required value="${rule.rateSatang!=null?rule.rateSatang/100:""}"><label>แต้มที่ได้ต่อรอบในช่วงนี้ (เว้นว่าง = ใช้ค่าเริ่มต้น)</label><input type="number" min="0" step="1" class="rule-points" placeholder="ค่าเริ่มต้น" value="${rule.pointsPerInterval!=null?rule.pointsPerInterval:""}"><button type="button" class="outline danger" data-remove-rule="${index}">ลบกฎนี้</button></div>`;
 }
 function pricingProfileFormHtml(profile){
   const rules=profile?.timeRules||[];
-  return `<label>ชื่อโปรไฟล์</label><input id="profileName" required value="${escapeHtml(profile?.name||"")}"><label>อัตราค่าโต๊ะ (บาท/ชม.)</label><input id="profileRate" type="number" min="0" step="0.01" required value="${profile?profile.rateSatang/100:state.settings.hourlyRate}"><label>ค่าบริการขั้นต่ำ (บาท)</label><input id="profileMinCharge" type="number" min="0" step="0.01" required value="${profile?profile.minimumChargeSatang/100:state.settings.minimumCharge}"><h4 style="margin-top:14px">กฎราคาพิเศษ (Happy Hour)</h4><p class="muted">ไม่เลือกวัน = ทุกวัน, เว้นเวลาว่าง = ทั้งวัน ใช้กฎแรกที่ตรงเงื่อนไขตามลำดับที่แสดง</p><div id="pricingRuleRows">${rules.map((r,i)=>pricingProfileRuleRowHtml(r,i)).join("")}</div><button type="button" id="addPricingRule" class="outline" style="margin-top:10px">+ เพิ่มกฎราคาพิเศษ</button>`;
+  return `<label>ชื่อโปรไฟล์</label><input id="profileName" required value="${escapeHtml(profile?.name||"")}"><label>อัตราค่าโต๊ะ (บาท/ชม.)</label><input id="profileRate" type="number" min="0" step="0.01" required value="${profile?profile.rateSatang/100:state.settings.hourlyRate}"><label>แต้มที่ได้ต่อรอบ (เว้นว่าง = ใช้ค่าเริ่มต้นของร้าน)</label><input id="profilePoints" type="number" min="0" step="1" placeholder="ค่าเริ่มต้น" value="${profile?.pointsPerInterval!=null?profile.pointsPerInterval:""}"><label>ค่าบริการขั้นต่ำ (บาท)</label><input id="profileMinCharge" type="number" min="0" step="0.01" required value="${profile?profile.minimumChargeSatang/100:state.settings.minimumCharge}"><h4 style="margin-top:14px">ซ้อมเดี่ยว</h4><p class="muted">ราคาสำหรับลูกค้าที่มาซ้อมคนเดียว — เว้นว่างคือไม่เปิดใช้ ปุ่ม "ซ้อม" จะไม่ขึ้นบนโต๊ะที่ใช้โปรไฟล์นี้ · ราคาซ้อมเป็นราคาคงที่ ไม่ถูก Happy Hour ทับ</p><label>ราคาซ้อมเดี่ยว (บาท/ชม.)</label><input id="profilePracticeRate" type="number" min="0" step="1" placeholder="ไม่เปิดใช้" value="${profile?.practiceRateSatang!=null?profile.practiceRateSatang/100:""}"><label>แต้มที่ได้ต่อรอบตอนซ้อม (เว้นว่าง = ใช้ค่าเริ่มต้น)</label><input id="profilePracticePoints" type="number" min="0" step="1" placeholder="ค่าเริ่มต้น" value="${profile?.practicePointsPerInterval!=null?profile.practicePointsPerInterval:""}"><h4 style="margin-top:14px">กฎราคาพิเศษ (Happy Hour)</h4><p class="muted">ไม่เลือกวัน = ทุกวัน, เว้นเวลาว่าง = ทั้งวัน ใช้กฎแรกที่ตรงเงื่อนไขตามลำดับที่แสดง</p><div id="pricingRuleRows">${rules.map((r,i)=>pricingProfileRuleRowHtml(r,i)).join("")}</div><button type="button" id="addPricingRule" class="outline" style="margin-top:10px">+ เพิ่มกฎราคาพิเศษ</button>`;
 }
 function bindPricingRuleRowRemoval(){document.querySelectorAll("[data-remove-rule]").forEach(button=>button.onclick=()=>button.closest(".pricing-rule-row").remove());}
+// Blank stays blank all the way to the server: null means "fall back to the shop-wide rate", and
+// coercing it to 0 here would quietly stop that Happy Hour from earning anything at all.
+function optionalPointsField(input){
+  const raw=String(input?.value??"").trim();
+  return raw===""?null:Math.max(0,Math.round(Number(raw)||0));
+}
 function readPricingRulesFromForm(){
   return [...document.querySelectorAll(".pricing-rule-row")].map(row=>({
     id:row.dataset.ruleIndex,
     weekdays:[...row.querySelectorAll(".rule-weekday:checked")].map(el=>Number(el.value)),
     startTime:row.querySelector(".rule-start").value||"",
     endTime:row.querySelector(".rule-end").value||"",
-    rateSatang:Math.round(Number(row.querySelector(".rule-rate").value||0)*100)
+    rateSatang:Math.round(Number(row.querySelector(".rule-rate").value||0)*100),
+    pointsPerInterval:optionalPointsField(row.querySelector(".rule-points"))
   }));
 }
 function pricingProfileDialog(profileId){
@@ -255,7 +268,8 @@ function pricingProfileDialog(profileId){
   $("#savePricingProfile").onclick=async()=>{
     const name=$("#profileName").value.trim();
     if(!name)return notify("กรุณาระบุชื่อโปรไฟล์",true);
-    const nextProfile={id:profile?.id||`profile-${Date.now().toString(36)}`,name,unit:"HOUR",rateSatang:Math.round(Number($("#profileRate").value||0)*100),minimumChargeSatang:Math.round(Number($("#profileMinCharge").value||0)*100),roundingRule:"UP_TO_BAHT",weekdayRules:[],timeRules:readPricingRulesFromForm().map(({id,...rule})=>rule)};
+    const practiceRaw=String($("#profilePracticeRate").value??"").trim();
+    const nextProfile={id:profile?.id||`profile-${Date.now().toString(36)}`,name,unit:"HOUR",rateSatang:Math.round(Number($("#profileRate").value||0)*100),minimumChargeSatang:Math.round(Number($("#profileMinCharge").value||0)*100),roundingRule:"UP_TO_BAHT",weekdayRules:[],pointsPerInterval:optionalPointsField($("#profilePoints")),practiceRateSatang:practiceRaw===""?null:Math.round(Number(practiceRaw||0)*100),practicePointsPerInterval:optionalPointsField($("#profilePracticePoints")),timeRules:readPricingRulesFromForm().map(({id,...rule})=>rule)};
     const nextProfiles=profile?profiles.map(p=>p.id===profile.id?nextProfile:p):[...profiles,nextProfile];
     const button=$("#savePricingProfile");button.disabled=true;
     try{await api("/api/settings",{method:"PUT",body:JSON.stringify({pricingProfiles:nextProfiles})});closeModal();await refresh();render();notify("บันทึกโปรไฟล์ราคาแล้ว");}catch(error){notify(error.message,true);button.disabled=false;}
@@ -761,7 +775,7 @@ walkInCheckout=async function(orderId){try{const preview=await api(`/api/pos-ord
 
 const settingsRewards9b=settings;settings=function(){const base=settingsRewards9b();if(state.user.role!=="OWNER"||settingsTabView!=="general")return base;const r=state.settings.rewards||{};return base+`<div class="card form" style="margin-top:18px"><h3>Reward Settings</h3><form id="rewardSettingsForm"><label>มูลค่า 1 แต้ม (บาท)</label><input name="rewardPointValue" type="number" min="0.01" step="0.01" value="${r.rewardPointValue??1}"><label>แต้มขั้นต่ำที่ใช้ได้</label><input name="rewardMinimumPoints" type="number" min="1" step="1" value="${r.rewardMinimumPoints??100}"><label class="checkbox-line"><input name="allowPartialRedeem" type="checkbox" ${r.allowPartialRedeem!==false?"checked":""}> อนุญาตใช้แต้มบางส่วน</label><label class="checkbox-line"><input name="allowRedeemTable" type="checkbox" ${r.allowRedeemTable!==false?"checked":""}> ใช้กับบิลโต๊ะ</label><small class="muted">ใช้กับ Walk-in ปิดถาวร — ไม่มีค่าโต๊ะให้หักส่วนลด</small><button>บันทึก Reward Settings</button></form></div>`;};
 // อัตราการให้แต้ม + วันหมดอายุแต้ม — was previously only settable via API/data file directly.
-const settingsLoyalty9f=settings;settings=function(){const base=settingsLoyalty9f();if(state.user.role!=="OWNER"||settingsTabView!=="general")return base;const l=state.settings.loyalty||{};return base+`<div class="card form" style="margin-top:18px"><h3>อัตราการให้แต้มสมาชิก</h3><form id="loyaltySettingsForm"><label>แต้มที่ได้รับต่อรอบ</label><input name="tablePointsPerHour" type="number" min="0" step="1" value="${l.tablePointsPerHour??5}"><label>ระยะเวลาต่อรอบ (นาที)</label><input name="tablePointIntervalMinutes" type="number" min="1" step="1" value="${l.tablePointIntervalMinutes??60}"><small class="muted">เช่น ค่าเริ่มต้น 5 แต้มทุก 60 นาที = เล่นครบชั่วโมงได้ 5 แต้ม</small><label>แต้มหมดอายุภายใน (เดือน)</label><input name="pointExpiryMonths" type="number" min="0" step="1" value="${l.pointExpiryMonths??0}"><small class="muted">ใส่ 0 = ไม่มีวันหมดอายุ (ค่าเริ่มต้น) — แต้มแต่ละก้อนหมดอายุนับจากวันที่ได้รับ ไม่กระทบแต้มที่ได้รับไปแล้วถ้าเปลี่ยนค่านี้ทีหลัง</small><button>บันทึกอัตราแต้ม</button></form></div>`;};
+const settingsLoyalty9f=settings;settings=function(){const base=settingsLoyalty9f();if(state.user.role!=="OWNER"||settingsTabView!=="general")return base;const l=state.settings.loyalty||{};return base+`<div class="card form" style="margin-top:18px"><h3>อัตราการให้แต้มสมาชิก</h3><form id="loyaltySettingsForm"><label>แต้มที่ได้รับต่อรอบ</label><input name="tablePointsPerHour" type="number" min="0" step="1" value="${l.tablePointsPerHour??5}"><label>ระยะเวลาต่อรอบ (นาที)</label><input name="tablePointIntervalMinutes" type="number" min="1" step="1" value="${l.tablePointIntervalMinutes??60}"><small class="muted">เช่น ค่าเริ่มต้น 5 แต้มทุก 60 นาที = เล่นครบชั่วโมงได้ 5 แต้ม · ได้เฉพาะรอบที่ครบเท่านั้น เศษไม่ได้แต้ม<br>นี่คือค่าเริ่มต้นของทั้งร้าน — ถ้าอยากให้แต้มไม่เท่ากันตามราคา (ซ้อมเดี่ยว / Happy Hour / ปกติ) ให้ตั้งแยกในแต่ละเรตที่ ตั้งค่า → โปรไฟล์ราคา</small><label>แต้มหมดอายุภายใน (เดือน)</label><input name="pointExpiryMonths" type="number" min="0" step="1" value="${l.pointExpiryMonths??0}"><small class="muted">ใส่ 0 = ไม่มีวันหมดอายุ (ค่าเริ่มต้น) — แต้มแต่ละก้อนหมดอายุนับจากวันที่ได้รับ ไม่กระทบแต้มที่ได้รับไปแล้วถ้าเปลี่ยนค่านี้ทีหลัง</small><button>บันทึกอัตราแต้ม</button></form></div>`;};
 const dashboardRewards9b=dashboard;dashboard=function(){const base=dashboardRewards9b();if(!["OWNER","MANAGER"].includes(state.user.role))return base;const today=new Date().toISOString().slice(0,10),bills=(state.bills||[]).filter(b=>b.status==="paid"&&String(b.paidAt||b.createdAt).slice(0,10)===today);return base+`<div class="grid" style="margin-top:18px"><div class="card"><div class="muted">แต้มที่ใช้วันนี้</div><div class="stat">${bills.reduce((s,b)=>s+Number(b.redeemedPoints||0),0)}</div></div><div class="card"><div class="muted">ส่วนลดจากแต้มวันนี้</div><div class="stat">${money(bills.reduce((s,b)=>s+Number(b.redeemValue||0),0))}</div></div></div>`;};
 const reportsRewards9b=reports;reports=function(){const base=reportsRewards9b();if(!analytics||!["OWNER","MANAGER"].includes(state.user.role))return base;const rows=(analytics.topRedeemers||[]).map(x=>`<li>${escapeHtml(x.memberCode||"-")} ${escapeHtml(x.name||"-")} — ${x.points} แต้ม</li>`).join("")||'<li class="muted">ไม่มีข้อมูล</li>';return base+`<div class="grid" style="margin-top:18px"><div class="card"><div class="muted">แต้มที่ใช้ / ส่วนลด</div><div class="stat">${analytics.redeemedPoints||0} / ${money(analytics.rewardDiscount||0)}</div></div><div class="card"><div class="muted">แต้มหมดอายุ</div><div class="stat">${analytics.pointsExpired||0}</div></div><div class="card"><div class="muted">แต้มคงค้างทั้งหมด</div><div class="stat">${analytics.outstandingPoints||0}</div></div><div class="card"><h3>Top Redeemers</h3><ol>${rows}</ol></div></div>`;};
 const bindRewards9b=bind;bind=function(){bindRewards9b();const form=$("#rewardSettingsForm");if(form)form.onsubmit=async event=>{event.preventDefault();const button=form.querySelector("button"),d=Object.fromEntries(new FormData(form));button.disabled=true;d.rewardPointValue=Number(d.rewardPointValue);d.rewardMinimumPoints=Number(d.rewardMinimumPoints);["allowPartialRedeem","allowRedeemTable"].forEach(k=>d[k]=form.elements[k].checked);try{await api("/api/settings",{method:"PUT",body:JSON.stringify({rewards:d})});await refresh();notify("บันทึก Reward Settings แล้ว");}catch(e){notify(e.message,true);button.disabled=false;}};
@@ -857,6 +871,12 @@ const bindReservationFormPreservation=bind;bind=function(){bindReservationFormPr
 // table charge rather than rejecting it; only a negative amount is rejected. Re-fetches the
 // billing preview (with ?discountAmount=) as the cashier types so tableCharge/total/reward cap
 // all stay in sync, instead of computing it client-side and risking drift from the server's rule.
+function pointsEstimateHint(preview){
+  const lines=preview?.pointsEstimate?.breakdown||[];
+  if(lines.length<2)return "";
+  const parts=lines.map(line=>`${line.rateSatang!=null?money(line.rateSatang/100)+"/ชม.":"เรตปกติ"}${line.ruleName?" ("+escapeHtml(line.ruleName)+")":""} ${line.intervals} รอบ × ${line.pointsPerInterval} = ${line.points}`);
+  return `<br><small class="muted">${parts.join(" · ")}</small>`;
+}
 async function fetchCombinedPreview(sessionId,discountAmount){const query=discountAmount?`?discountAmount=${encodeURIComponent(discountAmount)}`:"";return (await api(`/api/table-sessions/${sessionId}/billing-preview${query}`)).preview;}
 // Merges two independently-built pieces of this same dialog: the discount input (live-recompute via
 // fetchCombinedPreview with ?discountAmount=, targeted DOM patches so the field never loses focus)
@@ -868,8 +888,8 @@ checkoutDialog=async function(id){
   const sessionId=table.runtimeSessionId;
   try{
     let preview=await fetchCombinedPreview(sessionId,0);
-    const renderBody=p=>{const b=p.breakdown,d=p.deposit||{},interval=(state.settings.loyalty?.tablePointIntervalMinutes||60)*60,estimated=Math.floor(Number(p.playDurationSeconds||0)/interval)*(state.settings.loyalty?.tablePointsPerHour||5),dueSatang=d.remainingPaymentSatang??b.totalSatang;
-      return `<h3>ตัวอย่างบิลรวม — ${escapeHtml(table.name)}</h3><p>ค่าโต๊ะ: <b id="checkoutTableCharge">${money(b.tableCharge)}</b><br>อาหาร/เครื่องดื่ม: <b>${money(b.products)}</b><br><span id="checkoutDiscountLine" style="${b.discount>0?"":"display:none"}">ส่วนลด: <b id="checkoutDiscountValue">-${money(b.discount)}</b><br></span>มัดจำการจอง: <b>-${money((d.depositAppliedSatang||0)/100)}</b><br>เวลาเล่น: <b>${duration(p.playDurationSeconds||0)}</b><br>แต้มโดยประมาณ: <b>${p.memberId?estimated:0} แต้ม</b></p>`
+    const renderBody=p=>{const b=p.breakdown,d=p.deposit||{},interval=(state.settings.loyalty?.tablePointIntervalMinutes||60)*60,estimated=p.estimatedPoints??Math.floor(Number(p.playDurationSeconds||0)/interval)*(state.settings.loyalty?.tablePointsPerHour||5),dueSatang=d.remainingPaymentSatang??b.totalSatang;
+      return `<h3>ตัวอย่างบิลรวม — ${escapeHtml(table.name)}</h3><p>ค่าโต๊ะ: <b id="checkoutTableCharge">${money(b.tableCharge)}</b><br>อาหาร/เครื่องดื่ม: <b>${money(b.products)}</b><br><span id="checkoutDiscountLine" style="${b.discount>0?"":"display:none"}">ส่วนลด: <b id="checkoutDiscountValue">-${money(b.discount)}</b><br></span>มัดจำการจอง: <b>-${money((d.depositAppliedSatang||0)/100)}</b><br>เวลาเล่น: <b>${duration(p.playDurationSeconds||0)}</b>${p.sessionMode==="PRACTICE"?' · <b>ซ้อมเดี่ยว</b>':""}<br>แต้มโดยประมาณ: <b>${p.memberId?estimated:0} แต้ม</b>${p.memberId?pointsEstimateHint(p):""}</p>`
         +`<div class="total" id="checkoutTotal">ยอดรับชำระ ${money(dueSatang/100)}</div>`
         +`<label>ส่วนลด (บาท, ไม่บังคับ)</label><input id="checkoutDiscountAmount" type="number" min="0" step="1" value="${b.discount||0}">`
         +`<label>เหตุผลส่วนลด (ไม่บังคับ)</label><input id="checkoutDiscountReason" placeholder="เช่น โปรโมชั่น" value="${escapeHtml($("#checkoutDiscountReason")?.value||"")}">`
@@ -1776,6 +1796,70 @@ const tickPlanned=tickPlayingTables;tickPlayingTables=function(){
 const bindPlannedTime=bind;bind=function(){
   bindPlannedTime();
   document.querySelectorAll("[data-planned]").forEach(button=>button.onclick=()=>plannedTimeDialog(button.dataset.planned));
+};
+
+
+// ---- ซ้อมเดี่ยว --------------------------------------------------------------------------------
+// A second way to open the same table, at the practice rate its pricing profile carries. A separate
+// BUTTON rather than a choice inside the open dialog on purpose: the cashier is told "ซ้อมคนเดียว"
+// before they touch the screen, and one press is harder to get wrong than a dropdown that defaults
+// to the full rate. Tables whose profile has no practice rate simply do not show it.
+const practiceRateOf=table=>table.practiceRateSatang==null?null:Number(table.practiceRateSatang)/100;
+const tableCardPractice=tableCardV2;tableCardV2=function(table){
+  const html=tableCardPractice(table),rate=practiceRateOf(table);
+  if(table.status==="free")return rate==null?html:html.replace(`<button data-start="${table.id}">เปิดโต๊ะ</button>`,`<button data-start="${table.id}">เปิดโต๊ะ</button><button class="outline" data-practice="${table.id}">ซ้อม ${money(rate)}/ชม.</button>`);
+  // Staff walking past need to see WHY this table is cheaper than the one next to it.
+  if(table.sessionMode!=="PRACTICE")return html;
+  return html.replace('<div class="actions">',`<p class="muted">โหมด <b>ซ้อมเดี่ยว</b> — ราคาคงที่ ไม่เข้าเงื่อนไข Happy Hour</p><div class="actions">`);
+};
+// Wrapping rather than replacing, exactly as the planned-time patch does: the coupon and
+// planned-time handlers already own this button's onclick and their payloads still have to be sent,
+// so api() is swapped for the duration of the click to add mode=PRACTICE to the same request.
+const startDialogPractice=startDialog;startDialog=function(id,mode){
+  startDialogPractice(id);
+  if(String(mode||"").toUpperCase()!=="PRACTICE")return;
+  const confirmButton=$("#confirmStart");
+  if(!confirmButton)return;
+  const table=state.tables.find(item=>String(item.id)===String(id)),rate=table?practiceRateOf(table):null;
+  confirmButton.insertAdjacentHTML("beforebegin",`<p class="muted">โหมด <b>ซ้อมเดี่ยว</b>${rate==null?"":` · คิด ${money(rate)}/ชม.`} — ราคาคงที่ตลอดการเล่น ไม่เข้าเงื่อนไข Happy Hour</p>`);
+  confirmButton.textContent="เริ่มซ้อมและเปิด Relay";
+  const original=confirmButton.onclick;
+  confirmButton.onclick=async event=>{
+    const realApi=api;
+    api=async(url,options={})=>{
+      if(url.endsWith("/start")&&options.method==="POST"){
+        options={...options,body:JSON.stringify({...JSON.parse(options.body||"{}"),mode:"PRACTICE"})};
+      }
+      return realApi(url,options);
+    };
+    try{return await original.call(confirmButton,event);}finally{api=realApi;}
+  };
+};
+// Opening a table at the practice rate is still opening a table, so it follows the same permission
+// as [data-start] — if that one was stripped for this role, this one goes with it.
+const applyPermissionPractice=applyPermissionVisibility;applyPermissionVisibility=function(){
+  const before=document.querySelectorAll("[data-start]").length;
+  applyPermissionPractice();
+  if(before&&!document.querySelectorAll("[data-start]").length)document.querySelectorAll("[data-practice]").forEach(button=>button.remove());
+};
+const bindPractice=bind;bind=function(){
+  bindPractice();
+  document.querySelectorAll("[data-practice]").forEach(button=>button.onclick=()=>startDialog(button.dataset.practice,"PRACTICE"));
+};
+// The receipt has to say it too — a ฿80 hour on a shop that charges ฿120 looks like a mistake
+// months later otherwise.
+const printBillPractice=printBill;printBill=function(id){
+  const bill=state.bills.find(item=>item.id===id);
+  if(bill?.sessionMode!=="PRACTICE")return printBillPractice(id);
+  const open=window.open;
+  window.open=function(...args){
+    const popup=open.apply(window,args);
+    if(!popup)return popup;
+    const write=popup.document.write.bind(popup.document);
+    popup.document.write=html=>write(String(html).replace('<div id="receiptExtensionPoint"></div>',`<div class="line"></div><table><tr><td>ประเภท</td><td class="right">ซ้อมเดี่ยว</td></tr></table><div id="receiptExtensionPoint"></div>`));
+    return popup;
+  };
+  try{return printBillPractice(id);}finally{window.open=open;}
 };
 
 nav();
