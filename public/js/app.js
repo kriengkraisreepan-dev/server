@@ -1862,4 +1862,146 @@ const printBillPractice=printBill;printBill=function(id){
   try{return printBillPractice(id);}finally{window.open=open;}
 };
 
+// ---- Seat tables (bar/lounge tabs) ----------------------------------------------------------
+// A customer sits down and orders food/drink without playing a billiard table: no timer, no
+// hardware, no combined table bill. Modeled on the WALK_IN flow, except the tab stays open across
+// multiple confirmed orders and is checked out as one bill from the seat's own card, not per order.
+// See docs/JSON_DATA_MODEL.md (Seat tables) and CombinedBillingService#createSeatBill.
+
+function seatCardV2(seat){
+  const occupied=seat.status==="occupied";
+  const details=occupied?`<p>ยอดค้างชำระ: <b>${money(seat.openTotal||0)}</b><br><small>${seat.openOrderCount||0} ออเดอร์ที่ยืนยันแล้ว</small></p>`:`<p class="muted">ว่าง</p>`;
+  const actions=`<button data-seat-order="${seat.id}">เพิ่มอาหาร/เครื่องดื่ม</button>${occupied?`<button class="success" data-seat-checkout="${seat.id}">คิดเงิน</button>`:""}`;
+  return `<div class="card table ${seat.status}"><h3>${escapeHtml(seat.name)}<span class="badge ${seat.status}">${occupied?"มีลูกค้า":"ว่าง"}</span></h3>${details}<div class="actions">${actions}</div></div>`;
+}
+const dashboardSeats=dashboard;dashboard=function(){
+  const base=dashboardSeats();
+  if(!(state.seatTables||[]).length)return base;
+  return `${base}<h3 style="margin-top:25px">โซนที่นั่ง/บาร์</h3><div class="grid">${state.seatTables.map(seatCardV2).join("")}</div>`;
+};
+
+async function seatOrderDialog(id){
+  const seat=(state.seatTables||[]).find(item=>String(item.id)===String(id));
+  if(!seat)return;
+  posContext={orderType:"SEAT",seatId:String(seat.id)};
+  localStorage.setItem(posContextKey(),JSON.stringify(posContext));
+  page="pos";
+  await loadPos();
+  render();
+}
+
+const posScopeSeat=posScope;posScope=function(){return posContext.orderType==="SEAT"?`seat:${posContext.seatId}`:posScopeSeat();};
+
+const posContextHeaderSeat=posContextHeader;posContextHeader=function(){
+  if(posContext.orderType!=="SEAT")return posContextHeaderSeat();
+  const seat=(state.seatTables||[]).find(item=>String(item.id)===String(posContext.seatId));
+  return `<div class="card pos-context"><h3>เพิ่มอาหาร/เครื่องดื่ม</h3><b>${escapeHtml(seat?.name||"โซนที่นั่ง")}</b><span class="muted"> · ที่นั่ง/บาร์ ไม่มีค่าโต๊ะ</span>${posOrder?`<span class="badge">รายการร่างเดิม ${escapeHtml(posOrder.orderNumber)}</span>`:""}<p class="muted">ยอดนี้เป็นค่าสินค้าเท่านั้น · คิดเงินแยกจากบิลโต๊ะ</p></div>`;
+};
+
+const posNewOrderSeat=posNewOrder;posNewOrder=function(){
+  if(posContext.orderType!=="SEAT")return posNewOrderSeat();
+  const seat=(state.seatTables||[]).find(item=>String(item.id)===String(posContext.seatId));
+  return `<p class="muted">สร้างรายการร่างก่อนเพิ่มสินค้า</p><form id="newPosOrder" class="form"><input type="hidden" name="orderType" value="SEAT"><input type="hidden" name="seatId" value="${escapeHtml(posContext.seatId)}"><p><b>${escapeHtml(seat?.name||"โซนที่นั่ง")}</b> · ยอดนี้เป็นค่าสินค้าเท่านั้น</p><label>หมายเหตุ</label><input name="note"><button id="createPosOrder">สร้างรายการร่าง</button></form>`;
+};
+
+// Full rewrite (not a wrap): SEAT needs the same context-restore-from-localStorage and
+// draft-validity handling that TABLE already gets, both threaded through the middle of this
+// function rather than appended at an edge, so wrapping it would mean duplicating the whole body
+// anyway.
+loadPos=async function(){
+  try{
+    posError=null;posOrder=null;
+    const stored=localStorage.getItem(posContextKey());
+    if(stored){
+      try{
+        const parsed=JSON.parse(stored);
+        if(parsed?.orderType==="TABLE"&&parsed.tableId)posContext={orderType:"TABLE",tableId:String(parsed.tableId)};
+        else if(parsed?.orderType==="SEAT"&&parsed.seatId)posContext={orderType:"SEAT",seatId:String(parsed.seatId)};
+      }catch{localStorage.removeItem(posContextKey());}
+    }
+    const [products,categories,history]=await Promise.all([api("/api/products?status=ACTIVE&pageSize=100"),api("/api/product-categories"),api("/api/pos-orders?pageSize=10")]);
+    posData={products:products.items,categories:categories.items};posHistory=history.items;
+    const saved=localStorage.getItem(posStorageKey());
+    if(saved){
+      try{
+        const result=await api(`/api/pos-orders/${saved}`),order=result.order,valid=order.status==="DRAFT"&&((posContext.orderType==="TABLE"&&order.orderType==="TABLE"&&String(order.tableId)===String(posContext.tableId))||(posContext.orderType==="SEAT"&&order.orderType==="SEAT"&&String(order.seatId)===String(posContext.seatId))||(posContext.orderType==="WALK_IN"&&order.orderType==="WALK_IN"));
+        if(valid)posOrder=order;else{localStorage.removeItem(posStorageKey());notify("พบรายการร่างของบริบทอื่น จึงไม่ได้เปิดใช้งาน",true);}
+      }catch{localStorage.removeItem(posStorageKey());}
+    }
+  }catch(error){posError=error.message;}
+};
+
+// No rewards/coupons/discount for a seat tab in this first pass (mirrors how WALK_IN started) —
+// just the same split-payment panel table/walk-in checkout already uses.
+async function seatCheckoutDialog(id){
+  try{
+    const preview=await api(`/api/seats/${id}/billing-preview`);
+    openModal(`<h3>ตัวอย่างบิล — ${escapeHtml(preview.seatName)}</h3><p class="muted">รวม ${preview.orderIds.length} ออเดอร์ที่ยืนยันแล้ว</p><div class="total">รวมทั้งสิ้น ${money(preview.total)}</div>${paymentPanelHtml(preview.totalSatang)}<div class="actions"><button class="outline" id="cancelSeatCheckout">กลับ</button><button class="success" id="confirmSeatBill">ยืนยันสร้างบิล</button></div>`);
+    bindPaymentPanel();
+    $("#cancelSeatCheckout").onclick=closeModal;
+    $("#confirmSeatBill").onclick=async()=>{
+      const button=$("#confirmSeatBill");button.disabled=true;
+      try{
+        const created=await api(`/api/seats/${id}/create-bill`,{method:"POST",body:JSON.stringify(paymentPanelPayload())});
+        closeModal();await refresh();
+        openSeatPaymentConfirmation(created.bill,created.payments||[created.payment]);
+      }catch(error){notify(error.message,true);button.disabled=false;}
+    };
+  }catch(error){notify(error.message,true);}
+}
+function openSeatPaymentConfirmation(bill,payments){
+  const list=Array.isArray(payments)?payments:[payments];
+  openModal(`<h3>ยืนยันรับชำระ</h3><p>บิล <b>${escapeHtml(bill.number)}</b></p>${paymentListSummary(list)}<div class="actions"><button id="confirmSeatPay">ยืนยันรับชำระ</button><button class="outline" id="cancelSeatPay">ยกเลิกรายการชำระ</button></div>`);
+  $("#confirmSeatPay").onclick=async()=>{
+    const button=$("#confirmSeatPay");button.disabled=true;
+    try{await confirmAllPayments(list);closeModal();await refresh();notify("ชำระเงินแล้ว");offerPrint(bill.id);}catch(error){notify(error.message,true);button.disabled=false;}
+  };
+  $("#cancelSeatPay").onclick=async()=>{
+    try{await Promise.all(list.map(p=>api(`/api/payments/${p.id}/cancel`,{method:"POST"})));closeModal();await refresh();notify("ยกเลิกรายการชำระแล้ว");}catch(error){notify(error.message,true);}
+  };
+}
+
+// Settings: a plain named list (add/rename/remove), OWNER only — seats aren't hardware, so they
+// don't belong in the table-count control above.
+function seatZonesPanel(){
+  const seats=state.seatTables||[];
+  const rows=seats.map(seat=>`<tr><td>${escapeHtml(seat.name)}</td><td><span class="badge ${seat.status}">${seat.status==="occupied"?"มีลูกค้า":"ว่าง"}</span></td><td><div class="actions"><button type="button" class="outline" data-seat-rename="${seat.id}">เปลี่ยนชื่อ</button><button type="button" class="danger" data-seat-remove="${seat.id}">ลบ</button></div></td></tr>`).join("")||`<tr><td colspan="3" class="muted">ยังไม่มีโซนที่นั่ง</td></tr>`;
+  return `<div class="card form" style="margin-top:18px"><h3>โซนที่นั่ง/บาร์</h3><p class="muted">สำหรับลูกค้าที่นั่งกินดื่มโดยไม่ได้เล่นโต๊ะสนุกเกอร์ — เพิ่มโซนไว้ล่วงหน้า แล้วกด "เพิ่มอาหาร/เครื่องดื่ม" จากหน้าภาพรวมได้เลย</p><table><tr><th>ชื่อ</th><th>สถานะ</th><th></th></tr>${rows}</table><form id="addSeatForm"><label>เพิ่มโซนใหม่</label><input name="name" placeholder="เช่น โต๊ะบาร์ 1" required><button>เพิ่มโซนที่นั่ง</button></form></div>`;
+}
+const settingsSeats=settings;settings=function(){
+  const base=settingsSeats();
+  if(state.user.role!=="OWNER"||settingsTabView!=="general")return base;
+  return base+seatZonesPanel();
+};
+
+const bindSeats=bind;bind=function(){
+  bindSeats();
+  document.querySelectorAll("[data-seat-order]").forEach(button=>button.onclick=()=>seatOrderDialog(button.dataset.seatOrder));
+  document.querySelectorAll("[data-seat-checkout]").forEach(button=>button.onclick=()=>seatCheckoutDialog(button.dataset.seatCheckout));
+  $("#addSeatForm")&&($("#addSeatForm").onsubmit=async event=>{
+    event.preventDefault();
+    const form=event.target,button=form.querySelector("button");
+    button.disabled=true;
+    try{await api("/api/seats",{method:"POST",body:JSON.stringify(Object.fromEntries(new FormData(form)))});await refresh();notify("เพิ่มโซนที่นั่งแล้ว");}catch(error){notify(error.message,true);button.disabled=false;}
+  });
+  document.querySelectorAll("[data-seat-rename]").forEach(button=>button.onclick=async()=>{
+    const seat=(state.seatTables||[]).find(item=>String(item.id)===String(button.dataset.seatRename)),name=prompt("ชื่อใหม่",seat?.name||"");
+    if(!name||!name.trim())return;
+    try{await api(`/api/seats/${button.dataset.seatRename}`,{method:"PATCH",body:JSON.stringify({name})});await refresh();notify("เปลี่ยนชื่อแล้ว");}catch(error){notify(error.message,true);}
+  });
+  document.querySelectorAll("[data-seat-remove]").forEach(button=>button.onclick=()=>{
+    const seat=(state.seatTables||[]).find(item=>String(item.id)===String(button.dataset.seatRemove));
+    confirmAction({title:"ลบโซนที่นั่ง",description:seat?.name||"",onConfirm:async()=>{
+      try{await api(`/api/seats/${button.dataset.seatRemove}`,{method:"DELETE"});await refresh();notify("ลบโซนที่นั่งแล้ว");}catch(error){notify(error.message,true);}
+    }});
+  });
+};
+
+// Checkout is CASHIER/OWNER/MANAGER only (same TABLE_CLOSE permission the backend route enforces);
+// STAFF never sees the button, same treatment as [data-checkout] on a table card.
+const applyPermissionSeats=applyPermissionVisibility;applyPermissionVisibility=function(){
+  applyPermissionSeats();
+  if(!["OWNER","MANAGER","CASHIER"].includes(state.user?.role))document.querySelectorAll("[data-seat-checkout]").forEach(button=>button.remove());
+};
+
 nav();

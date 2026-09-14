@@ -49,6 +49,7 @@ const { HardwareWifiProvisioningService } = require("./services/hardware-wifi-pr
 const { HardwareSetupModeService } = require("./services/hardware-setup-mode-service");
 const { HardwareWiringAssistantService } = require("./services/hardware-wiring-assistant-service");
 const { TableConfigurationService } = require("./services/table-configuration-service");
+const { SeatTableService } = require("./services/seat-table-service");
 const { HardwareEnrollmentHandoffService } = require("./services/hardware-enrollment-handoff-service");
 const { FirmwarePackageService } = require("./services/firmware-package-service");
 const { resolveDevelopmentFirmwarePackage } = require("./services/development-firmware-package-config");
@@ -136,9 +137,9 @@ const inventoryService = new InventoryService(inventoryRepository, { audit: (eve
 inventoryService.normalizeLegacyProducts();
 inventoryService.ensureDefaultCategories();
 const posOrderRepository = new JsonPosOrderRepository({ getStore: () => store, save, history: historyStore });
-const posOrderService = new PosOrderService(posOrderRepository, inventoryService, { audit: (event, actorId, data) => billingService.audit(event, { actorId, data }), findTable: tableById, findMember: memberById });
+const posOrderService = new PosOrderService(posOrderRepository, inventoryService, { audit: (event, actorId, data) => billingService.audit(event, { actorId, data }), findTable: tableById, findSeat: seatById, findMember: memberById });
 posOrderService.normalizeLegacyPosOrders();
-const combinedBillingService = new CombinedBillingService({ sessionRepository, sessionService, posOrderRepository, billingRepository, billingService, inventoryService, getMember: memberById, getMemberName: memberId => memberById(memberId)?.displayName || memberById(memberId)?.name || "ลูกค้าทั่วไป", save });
+const combinedBillingService = new CombinedBillingService({ sessionRepository, sessionService, posOrderRepository, billingRepository, billingService, inventoryService, getMember: memberById, getMemberName: memberId => memberById(memberId)?.displayName || memberById(memberId)?.name || "ลูกค้าทั่วไป", findSeat: seatById, save });
 const hardwareSecretVault = new HardwareSecretVault({ file: path.join(dataLayout.config, "hardware-secrets.dpapi.json"), protector: new WindowsDpapiProtector() });
 const hardwareRepository = new HardwareRepository(path.join(dataDir, "hardware-devices.json"), { secretVault: hardwareSecretVault });
 const relayControllerDriver = new RelayControllerDriver();
@@ -241,6 +242,9 @@ const reservationService = new ReservationService(reservationRepository, reserva
 const tableConfigurationService = new TableConfigurationService({
   hasActiveSession: tableId => Boolean(sessionRepository.findOpenSessionByTable(tableId)),
   hasActiveReservation: tableId => reservationRepository.list().some(item => String(item.assignedTableId) === String(tableId) && !["CANCELLED", "NO_SHOW", "CHECKED_IN", "COMPLETED"].includes(item.status))
+});
+const seatTableService = new SeatTableService({
+  hasOpenOrders: seatId => (store.posOrders || []).some(order => order.orderType === "SEAT" && String(order.seatId) === String(seatId) && order.status === "CONFIRMED" && order.billingStatus === "UNBILLED")
 });
 reservationService.normalizeLegacy();
 const integrityCheckService = new IntegrityCheckService({ store: () => store, reservations: () => reservationRepository.list(), deposits: () => reservationDepositRepository.list(), bills: () => billingRepository.recentBills(), auditLogs: () => billingRepository.recentAuditLogs(), findBill: id => billingRepository.findBill(id) });
@@ -378,6 +382,7 @@ function maybeAutoBackup() {
 }
 function id(prefix) { return `${prefix}-${crypto.randomUUID().slice(0, 8)}`; }
 function tableById(tableId) { return store.tables.find(t => String(t.id) === String(tableId)); }
+function seatById(seatId) { return (store.seatTables || []).find(s => String(s.id) === String(seatId)); }
 function memberById(memberId) { return store.members.find(m => m.id === memberId); }
 function elapsedSeconds(table) { return table.startTime ? Math.max(0, Math.floor((Date.now() - new Date(table.startTime).getTime()) / 1000)) : 0; }
 function legacyTableChargeSatang(table) { return bahtToSatang(Math.max(store.settings.minimumCharge, elapsedSeconds(table) / 3600 * store.settings.hourlyRate)); }
@@ -385,6 +390,13 @@ function tableChargeSatang(table) { const session = sessionRepository.findSessio
 function apiBaht(satang) { return Number(satangToBaht(satang)); }
 function enrichTable(table) { const session = sessionRepository.findSessionByTable(table.id); const active = table.status === "playing" || table.status === "paused" || table.status === "awaiting_payment"; const profile = resolvePricingProfileForTable(table, settingsService.getSettings()); return { ...table, ...hardwareService.tableHardware(table), elapsedSeconds: session ? sessionService.billableSeconds(session) : elapsedSeconds(table), currentPrice: active ? apiBaht(tableChargeSatang(table)) : 0, member: memberById(table.memberId) || null, sessionState: session?.state || null, sessionMode: session?.mode || (session?.pricingSnapshot?.practice ? "PRACTICE" : null), rateSatang: profile?.rateSatang ?? null, practiceRateSatang: profile?.practiceRateSatang ?? null, plannedSeconds: Number(session?.plannedSeconds || 0), remainingSeconds: session ? sessionService.remainingSeconds(session) : null }; }
 function createBill(table, closedSession, loggedInActorId = "SYSTEM") { return billingService.createBillDraft({ table, session: closedSession, memberName: memberById(table.memberId)?.name || "ลูกค้าทั่วไป", actorId: loggedInActorId }); }
+// Seats have no session/hardware to derive a running total from, so their "current price" is simply
+// the sum of every CONFIRMED+UNBILLED order sitting on them right now.
+function enrichSeat(seat) {
+  const openOrders = (store.posOrders || []).filter(order => order.orderType === "SEAT" && String(order.seatId) === String(seat.id) && order.status === "CONFIRMED" && order.billingStatus === "UNBILLED");
+  const openTotal = openOrders.reduce((sum, order) => sum + Number(order.total || 0), 0);
+  return { ...seat, openOrderCount: openOrders.length, openTotal };
+}
 // Resolves the pricing profile to snapshot at table-start time: the table's own override
 // (table.pricingProfileId) if set and still valid, else settings.defaultPricingProfileId.
 //
@@ -418,7 +430,7 @@ app.post("/api/auth/logout", (req, res) => { authService.logout(tokenFromRequest
 app.get("/api/auth/me", requireAuth, (req, res) => res.json({ user: req.user }));
 app.get("/api/session/status", requireAuth, (req,res)=>res.json(authService.sessionStatus(tokenFromRequest(req))));
 app.patch("/api/session/refresh", requireAuth, (req,res)=>{try{res.json(authService.refreshSession(tokenFromRequest(req),actorId(req)));}catch(error){res.status(401).json({error:error.message});}});
-app.get("/api/state", requireAuth, async (req, res) => { await reservationService.processDue(); res.json({ settings: settingsService.getSettings(), tables: store.tables.map(enrichTable), members: store.members, products: inventoryService.listProducts({ pageSize: 1000 }, req.user.role).items, posOrders: store.posOrders || [], bills: store.bills, payments: store.payments, reservations: reservationService.list(), reservationDeposits: reservationDepositService.list(), reservationDashboard: { ...reservationService.dashboard(), ...depositSettlementService.dashboard() }, waitingReservations: reservationService.waitingWithTable(), user: req.user }); });
+app.get("/api/state", requireAuth, async (req, res) => { await reservationService.processDue(); res.json({ settings: settingsService.getSettings(), tables: store.tables.map(enrichTable), seatTables: (store.seatTables || []).map(enrichSeat), members: store.members, products: inventoryService.listProducts({ pageSize: 1000 }, req.user.role).items, posOrders: store.posOrders || [], bills: store.bills, payments: store.payments, reservations: reservationService.list(), reservationDeposits: reservationDepositService.list(), reservationDashboard: { ...reservationService.dashboard(), ...depositSettlementService.dashboard() }, waitingReservations: reservationService.waitingWithTable(), user: req.user }); });
 // No-login table-status view for customers checking availability from their own phone (e.g. a QR
 // code / LINE rich-menu link, or a TV in the shop). Deliberately exposes only these 4 fields —
 // never price, member identity, or revenue. See public/status.html and public-table-status-route.test.js.
@@ -631,7 +643,9 @@ app.post("/api/pos-orders/:id/items", requirePermission(PERMISSIONS.POS_ORDER_ED
 app.patch("/api/pos-orders/:id/items/:itemId", requirePermission(PERMISSIONS.POS_ORDER_EDIT), (req, res) => { try { res.json({ order: posOrderService.updateItemQuantity(req.params.id, req.params.itemId, req.body || {}, req.user) }); } catch (error) { posOrderError(res, error); } });
 app.delete("/api/pos-orders/:id/items/:itemId", requirePermission(PERMISSIONS.POS_ORDER_EDIT), (req, res) => { try { res.json({ order: posOrderService.removeItem(req.params.id, req.params.itemId, req.user) }); } catch (error) { posOrderError(res, error); } });
 app.patch("/api/pos-orders/:id", requirePermission(PERMISSIONS.POS_ORDER_EDIT), (req, res) => { try { res.json({ order: posOrderService.updateOrderMetadata(req.params.id, req.body || {}, req.user) }); } catch (error) { posOrderError(res, error); } });
-app.post("/api/pos-orders/:id/confirm", requirePermission(PERMISSIONS.POS_ORDER_CONFIRM), async (req, res) => { try { res.json({ order: await posOrderService.confirmOrder(req.params.id, req.user) }); } catch (error) { posOrderError(res, error); } });
+// A seat table has no session to flip it "occupied" the way a billiard table's session does — its
+// first confirmed order is the only signal that a customer has actually sat down and ordered.
+app.post("/api/pos-orders/:id/confirm", requirePermission(PERMISSIONS.POS_ORDER_CONFIRM), async (req, res) => { try { const order = await posOrderService.confirmOrder(req.params.id, req.user); if (order.orderType === "SEAT") { const seat = seatById(order.seatId); if (seat && seat.status !== "occupied") { seat.status = "occupied"; save(); } } res.json({ order }); } catch (error) { posOrderError(res, error); } });
 app.post("/api/pos-orders/:id/cancel", requirePermission(PERMISSIONS.POS_ORDER_CANCEL_DRAFT), async (req, res) => { try { res.json({ order: await posOrderService.cancelOrder(req.params.id, req.body || {}, req.user) }); } catch (error) { posOrderError(res, error); } });
 app.post("/api/tables/:id/start", requirePermission(PERMISSIONS.TABLE_OPEN), async (req, res) => { try { const table = tableById(req.params.id); if (!table) return res.status(404).json({ error: "ไม่พบโต๊ะ" }); if (req.body.memberId && memberById(req.body.memberId)?.status !== "ACTIVE") return res.status(400).json({ error: "ไม่พบสมาชิกที่ใช้งานอยู่" });
   // A coupon is claimed the moment the table opens, so the quota is held for the whole session
@@ -779,6 +793,15 @@ app.post("/api/tables/:id/checkout", requirePermission(PERMISSIONS.TABLE_CLOSE),
 function tableOrdersErrorStatus(code) { return code === "ORDER_NOT_AVAILABLE" ? 409 : code === "SESSION_NOT_ACTIVE" || code === "NO_ORDERS_SELECTED" ? 400 : 400; }
 app.post("/api/tables/:id/orders/billing-preview", requirePermission(PERMISSIONS.TABLE_CLOSE), (req, res) => { try { res.json(combinedBillingService.previewTableOrdersBilling(req.params.id, req.body?.orderIds || [])); } catch (error) { res.status(tableOrdersErrorStatus(error.code)).json({ error: error.code || "TABLE_ORDERS_PREVIEW_ERROR", message: error.message }); } });
 app.post("/api/tables/:id/orders/create-bill", requirePermission(PERMISSIONS.TABLE_CLOSE), (req, res) => { try { const result = combinedBillingService.createTableOrdersBill(req.params.id, req.body?.orderIds || [], actorId(req)); const { payment } = paymentService.createPayment({ billId: result.bill.id, method: req.body?.paymentMethod || "cash", amountSatang: result.bill.totalSatang, actorId: actorId(req) }); res.json({ ...result, payment }); } catch (error) { res.status(tableOrdersErrorStatus(error.code)).json({ error: error.code || "TABLE_ORDERS_BILL_ERROR", message: error.message }); } });
+// Seat tables (bar/lounge zones with no timer/hardware) — a small named list managed from Settings,
+// used only to park POS product orders for a customer who is not playing a billiard table.
+function seatErrorStatus(code) { return code === "SEAT_NOT_FOUND" ? 404 : code === "SEAT_IN_USE" ? 409 : code === "NO_ORDERS_SELECTED" ? 400 : 400; }
+app.get("/api/seats", requireAuth, (req, res) => res.json({ seats: (store.seatTables || []).map(enrichSeat) }));
+app.post("/api/seats", requirePermission(PERMISSIONS.SETTINGS_MANAGE), (req, res) => { try { store.seatTables = seatTableService.add(store.seatTables || [], req.body?.name); save(); res.status(201).json({ seats: store.seatTables.map(enrichSeat) }); } catch (error) { res.status(seatErrorStatus(error.code)).json({ error: error.code || "SEAT_ERROR", message: error.message }); } });
+app.patch("/api/seats/:id", requirePermission(PERMISSIONS.SETTINGS_MANAGE), (req, res) => { try { store.seatTables = seatTableService.rename(store.seatTables || [], req.params.id, req.body?.name); save(); res.json({ seats: store.seatTables.map(enrichSeat) }); } catch (error) { res.status(seatErrorStatus(error.code)).json({ error: error.code || "SEAT_ERROR", message: error.message }); } });
+app.delete("/api/seats/:id", requirePermission(PERMISSIONS.SETTINGS_MANAGE), (req, res) => { try { store.seatTables = seatTableService.remove(store.seatTables || [], req.params.id); save(); res.json({ seats: store.seatTables.map(enrichSeat) }); } catch (error) { res.status(seatErrorStatus(error.code)).json({ error: error.code || "SEAT_ERROR", message: error.message }); } });
+app.get("/api/seats/:id/billing-preview", requirePermission(PERMISSIONS.TABLE_CLOSE), (req, res) => { try { res.json(combinedBillingService.previewSeatBilling(req.params.id)); } catch (error) { res.status(seatErrorStatus(error.code)).json({ error: error.code || "SEAT_PREVIEW_ERROR", message: error.message }); } });
+app.post("/api/seats/:id/create-bill", requirePermission(PERMISSIONS.TABLE_CLOSE), (req, res) => { try { const result = combinedBillingService.createSeatBill(req.params.id, actorId(req)); const { payment, payments } = createBillPayments(result.bill, req.body?.paymentMethod, req.body?.splitPayments, actorId(req)); res.json({ ...result, payment, payments }); } catch (error) { res.status(seatErrorStatus(error.code)).json({ error: error.code || "SEAT_BILL_ERROR", message: error.message }); } });
 // Two independent reasons a single confirm must NOT run the "bill fully settled" side effects
 // (relay off, session close, points): (1) a partial "pay for these orders now, keep playing" bill
 // (bill.partialOrdersOnly) — its status IS already "paid" after one confirm, but the table must
