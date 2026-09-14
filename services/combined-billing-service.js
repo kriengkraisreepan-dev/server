@@ -4,7 +4,7 @@ const asBaht = satang => Number(satangToBaht(satang));
 const isDrink = item => /drink|beverage|เครื่องดื่ม/i.test(String(item.categoryName || item.category || item.categoryId || ""));
 
 class CombinedBillingService {
-  constructor({ sessionRepository, sessionService, posOrderRepository, billingRepository, billingService, inventoryService, getMember = () => null, getMemberName = () => "ลูกค้าทั่วไป", save }) {
+  constructor({ sessionRepository, sessionService, posOrderRepository, billingRepository, billingService, inventoryService, getMember = () => null, getMemberName = () => "ลูกค้าทั่วไป", findSeat = () => null, save }) {
     this.sessionRepository = sessionRepository;
     this.sessionService = sessionService;
     this.posOrderRepository = posOrderRepository;
@@ -13,6 +13,7 @@ class CombinedBillingService {
     this.inventoryService = inventoryService;
     this.getMember = getMember;
     this.getMemberName = getMemberName;
+    this.findSeat = findSeat;
     this.save = save;
   }
 
@@ -153,6 +154,55 @@ class CombinedBillingService {
     this.posOrderRepository.persist();
     this.billingService.audit("WALK_IN_BILL_CREATED", { billId: bill.id, actorId, data: { orderId: order.id, orderNumber: order.orderNumber, totalSatang: bill.totalSatang } });
     return { bill, order, preview };
+  }
+
+  requireSeat(seatId) {
+    const seat = this.findSeat(seatId);
+    if (!seat) { const error = new Error("Seat not found"); error.code = "SEAT_NOT_FOUND"; throw error; }
+    return seat;
+  }
+
+  // A seat table has no session — "open orders for this seat" is the entire tab, not a single order.
+  // Unlike a walk-in bill (exactly one order) this aggregates every CONFIRMED+UNBILLED SEAT order for
+  // the seat, the same way ordersForSession() aggregates a table's orders by tableSessionId.
+  ordersForSeat(seatId) {
+    return this.posOrderRepository.list().filter(order => order.orderType === "SEAT" && order.status === "CONFIRMED" && order.billingStatus === "UNBILLED" && String(order.seatId) === String(seatId));
+  }
+
+  previewSeatBilling(seatId) {
+    const seat = this.requireSeat(seatId);
+    const orders = this.ordersForSeat(seatId);
+    if (!orders.length) { const error = new Error("This seat has no open orders to bill"); error.code = "NO_ORDERS_SELECTED"; throw error; }
+    const items = this.itemSnapshot(orders);
+    const productSatang = items.reduce((sum, item) => sum + item.totalSatang, 0);
+    const drinkSatang = items.filter(isDrink).reduce((sum, item) => sum + item.totalSatang, 0);
+    const foodSatang = productSatang - drinkSatang;
+    return { seatId: seat.id, seatName: seat.name, orderIds: orders.map(order => order.id), items, total: asBaht(productSatang), totalSatang: productSatang, foodSatang, drinkSatang, productSatang };
+  }
+
+  // Products-only bill for a seat's whole open tab — modeled directly on createWalkInBill (synthetic
+  // zero-charge table/session so BillingService#createBillDraft's shared path stays untouched), but
+  // aggregating every open order for the seat instead of exactly one. Frees the seat back to "free"
+  // once its tab is fully settled, mirroring how a table session release happens after checkout.
+  createSeatBill(seatId, actorId = "SYSTEM") {
+    const preview = this.previewSeatBilling(seatId);
+    const seat = this.requireSeat(seatId);
+    const now = new Date().toISOString();
+    const bill = this.billingService.createBillDraft({
+      table: { id: null, name: seat.name, memberId: null, items: [] },
+      session: { id: null, openedAt: null, closedAt: now, billableSeconds: 0, finalChargeSatang: 0, pricingSnapshot: null },
+      memberName: "ลูกค้าทั่วไป", memberCode: null, actorId, extraItems: preview.items, tableSessionId: null, posOrderIds: preview.orderIds, saleSource: "SEAT",
+      breakdown: { tableCharge: 0, food: asBaht(preview.foodSatang), drink: asBaht(preview.drinkSatang), products: preview.total, discount: 0, total: preview.total, tableChargeSatang: 0, foodSatang: preview.foodSatang, drinkSatang: preview.drinkSatang, productSatang: preview.productSatang, totalSatang: preview.totalSatang }
+    });
+    for (const orderId of preview.orderIds) {
+      const order = this.posOrderRepository.findById(orderId);
+      Object.assign(order, { billingStatus: "BILLED", billedBillId: bill.id, billedAt: bill.createdAt, billedBy: actorId });
+    }
+    this.posOrderRepository.persist();
+    seat.status = "free";
+    this.save();
+    this.billingService.audit("SEAT_BILL_CREATED", { billId: bill.id, actorId, data: { seatId: seat.id, posOrderIds: bill.posOrderIds, totalSatang: bill.totalSatang } });
+    return { bill, preview, seat };
   }
 
   // Reverts a bill that was successfully created but never got a valid payment attached (e.g. the

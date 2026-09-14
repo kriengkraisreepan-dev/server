@@ -76,3 +76,11 @@ The ledger is the source of truth for quota; `usedCount`/`reservedCount` on the 
 `channels` holds `TABLE`, `WALK_IN`, or both, matching the `saleSource` values bills already carry. A redemption records which one it was claimed on and references either `tableSessionId` or `posOrderId` accordingly.
 
 Coupons are configuration and redemptions are transactional; `scripts/pre-production-data-reset.js` predates them and clears neither, which only matters if that one-time pre-go-live tool is ever run again.
+
+## Seat tables (bar/lounge tabs)
+
+`seatTables[]` is a new, additive top-level array for customers who sit down and order food/drink without playing a billiard table — a bar or lounge zone, not a physical snooker table. Each entry is `{ id, code, name, status }` (`status`: `free` or `occupied`) with no `relay`, `pricingProfileId`, or `items[]` — seats carry no hardware and no timed session. They are managed as a plain named list from Settings (add/rename/remove), not counted like `tables[]`.
+
+`posOrders[]` gains a third `orderType`, `SEAT`, alongside `WALK_IN`/`TABLE`, with `seatId`/`seatName` snapshot fields (parallel to `tableId`/`tableName`) and `tableSessionId` always `null`. A seat's first confirmed order flips it to `occupied`; paying off every open order on the seat (see below) flips it back to `free`.
+
+Bills gain `saleSource: "SEAT"` alongside `TABLE`/`WALK_IN`/`LEGACY`. A seat bill is modeled on a walk-in bill (`playAmount`/`tableCharge` always 0, `tableId: null`) but aggregates every `CONFIRMED`+`UNBILLED` `SEAT` order for that seat into one bill rather than exactly one order — closer to a table's tab than to a single walk-in sale. Existing `playAmount`/`foodAmount` report aggregation needs no changes: a zero-play-amount bill already reports as pure POS revenue.

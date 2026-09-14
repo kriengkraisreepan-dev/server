@@ -108,3 +108,6 @@ select.col-filter{padding:6px 4px}
 .col-sort:hover{border-color:var(--gold);color:#edf2f7}
 .col-sort.active{background:var(--gold);border-color:var(--gold);color:#1a1a1a;font-weight:600}
 .col-sort span{font-size:11px}
+/* Seat tables (bar/lounge tabs) reuse the .card.table/.badge look; "occupied" mirrors "playing". */
+.badge.occupied{background:#166534}
+.table.occupied{border-color:var(--green)}
