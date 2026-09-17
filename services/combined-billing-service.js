@@ -199,7 +199,10 @@ class CombinedBillingService {
       Object.assign(order, { billingStatus: "BILLED", billedBillId: bill.id, billedAt: bill.createdAt, billedBy: actorId });
     }
     this.posOrderRepository.persist();
+    // A nickname names whoever was just sitting here — meaningless once they've paid and left, and
+    // misleading if left in place for the next customer to inherit.
     seat.status = "free";
+    seat.nickname = null;
     this.save();
     this.billingService.audit("SEAT_BILL_CREATED", { billId: bill.id, actorId, data: { seatId: seat.id, posOrderIds: bill.posOrderIds, totalSatang: bill.totalSatang } });
     return { bill, preview, seat };

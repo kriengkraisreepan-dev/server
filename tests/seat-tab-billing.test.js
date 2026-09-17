@@ -127,3 +127,33 @@ test("SeatTableService add/rename/remove and the in-use guard", () => {
   assert.throws(() => guarded.remove(seats, seats[0].id), err => err.code === "SEAT_IN_USE");
   assert.ok(SeatTableError);
 });
+
+test("SeatTableService setNickname labels and clears the current occupant, separate from the zone's own name", () => {
+  const service = new SeatTableService();
+  let seats = service.add([], "โต๊ะบาร์ 1");
+  assert.equal(seats[0].nickname, null);
+
+  seats = service.setNickname(seats, seats[0].id, "  คุณเอ  ");
+  assert.equal(seats[0].nickname, "คุณเอ");
+  assert.equal(seats[0].name, "โต๊ะบาร์ 1"); // the permanent zone name is untouched
+
+  seats = service.setNickname(seats, seats[0].id, "   "); // blank clears it, unlike rename()
+  assert.equal(seats[0].nickname, null);
+
+  assert.throws(() => service.setNickname(seats, 999, "x"), err => err.code === "SEAT_NOT_FOUND");
+});
+
+test("a seat's nickname is cleared automatically once its tab is billed", async () => {
+  const store = makeStore(), now = new Date("2026-09-14T10:00:00.000Z");
+  const { posOrders, combined } = makeServices(store, now);
+  store.seatTables[0].nickname = "คุณเอ";
+
+  const order = posOrders.createOrder({ orderType: "SEAT", seatId: 1 }, owner);
+  posOrders.addItem(order.id, { productId: "water", quantity: 1 }, owner);
+  await posOrders.confirmOrder(order.id, owner);
+  store.seatTables[0].status = "occupied";
+  assert.equal(store.seatTables[0].nickname, "คุณเอ"); // still there while the tab is open
+
+  combined.createSeatBill(1, "cashier-1");
+  assert.equal(store.seatTables[0].nickname, null);
+});

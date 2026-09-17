@@ -1870,14 +1870,21 @@ const printBillPractice=printBill;printBill=function(id){
 
 function seatCardV2(seat){
   const occupied=seat.status==="occupied";
+  const nicknameLine=seat.nickname?`<p class="muted">${escapeHtml(seat.nickname)}</p>`:"";
   const details=occupied?`<p>ยอดค้างชำระ: <b>${money(seat.openTotal||0)}</b><br><small>${seat.openOrderCount||0} ออเดอร์ที่ยืนยันแล้ว</small></p>`:`<p class="muted">ว่าง</p>`;
-  const actions=`<button data-seat-order="${seat.id}">เพิ่มอาหาร/เครื่องดื่ม</button>${occupied?`<button class="success" data-seat-checkout="${seat.id}">คิดเงิน</button>`:""}`;
-  return `<div class="card table ${seat.status}"><h3>${escapeHtml(seat.name)}<span class="badge ${seat.status}">${occupied?"มีลูกค้า":"ว่าง"}</span></h3>${details}<div class="actions">${actions}</div></div>`;
+  const actions=`<button data-seat-order="${seat.id}">เพิ่มอาหาร/เครื่องดื่ม</button>${occupied?`<button class="success" data-seat-checkout="${seat.id}">คิดเงิน</button>`:""}<button class="outline" data-seat-nickname="${seat.id}">${seat.nickname?"เปลี่ยนชื่อเล่น":"ตั้งชื่อเล่น"}</button>`;
+  return `<div class="card table ${seat.status}"><h3>${escapeHtml(seat.name)}<span class="badge ${seat.status}">${occupied?"มีลูกค้า":"ว่าง"}</span></h3>${nicknameLine}${details}<div class="actions">${actions}</div></div>`;
 }
+// Spliced in right after the table-status grid (not appended at the very end of the dashboard,
+// which by now also carries every later sprint's stat cards) so seat cards sit directly under the
+// billiard tables, not below Rewards/Reservation stats. state.tables.map(tableCardV2).join("") is
+// a pure re-render of what dashboardSeats() already produced, so it reliably matches as the anchor.
 const dashboardSeats=dashboard;dashboard=function(){
   const base=dashboardSeats();
   if(!(state.seatTables||[]).length)return base;
-  return `${base}<h3 style="margin-top:25px">โซนที่นั่ง/บาร์</h3><div class="grid">${state.seatTables.map(seatCardV2).join("")}</div>`;
+  const section=`<h3 style="margin-top:25px">โซนที่นั่ง/บาร์</h3><div class="grid">${state.seatTables.map(seatCardV2).join("")}</div>`;
+  const marker=`${state.tables.map(tableCardV2).join("")}</div>`;
+  return base.includes(marker)?base.replace(marker,`${marker}${section}`):`${base}${section}`;
 };
 
 async function seatOrderDialog(id){
@@ -1978,6 +1985,14 @@ const bindSeats=bind;bind=function(){
   bindSeats();
   document.querySelectorAll("[data-seat-order]").forEach(button=>button.onclick=()=>seatOrderDialog(button.dataset.seatOrder));
   document.querySelectorAll("[data-seat-checkout]").forEach(button=>button.onclick=()=>seatCheckoutDialog(button.dataset.seatCheckout));
+  // Who's currently sitting here — a transient label, separate from the zone's permanent name in
+  // Settings, and cleared automatically once the tab is paid off.
+  document.querySelectorAll("[data-seat-nickname]").forEach(button=>button.onclick=async()=>{
+    const seat=(state.seatTables||[]).find(item=>String(item.id)===String(button.dataset.seatNickname)),
+      nickname=prompt("ชื่อเล่นลูกค้าที่โต๊ะนี้ (เว้นว่างเพื่อลบ)",seat?.nickname||"");
+    if(nickname===null)return;
+    try{await api(`/api/seats/${button.dataset.seatNickname}/nickname`,{method:"PATCH",body:JSON.stringify({nickname})});await refresh();notify(nickname.trim()?"ตั้งชื่อเล่นแล้ว":"ลบชื่อเล่นแล้ว");}catch(error){notify(error.message,true);}
+  });
   $("#addSeatForm")&&($("#addSeatForm").onsubmit=async event=>{
     event.preventDefault();
     const form=event.target,button=form.querySelector("button");

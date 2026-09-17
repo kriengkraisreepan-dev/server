@@ -79,7 +79,7 @@ Coupons are configuration and redemptions are transactional; `scripts/pre-produc
 
 ## Seat tables (bar/lounge tabs)
 
-`seatTables[]` is a new, additive top-level array for customers who sit down and order food/drink without playing a billiard table — a bar or lounge zone, not a physical snooker table. Each entry is `{ id, code, name, status }` (`status`: `free` or `occupied`) with no `relay`, `pricingProfileId`, or `items[]` — seats carry no hardware and no timed session. They are managed as a plain named list from Settings (add/rename/remove), not counted like `tables[]`.
+`seatTables[]` is a new, additive top-level array for customers who sit down and order food/drink without playing a billiard table — a bar or lounge zone, not a physical snooker table. Each entry is `{ id, code, name, status, nickname }` (`status`: `free` or `occupied`) with no `relay`, `pricingProfileId`, or `items[]` — seats carry no hardware and no timed session. `name` is the zone's permanent name, managed as a plain named list from Settings (add/rename/remove), not counted like `tables[]`. `nickname` is a separate, transient label for whoever is currently occupying the seat (e.g. "คุณเอ") — settable by anyone who can start a POS order (not Settings-gated), cleared automatically once the seat's tab is billed and it returns to `free`.
 
 `posOrders[]` gains a third `orderType`, `SEAT`, alongside `WALK_IN`/`TABLE`, with `seatId`/`seatName` snapshot fields (parallel to `tableId`/`tableName`) and `tableSessionId` always `null`. A seat's first confirmed order flips it to `occupied`; paying off every open order on the seat (see below) flips it back to `free`.
 

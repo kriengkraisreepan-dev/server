@@ -64,6 +64,12 @@ test("seat orders park a tab until it is billed as one standalone, products-only
   assert.equal(state.seatTables.find(s => s.id === seat.id).status, "occupied");
   assert.equal(state.seatTables.find(s => s.id === seat.id).openOrderCount, 1);
 
+  // STAFF can label who's sitting here — same permission as starting the tab (POS_ORDER_CREATE),
+  // not the Settings-gated permanent rename.
+  response = await fetch(`${base}/api/seats/${seat.id}/nickname`, { method: "PATCH", headers: staffHeaders, body: JSON.stringify({ nickname: "  คุณเอ  " }) });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).seats.find(s => s.id === seat.id).nickname, "คุณเอ");
+
   // A second round on the same seat before it is paid.
   response = await fetch(`${base}/api/pos-orders`, { method: "POST", headers: staffHeaders, body: JSON.stringify({ orderType: "SEAT", seatId: seat.id }) });
   assert.equal(response.status, 201);
@@ -104,6 +110,7 @@ test("seat orders park a tab until it is billed as one standalone, products-only
   const freed = state.seatTables.find(s => s.id === seat.id);
   assert.equal(freed.status, "free");
   assert.equal(freed.openOrderCount, 0);
+  assert.equal(freed.nickname, null); // cleared once the tab is paid off, not left for the next customer
 
   // Billing again with nothing open must fail cleanly.
   response = await fetch(`${base}/api/seats/${seat.id}/billing-preview`, { headers: cashierHeaders });
