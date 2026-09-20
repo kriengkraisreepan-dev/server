@@ -89,14 +89,42 @@ test("billing a seat aggregates every open order on it into one products-only bi
   assert.equal(bill.playAmount, 0);
   assert.equal(bill.total, 60);
   assert.equal(bill.tableId, null);
+  assert.equal(bill.seatId, 1);
   assert.deepEqual(bill.posOrderIds.slice().sort(), [first.id, second.id].sort());
   assert.equal(store.posOrders[0].billingStatus, "BILLED");
   assert.equal(store.posOrders[1].billingStatus, "BILLED");
-  assert.equal(seat.status, "free");
-  assert.equal(store.seatTables[0].status, "free");
+  // Mirrors a table: the seat carries "awaiting_payment" (not "free") until the payment route
+  // actually confirms it — see tests/seat-tab-billing-route.test.js for that half of the flow.
+  assert.equal(seat.status, "awaiting_payment");
+  assert.equal(store.seatTables[0].status, "awaiting_payment");
 
   // Nothing left to bill — a second attempt must fail rather than produce an empty bill.
   assert.throws(() => combined.previewSeatBilling(1), err => err.code === "NO_ORDERS_SELECTED");
+});
+
+test("reopening a stuck awaiting-payment seat bill restores the seat to occupied and un-bills its orders", async () => {
+  const store = makeStore(), now = new Date("2026-09-14T10:00:00.000Z");
+  const { posOrders, combined } = makeServices(store, now);
+
+  const order = posOrders.createOrder({ orderType: "SEAT", seatId: 1 }, owner);
+  posOrders.addItem(order.id, { productId: "water", quantity: 1 }, owner);
+  await posOrders.confirmOrder(order.id, owner);
+  store.seatTables[0].nickname = "คุณเอ";
+
+  const { bill } = combined.createSeatBill(1, "cashier-1");
+  assert.equal(store.seatTables[0].status, "awaiting_payment");
+
+  combined.reopenUnpaidBill(bill, "cashier-1", "ลูกค้าเปลี่ยนใจไม่จ่าย");
+  assert.equal(bill.status, "void");
+  assert.equal(bill.voidReason, "ลูกค้าเปลี่ยนใจไม่จ่าย");
+  assert.equal(store.seatTables[0].status, "occupied");
+  assert.equal(store.seatTables[0].nickname, "คุณเอ"); // never cleared, so nothing to restore
+  assert.equal(store.posOrders[0].billingStatus, "UNBILLED");
+  assert.equal(store.posOrders[0].billedBillId, null);
+
+  // The seat's tab is exactly as it was — billable again.
+  const preview = combined.previewSeatBilling(1);
+  assert.equal(preview.orderIds.length, 1);
 });
 
 test("billing an unknown seat fails with SEAT_NOT_FOUND", () => {
@@ -143,7 +171,10 @@ test("SeatTableService setNickname labels and clears the current occupant, separ
   assert.throws(() => service.setNickname(seats, 999, "x"), err => err.code === "SEAT_NOT_FOUND");
 });
 
-test("a seat's nickname is cleared automatically once its tab is billed", async () => {
+test("a seat's nickname survives bill creation — it is only cleared once payment is actually confirmed", async () => {
+  // The route-level test (tests/seat-tab-billing-route.test.js) exercises the full path through
+  // POST /api/payments/:id/confirm, which is where the nickname is actually cleared — that side
+  // effect lives in index.js, alongside the equivalent table/session release, not in this service.
   const store = makeStore(), now = new Date("2026-09-14T10:00:00.000Z");
   const { posOrders, combined } = makeServices(store, now);
   store.seatTables[0].nickname = "คุณเอ";
@@ -155,5 +186,7 @@ test("a seat's nickname is cleared automatically once its tab is billed", async 
   assert.equal(store.seatTables[0].nickname, "คุณเอ"); // still there while the tab is open
 
   combined.createSeatBill(1, "cashier-1");
-  assert.equal(store.seatTables[0].nickname, null);
+  // Still there — the bill is only "awaiting_payment", nobody has actually paid yet.
+  assert.equal(store.seatTables[0].nickname, "คุณเอ");
+  assert.equal(store.seatTables[0].status, "awaiting_payment");
 });

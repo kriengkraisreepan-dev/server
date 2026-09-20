@@ -111,3 +111,7 @@ select.col-filter{padding:6px 4px}
 /* Seat tables (bar/lounge tabs) reuse the .card.table/.badge look; "occupied" mirrors "playing". */
 .badge.occupied{background:#166534}
 .table.occupied{border-color:var(--green)}
+/* A stuck/pending payment (table or seat) gets its own amber look so it stands out from "playing"
+   or "occupied" — it needs staff attention (pay it or cancel it), not just informational. */
+.badge.awaiting_payment{background:#854d0e}
+.table.awaiting_payment{border-color:var(--gold)}

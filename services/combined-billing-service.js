@@ -35,7 +35,7 @@ class CombinedBillingService {
   }
 
   itemSnapshot(orders) {
-    return orders.flatMap(order => (order.items || []).map(item => ({
+    const flat = orders.flatMap(order => (order.items || []).map(item => ({
       id: item.id,
       productId: item.productId,
       sku: item.sku || "",
@@ -59,6 +59,35 @@ class CombinedBillingService {
       posOrderId: order.id,
       posOrderNumber: order.orderNumber
     })));
+    return this.mergeItems(flat);
+  }
+
+  // A tab that spans multiple confirmed POS orders (more rounds ordered later, or a table's several
+  // sessions of drinks) previously produced one bill line PER ORDER — 3 Leos in one round and 4 in
+  // another showed as two separate "เบียร์ลีโอ" lines instead of one line of 7. Merge same-product
+  // lines into one, summing quantity and totals. Keyed on productId + unit price (not name alone,
+  // so a renamed/reused SKU never merges into the wrong product) so a genuine price change
+  // mid-tab (e.g. Happy Hour ending) still itemizes as separate lines rather than being folded
+  // together at whichever price happened to be first.
+  mergeItems(items) {
+    const merged = [];
+    const byKey = new Map();
+    for (const item of items) {
+      const key = `${item.productId || item.sku || item.name}::${item.priceSatang}`;
+      const existing = byKey.get(key);
+      if (existing) {
+        existing.quantity += item.quantity;
+        existing.total += item.total;
+        existing.totalSatang += item.totalSatang;
+        existing.costTotal += item.costTotal;
+        existing.costTotalSatang += item.costTotalSatang;
+      } else {
+        const copy = { ...item };
+        byKey.set(key, copy);
+        merged.push(copy);
+      }
+    }
+    return merged;
   }
 
   buildPreview(sessionId, { manualDiscountSatang = 0 } = {}) {
@@ -191,7 +220,7 @@ class CombinedBillingService {
     const bill = this.billingService.createBillDraft({
       table: { id: null, name: seat.name, memberId: null, items: [] },
       session: { id: null, openedAt: null, closedAt: now, billableSeconds: 0, finalChargeSatang: 0, pricingSnapshot: null },
-      memberName: "ลูกค้าทั่วไป", memberCode: null, actorId, extraItems: preview.items, tableSessionId: null, posOrderIds: preview.orderIds, saleSource: "SEAT",
+      memberName: "ลูกค้าทั่วไป", memberCode: null, actorId, extraItems: preview.items, tableSessionId: null, seatId: seat.id, posOrderIds: preview.orderIds, saleSource: "SEAT",
       breakdown: { tableCharge: 0, food: asBaht(preview.foodSatang), drink: asBaht(preview.drinkSatang), products: preview.total, discount: 0, total: preview.total, tableChargeSatang: 0, foodSatang: preview.foodSatang, drinkSatang: preview.drinkSatang, productSatang: preview.productSatang, totalSatang: preview.totalSatang }
     });
     for (const orderId of preview.orderIds) {
@@ -199,10 +228,11 @@ class CombinedBillingService {
       Object.assign(order, { billingStatus: "BILLED", billedBillId: bill.id, billedAt: bill.createdAt, billedBy: actorId });
     }
     this.posOrderRepository.persist();
-    // A nickname names whoever was just sitting here — meaningless once they've paid and left, and
-    // misleading if left in place for the next customer to inherit.
-    seat.status = "free";
-    seat.nickname = null;
+    // Mirrors a billiard table: the seat carries "awaiting_payment" (not "free") until the payment
+    // actually confirms (see the /api/payments/:id/confirm route), so a stuck/abandoned checkout is
+    // still visible as owing money instead of quietly looking free. The nickname stays too, for the
+    // same reason — it's cleared only once the tab is genuinely settled.
+    seat.status = "awaiting_payment";
     this.save();
     this.billingService.audit("SEAT_BILL_CREATED", { billId: bill.id, actorId, data: { seatId: seat.id, posOrderIds: bill.posOrderIds, totalSatang: bill.totalSatang } });
     return { bill, preview, seat };
@@ -213,12 +243,19 @@ class CombinedBillingService {
   // own internal revert-on-failure branch) so the table isn't left stuck in "awaiting payment" with
   // nothing to pay, un-bills its POS orders back to UNBILLED (not cancelled — nothing was ever
   // charged), and voids the orphaned bill record.
-  reopenUnpaidBill(bill, actorId = "SYSTEM") {
+  reopenUnpaidBill(bill, actorId = "SYSTEM", reason = "ไม่สามารถสร้างรายการชำระเงินได้ (เช่น ยอดแบ่งชำระไม่ถูกต้อง)") {
     if (!bill || bill.status !== "awaiting_payment") return;
     const session = bill.tableSessionId ? this.sessionRepository.findSession(bill.tableSessionId) : null;
     if (session) {
       Object.assign(session, { state: "ACTIVE", closedAt: null, finalChargeSatang: null, billableSeconds: undefined });
       this.sessionRepository.saveSession(session);
+    }
+    // A seat table has no session to reactivate — it just goes back to "occupied" (its nickname was
+    // never cleared in the first place, see createSeatBill) so the tab looks exactly like it did
+    // before the failed/cancelled checkout.
+    if (bill.seatId) {
+      const seat = this.findSeat(bill.seatId);
+      if (seat) { seat.status = "occupied"; this.save(); }
     }
     if (Array.isArray(bill.posOrderIds) && bill.posOrderIds.length) {
       for (const id of bill.posOrderIds) {
@@ -227,7 +264,7 @@ class CombinedBillingService {
       }
       this.posOrderRepository.persist();
     }
-    this.billingService.voidBill(bill, "ไม่สามารถสร้างรายการชำระเงินได้ (เช่น ยอดแบ่งชำระไม่ถูกต้อง)", actorId);
+    this.billingService.voidBill(bill, reason, actorId);
   }
 
   // "Put these drinks back on the table's tab" is only meaningful while the tab they came from is

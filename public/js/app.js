@@ -1869,11 +1869,15 @@ const printBillPractice=printBill;printBill=function(id){
 // See docs/JSON_DATA_MODEL.md (Seat tables) and CombinedBillingService#createSeatBill.
 
 function seatCardV2(seat){
-  const occupied=seat.status==="occupied";
+  const occupied=seat.status==="occupied", awaitingPayment=seat.status==="awaiting_payment";
+  const bill=awaitingPayment?(state.bills||[]).find(item=>String(item.seatId)===String(seat.id)&&item.status==="awaiting_payment"):null;
   const nicknameLine=seat.nickname?`<p class="muted">${escapeHtml(seat.nickname)}</p>`:"";
-  const details=occupied?`<p>ยอดค้างชำระ: <b>${money(seat.openTotal||0)}</b><br><small>${seat.openOrderCount||0} ออเดอร์ที่ยืนยันแล้ว</small></p>`:`<p class="muted">ว่าง</p>`;
-  const actions=`<button data-seat-order="${seat.id}">เพิ่มอาหาร/เครื่องดื่ม</button>${occupied?`<button class="success" data-seat-checkout="${seat.id}">คิดเงิน</button>`:""}<button class="outline" data-seat-nickname="${seat.id}">${seat.nickname?"เปลี่ยนชื่อเล่น":"ตั้งชื่อเล่น"}</button>`;
-  return `<div class="card table ${seat.status}"><h3>${escapeHtml(seat.name)}<span class="badge ${seat.status}">${occupied?"มีลูกค้า":"ว่าง"}</span></h3>${nicknameLine}${details}<div class="actions">${actions}</div></div>`;
+  const label=awaitingPayment?"รอชำระเงิน":occupied?"มีลูกค้า":"ว่าง";
+  const details=awaitingPayment?`<p>ยอดค้างชำระ: <b>${money(bill?.total??0)}</b></p>`:occupied?`<p>ยอดค้างชำระ: <b>${money(seat.openTotal||0)}</b><br><small>${seat.openOrderCount||0} ออเดอร์ที่ยืนยันแล้ว</small></p>`:`<p class="muted">ว่าง</p>`;
+  const actions=awaitingPayment
+    ?`${bill?`<button class="success" data-resume-pay="${bill.id}">ชำระเงิน</button><button class="danger" data-cancel-awaiting="${bill.id}" data-cancel-awaiting-label="${escapeHtml(seat.name)}">ยกเลิก</button>`:""}`
+    :`<button data-seat-order="${seat.id}">เพิ่มอาหาร/เครื่องดื่ม</button>${occupied?`<button class="success" data-seat-checkout="${seat.id}">คิดเงิน</button>`:""}<button class="outline" data-seat-nickname="${seat.id}">${seat.nickname?"เปลี่ยนชื่อเล่น":"ตั้งชื่อเล่น"}</button>`;
+  return `<div class="card table ${seat.status}"><h3>${escapeHtml(seat.name)}<span class="badge ${seat.status}">${label}</span></h3>${nicknameLine}${details}<div class="actions">${actions}</div></div>`;
 }
 // Spliced in right after the table-status grid (not appended at the very end of the dashboard,
 // which by now also carries every later sprint's stat cards) so seat cards sit directly under the
@@ -2017,6 +2021,68 @@ const bindSeats=bind;bind=function(){
 const applyPermissionSeats=applyPermissionVisibility;applyPermissionVisibility=function(){
   applyPermissionSeats();
   if(!["OWNER","MANAGER","CASHIER"].includes(state.user?.role))document.querySelectorAll("[data-seat-checkout]").forEach(button=>button.remove());
+};
+
+// ---- Stuck "awaiting_payment" bills: pay or cancel, wherever one is visible ------------------
+// A table/seat card, or a Bill History row, previously showed a bill sitting unpaid with no way to
+// finish or back out of it — the only recourse was OWNER/MANAGER's Void, which asks a "what
+// happened to the goods" question meant for reversing a completed sale, not for a checkout that was
+// simply never finished. These two actions are shared (same data attributes) across every place an
+// awaiting_payment bill can appear.
+async function resumeBillPayment(billId){
+  try{
+    const data=await api(`/api/bills/${billId}`);
+    const pending=(data.payments||[]).filter(p=>p.status==="pending");
+    if(!pending.length){notify("บิลนี้ไม่มีรายการรอชำระแล้ว — ลองยกเลิกแล้วเปิดใหม่",true);return;}
+    openModal(`<h3>ค้างชำระ — ${escapeHtml(data.bill.tableName||data.bill.number)}</h3><p>บิล <b>${escapeHtml(data.bill.number)}</b></p>${paymentListSummary(pending)}<div class="actions"><button id="confirmResumePay">ยืนยันรับชำระ</button><button class="outline" id="cancelResumeDialog">ปิด</button></div>`);
+    $("#cancelResumeDialog").onclick=closeModal;
+    $("#confirmResumePay").onclick=async()=>{
+      const button=$("#confirmResumePay");button.disabled=true;
+      try{await confirmAllPayments(pending);closeModal();await refresh();if(page==="bills"){await loadBillHistory();render();}notify("ชำระเงินแล้ว");offerPrint(data.bill.id);}catch(error){notify(error.message,true);button.disabled=false;}
+    };
+  }catch(error){notify(error.message,true);}
+}
+function cancelAwaitingBill(billId,label){
+  confirmAction({title:"ยกเลิกบิลที่ค้างชำระ",description:label?`${label} — ลูกค้ายังไม่ได้ชำระเงิน จะคืนสถานะกลับไปเหมือนเดิมก่อนคิดเงิน`:"ลูกค้ายังไม่ได้ชำระเงิน จะคืนสถานะกลับไปเหมือนเดิมก่อนคิดเงิน",onConfirm:async()=>{
+    // A bill's own page (Bill History) tracks a separate, paginated `billHistory` object that
+    // refresh() never touches — without reloading it too, a just-cancelled row would keep showing
+    // "รอชำระ" with stale action buttons until the next manual search or navigation.
+    try{await api(`/api/bills/${billId}/reopen`,{method:"POST",body:"{}"});await refresh();if(page==="bills"){await loadBillHistory();render();}notify("ยกเลิกบิลที่ค้างชำระแล้ว");}catch(error){notify(error.message,true);}
+  }});
+}
+const bindAwaitingPayment=bind;bind=function(){
+  bindAwaitingPayment();
+  document.querySelectorAll("[data-resume-pay]").forEach(button=>button.onclick=()=>resumeBillPayment(button.dataset.resumePay));
+  document.querySelectorAll("[data-cancel-awaiting]").forEach(button=>button.onclick=()=>cancelAwaitingBill(button.dataset.cancelAwaiting,button.dataset.cancelAwaitingLabel));
+};
+// Same role gate as [data-checkout]/[data-seat-checkout] — STAFF can order but not touch money.
+const applyPermissionAwaitingPayment=applyPermissionVisibility;applyPermissionVisibility=function(){
+  applyPermissionAwaitingPayment();
+  if(!["OWNER","MANAGER","CASHIER"].includes(state.user?.role))document.querySelectorAll("[data-resume-pay],[data-cancel-awaiting]").forEach(button=>button.remove());
+};
+
+// A table stuck "awaiting_payment" (bill created but never paid — the confirm dialog was closed, or
+// the payment step itself failed) previously showed only a dead-end label. Give it the same
+// pay/cancel actions a seat or Bill History row gets, keyed off the matching bill in state.bills.
+const tableCardAwaitingPayment=tableCardV2;tableCardV2=function(table){
+  const html=tableCardAwaitingPayment(table);
+  if(table.status!=="awaiting_payment")return html;
+  const bill=(state.bills||[]).find(item=>String(item.tableId)===String(table.id)&&item.status==="awaiting_payment");
+  if(!bill)return html;
+  return html.replace('<span class="muted">รอยืนยันการชำระเงิน</span>',`<button class="success" data-resume-pay="${bill.id}">ชำระเงิน</button><button class="danger" data-cancel-awaiting="${bill.id}" data-cancel-awaiting-label="${escapeHtml(table.name)}">ยกเลิก</button>`);
+};
+
+// Bill History: a "รอชำระ" row could only be Voided (OWNER/MANAGER, and framed as reversing a
+// completed sale) — never actually paid, and never cancellable by a CASHIER at all. Full rewrite
+// (not a wrap — there is nothing to compose with, this is the only definition) that is the base
+// function plus one extra "ชำระเงิน" button per awaiting_payment row, reusing the same
+// data-resume-pay action every other stuck-bill surface uses.
+bills=function(){
+  const result=billHistory||{items:state.bills,pagination:{page:1,total:state.bills.length,totalPages:1}};
+  const method=b=>b.paymentMethod==="transfer"?"โอนเงิน":b.paymentMethod==="qr"?"QR Payment":"เงินสด";
+  const label=b=>b.status==="paid"?"ชำระแล้ว":b.status==="void"?"ยกเลิก":"รอชำระ";
+  const row=b=>`<tr><td>${escapeHtml(b.receiptNumber||b.number)}</td><td>${new Date(b.createdAt).toLocaleString("th-TH")}</td><td>${escapeHtml(b.tableName)}<br><small>${escapeHtml(b.memberName)}</small></td><td>${money(b.total)}</td><td>${method(b)}</td><td><span class="badge ${b.status}">${label(b)}</span></td><td><div class="actions">${b.status==="awaiting_payment"?`<button class="success" data-resume-pay="${b.id}">ชำระเงิน</button><button class="danger" data-cancel-awaiting="${b.id}" data-cancel-awaiting-label="${escapeHtml(b.tableName||b.number)}">ยกเลิก</button>`:""}<button class="outline" data-bill-details="${b.id}">รายละเอียด</button><button class="outline" data-bill-reprint="${b.id}">พิมพ์ซ้ำ</button>${b.status!=="void"?`<button class="danger" data-void-bill="${b.id}">Void</button>`:""}</div></td></tr>`;
+  return `<div class="card"><h3>ประวัติบิล</h3><form id="billSearchForm" class="two"><input name="receipt" placeholder="ค้นหาเลขใบเสร็จ"><input name="table" placeholder="ค้นหาโต๊ะ / หมายเลขโต๊ะ"><input name="from" type="date"><input name="to" type="date"><select name="status"><option value="">ทุกสถานะ</option><option value="paid">ชำระแล้ว</option><option value="void">ยกเลิก</option><option value="awaiting_payment">รอชำระ</option></select><button>ค้นหา</button></form><p class="muted">พบ ${result.pagination.total} บิล · เรียงรายการล่าสุดก่อน${historyScopeNote(result.scope)}</p><table><tr><th>เลขบิล</th><th>เวลา</th><th>โต๊ะ / ลูกค้า</th><th>ยอด</th><th>การชำระ</th><th>สถานะ</th><th></th></tr>${result.items.map(row).join("")||`<tr><td colspan="7" class="muted">ไม่พบบิลตามเงื่อนไข</td></tr>`}</table></div>`;
 };
 
 nav();
