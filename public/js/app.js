@@ -1876,7 +1876,7 @@ function seatCardV2(seat){
   const details=awaitingPayment?`<p>ยอดค้างชำระ: <b>${money(bill?.total??0)}</b></p>`:occupied?`<p>ยอดค้างชำระ: <b>${money(seat.openTotal||0)}</b><br><small>${seat.openOrderCount||0} ออเดอร์ที่ยืนยันแล้ว</small></p>`:`<p class="muted">ว่าง</p>`;
   const actions=awaitingPayment
     ?`${bill?`<button class="success" data-resume-pay="${bill.id}">ชำระเงิน</button><button class="danger" data-cancel-awaiting="${bill.id}" data-cancel-awaiting-label="${escapeHtml(seat.name)}">ยกเลิก</button>`:""}`
-    :`<button data-seat-order="${seat.id}">เพิ่มอาหาร/เครื่องดื่ม</button>${occupied?`<button class="success" data-seat-checkout="${seat.id}">คิดเงิน</button>`:""}<button class="outline" data-seat-nickname="${seat.id}">${seat.nickname?"เปลี่ยนชื่อเล่น":"ตั้งชื่อเล่น"}</button>`;
+    :`<button data-seat-order="${seat.id}">เพิ่มอาหาร/เครื่องดื่ม</button>${occupied?`<button class="success" data-seat-checkout="${seat.id}">คิดเงิน</button><button class="danger" data-seat-cancel-orders="${seat.id}">ยกเลิกบิล</button>`:""}<button class="outline" data-seat-nickname="${seat.id}">${seat.nickname?"เปลี่ยนชื่อเล่น":"ตั้งชื่อเล่น"}</button>`;
   return `<div class="card table ${seat.status}"><h3>${escapeHtml(seat.name)}<span class="badge ${seat.status}">${label}</span></h3>${nicknameLine}${details}<div class="actions">${actions}</div></div>`;
 }
 // Spliced in right after the table-status grid (not appended at the very end of the dashboard,
@@ -1899,6 +1899,56 @@ async function seatOrderDialog(id){
   page="pos";
   await loadPos();
   render();
+}
+
+// In-app modal (not window.prompt(), which Electron's renderer does not reliably show — the
+// button looked like it did nothing when clicked) for the seat's transient "who's sitting here"
+// label. See services/seat-table-service.js#setNickname.
+function seatNicknameDialog(id){
+  const seat=(state.seatTables||[]).find(item=>String(item.id)===String(id));
+  if(!seat)return;
+  openModal(`<h3>ชื่อเล่นลูกค้า — ${escapeHtml(seat.name)}</h3><form id="seatNicknameForm" class="form"><label>ชื่อเล่น (เว้นว่างเพื่อลบ)</label><input name="nickname" value="${escapeHtml(seat.nickname||"")}"><div class="actions"><button class="outline" type="button" id="cancelSeatNickname">ยกเลิก</button><button>บันทึก</button></div></form>`);
+  $("#cancelSeatNickname").onclick=closeModal;
+  $("#seatNicknameForm").onsubmit=async event=>{
+    event.preventDefault();
+    const nickname=new FormData(event.target).get("nickname"),button=event.target.querySelector("button:not(#cancelSeatNickname)");
+    button.disabled=true;
+    try{await api(`/api/seats/${id}/nickname`,{method:"PATCH",body:JSON.stringify({nickname})});closeModal();await refresh();notify(String(nickname||"").trim()?"ตั้งชื่อเล่นแล้ว":"ลบชื่อเล่นแล้ว");}catch(error){notify(error.message,true);button.disabled=false;}
+  };
+}
+// Same fix as seatNicknameDialog above — used from the Settings zone list (data-seat-rename).
+function seatRenameDialog(id){
+  const seat=(state.seatTables||[]).find(item=>String(item.id)===String(id));
+  if(!seat)return;
+  openModal(`<h3>เปลี่ยนชื่อโซนที่นั่ง</h3><form id="seatRenameForm" class="form"><label>ชื่อโซน</label><input name="name" value="${escapeHtml(seat.name)}" required><div class="actions"><button class="outline" type="button" id="cancelSeatRename">ยกเลิก</button><button>บันทึก</button></div></form>`);
+  $("#cancelSeatRename").onclick=closeModal;
+  $("#seatRenameForm").onsubmit=async event=>{
+    event.preventDefault();
+    const name=new FormData(event.target).get("name"),button=event.target.querySelector("button:not(#cancelSeatRename)");
+    button.disabled=true;
+    try{await api(`/api/seats/${id}`,{method:"PATCH",body:JSON.stringify({name})});closeModal();await refresh();notify("เปลี่ยนชื่อแล้ว");}catch(error){notify(error.message,true);button.disabled=false;}
+  };
+}
+// "ยกเลิกบิล" on an occupied seat card — the tab hasn't been billed yet (no bill exists), so this
+// cancels every confirmed-but-unbilled order on the seat directly (restocking each one, same as
+// cancelling any other confirmed POS order) rather than voiding a bill. Cancelling the last one
+// frees the seat automatically — see the /api/pos-orders/:id/cancel route.
+function cancelSeatOrdersDialog(id){
+  const seat=(state.seatTables||[]).find(item=>String(item.id)===String(id));
+  const orders=(state.posOrders||[]).filter(order=>order.orderType==="SEAT"&&String(order.seatId)===String(id)&&order.status==="CONFIRMED"&&order.billingStatus==="UNBILLED");
+  if(!orders.length){notify("ไม่มีรายการที่ยังไม่ได้ชำระสำหรับโซนนี้แล้ว",true);return;}
+  const total=orders.reduce((sum,order)=>sum+Number(order.total||0),0);
+  openModal(`<h3>ยกเลิกบิล — ${escapeHtml(seat?.name||"")}</h3><p class="muted">จะยกเลิกออเดอร์ที่ยืนยันแล้วทั้งหมด ${orders.length} รายการ (${money(total)}) และคืนสต็อกสินค้าทุกชิ้น</p><form id="cancelSeatOrdersForm" class="form"><label>เหตุผล</label><input name="reason" required><div class="actions"><button class="outline" type="button" id="cancelSeatOrdersBack">กลับ</button><button class="danger">ยืนยันยกเลิกบิล</button></div></form>`);
+  $("#cancelSeatOrdersBack").onclick=closeModal;
+  $("#cancelSeatOrdersForm").onsubmit=async event=>{
+    event.preventDefault();
+    const reason=new FormData(event.target).get("reason"),button=event.target.querySelector("button.danger");
+    button.disabled=true;
+    try{
+      for(const order of orders) await api(`/api/pos-orders/${order.id}/cancel`,{method:"POST",body:JSON.stringify({reason})});
+      closeModal();await refresh();notify("ยกเลิกบิลแล้ว");
+    }catch(error){notify(error.message,true);button.disabled=false;}
+  };
 }
 
 const posScopeSeat=posScope;posScope=function(){return posContext.orderType==="SEAT"?`seat:${posContext.seatId}`:posScopeSeat();};
@@ -1990,24 +2040,18 @@ const bindSeats=bind;bind=function(){
   document.querySelectorAll("[data-seat-order]").forEach(button=>button.onclick=()=>seatOrderDialog(button.dataset.seatOrder));
   document.querySelectorAll("[data-seat-checkout]").forEach(button=>button.onclick=()=>seatCheckoutDialog(button.dataset.seatCheckout));
   // Who's currently sitting here — a transient label, separate from the zone's permanent name in
-  // Settings, and cleared automatically once the tab is paid off.
-  document.querySelectorAll("[data-seat-nickname]").forEach(button=>button.onclick=async()=>{
-    const seat=(state.seatTables||[]).find(item=>String(item.id)===String(button.dataset.seatNickname)),
-      nickname=prompt("ชื่อเล่นลูกค้าที่โต๊ะนี้ (เว้นว่างเพื่อลบ)",seat?.nickname||"");
-    if(nickname===null)return;
-    try{await api(`/api/seats/${button.dataset.seatNickname}/nickname`,{method:"PATCH",body:JSON.stringify({nickname})});await refresh();notify(nickname.trim()?"ตั้งชื่อเล่นแล้ว":"ลบชื่อเล่นแล้ว");}catch(error){notify(error.message,true);}
-  });
+  // Settings, and cleared automatically once the tab is paid off. Uses an in-app modal, not
+  // window.prompt() — Electron's renderer does not reliably show that dialog, which made the
+  // button look like it did nothing when clicked.
+  document.querySelectorAll("[data-seat-nickname]").forEach(button=>button.onclick=()=>seatNicknameDialog(button.dataset.seatNickname));
   $("#addSeatForm")&&($("#addSeatForm").onsubmit=async event=>{
     event.preventDefault();
     const form=event.target,button=form.querySelector("button");
     button.disabled=true;
     try{await api("/api/seats",{method:"POST",body:JSON.stringify(Object.fromEntries(new FormData(form)))});await refresh();notify("เพิ่มโซนที่นั่งแล้ว");}catch(error){notify(error.message,true);button.disabled=false;}
   });
-  document.querySelectorAll("[data-seat-rename]").forEach(button=>button.onclick=async()=>{
-    const seat=(state.seatTables||[]).find(item=>String(item.id)===String(button.dataset.seatRename)),name=prompt("ชื่อใหม่",seat?.name||"");
-    if(!name||!name.trim())return;
-    try{await api(`/api/seats/${button.dataset.seatRename}`,{method:"PATCH",body:JSON.stringify({name})});await refresh();notify("เปลี่ยนชื่อแล้ว");}catch(error){notify(error.message,true);}
-  });
+  document.querySelectorAll("[data-seat-rename]").forEach(button=>button.onclick=()=>seatRenameDialog(button.dataset.seatRename));
+  document.querySelectorAll("[data-seat-cancel-orders]").forEach(button=>button.onclick=()=>cancelSeatOrdersDialog(button.dataset.seatCancelOrders));
   document.querySelectorAll("[data-seat-remove]").forEach(button=>button.onclick=()=>{
     const seat=(state.seatTables||[]).find(item=>String(item.id)===String(button.dataset.seatRemove));
     confirmAction({title:"ลบโซนที่นั่ง",description:seat?.name||"",onConfirm:async()=>{
@@ -2021,6 +2065,10 @@ const bindSeats=bind;bind=function(){
 const applyPermissionSeats=applyPermissionVisibility;applyPermissionVisibility=function(){
   applyPermissionSeats();
   if(!["OWNER","MANAGER","CASHIER"].includes(state.user?.role))document.querySelectorAll("[data-seat-checkout]").forEach(button=>button.remove());
+  // Cancelling a CONFIRMED order needs POS_ORDER_CANCEL_CONFIRMED — OWNER/MANAGER only, same as
+  // cancelling any other confirmed POS order (backend already enforces this; hide the button too
+  // rather than let CASHIER/STAFF hit a 403).
+  if(!["OWNER","MANAGER"].includes(state.user?.role))document.querySelectorAll("[data-seat-cancel-orders]").forEach(button=>button.remove());
 };
 
 // ---- Stuck "awaiting_payment" bills: pay or cancel, wherever one is visible ------------------
