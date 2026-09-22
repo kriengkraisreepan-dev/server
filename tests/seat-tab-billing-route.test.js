@@ -187,3 +187,64 @@ test("a stuck awaiting_payment seat bill can be resumed and paid, or cancelled a
   assert.equal(response.status, 409);
   assert.equal((await response.json()).error, "BILL_NOT_AWAITING_PAYMENT");
 });
+
+// "ยกเลิกบิล" on an occupied seat (no bill exists yet) cancels its confirmed-unbilled orders one by
+// one — a CASHIER cannot (cancelling a CONFIRMED order needs POS_ORDER_CANCEL_CONFIRMED,
+// OWNER/MANAGER only, same as any other product order), and cancelling the last one frees the seat.
+test("cancelling an occupied seat's confirmed orders is OWNER/MANAGER only and frees the seat once none remain", async t => {
+  const root = path.resolve(__dirname, "..");
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "lucky-seat-cancel-"));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const port = 39680 + Math.floor(Math.random() * 90), base = `http://127.0.0.1:${port}`;
+  const child = spawn(process.execPath, ["index.js"], { cwd: root, env: { ...process.env, PORT: String(port), LUCKY_DATA_DIR: dataDir }, stdio: "ignore" });
+  t.after(() => child.kill());
+  for (let i = 0; i < 100; i += 1) { try { if ((await fetch(`${base}/api/state`)).status === 401) break; } catch {} await new Promise(resolve => setTimeout(resolve, 50)); if (i === 99) throw new Error("server did not start"); }
+
+  const login = await fetch(`${base}/api/auth/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "admin", password: "123456789" }) });
+  const ownerHeaders = { Cookie: login.headers.get("set-cookie").split(";")[0], "Content-Type": "application/json" };
+  let response = await fetch(`${base}/api/users`, { method: "POST", headers: ownerHeaders, body: JSON.stringify({ username: "cashier2", password: "cashier12345", displayName: "แคชเชียร์2", role: "CASHIER" }) });
+  assert.equal(response.status, 201);
+  const cashierLogin = await fetch(`${base}/api/auth/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "cashier2", password: "cashier12345" }) });
+  const cashierHeaders = { Cookie: cashierLogin.headers.get("set-cookie").split(";")[0], "Content-Type": "application/json" };
+
+  response = await fetch(`${base}/api/seats`, { method: "POST", headers: ownerHeaders, body: JSON.stringify({ name: "โต๊ะบาร์ยกเลิก" }) });
+  const seat = (await response.json()).seats.slice(-1)[0];
+  response = await fetch(`${base}/api/pos-orders`, { method: "POST", headers: ownerHeaders, body: JSON.stringify({ orderType: "SEAT", seatId: seat.id }) });
+  const order1 = (await response.json()).order;
+  await fetch(`${base}/api/pos-orders/${order1.id}/items`, { method: "POST", headers: ownerHeaders, body: JSON.stringify({ productId: "p-water", quantity: 1 }) });
+  await fetch(`${base}/api/pos-orders/${order1.id}/confirm`, { method: "POST", headers: ownerHeaders, body: "{}" });
+  response = await fetch(`${base}/api/pos-orders`, { method: "POST", headers: ownerHeaders, body: JSON.stringify({ orderType: "SEAT", seatId: seat.id }) });
+  const order2 = (await response.json()).order;
+  await fetch(`${base}/api/pos-orders/${order2.id}/items`, { method: "POST", headers: ownerHeaders, body: JSON.stringify({ productId: "p-cola", quantity: 1 }) });
+  await fetch(`${base}/api/pos-orders/${order2.id}/confirm`, { method: "POST", headers: ownerHeaders, body: "{}" });
+
+  // A nickname set while occupied must still be readable back exactly (round-trips through the
+  // dedicated endpoint the dashboard's modal dialog calls — not window.prompt()).
+  response = await fetch(`${base}/api/seats/${seat.id}/nickname`, { method: "PATCH", headers: ownerHeaders, body: JSON.stringify({ nickname: "คุณบี" }) });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).seats.find(s => s.id === seat.id).nickname, "คุณบี");
+
+  // CASHIER cannot cancel a confirmed order.
+  response = await fetch(`${base}/api/pos-orders/${order1.id}/cancel`, { method: "POST", headers: cashierHeaders, body: JSON.stringify({ reason: "ลูกค้าเปลี่ยนใจ" }) });
+  assert.equal(response.status, 403);
+
+  // OWNER cancels the first of two — the seat must stay occupied (one order still owed).
+  response = await fetch(`${base}/api/pos-orders/${order1.id}/cancel`, { method: "POST", headers: ownerHeaders, body: JSON.stringify({ reason: "ลูกค้าเปลี่ยนใจ" }) });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).order.status, "CANCELLED");
+  response = await fetch(`${base}/api/state`, { headers: ownerHeaders });
+  let state = await response.json();
+  assert.equal(state.seatTables.find(s => s.id === seat.id).status, "occupied");
+  assert.equal(state.seatTables.find(s => s.id === seat.id).nickname, "คุณบี");
+
+  // Cancelling the last one frees the seat and clears its nickname.
+  response = await fetch(`${base}/api/pos-orders/${order2.id}/cancel`, { method: "POST", headers: ownerHeaders, body: JSON.stringify({ reason: "ลูกค้าเปลี่ยนใจ" }) });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).order.status, "CANCELLED");
+  response = await fetch(`${base}/api/state`, { headers: ownerHeaders });
+  state = await response.json();
+  const freed = state.seatTables.find(s => s.id === seat.id);
+  assert.equal(freed.status, "free");
+  assert.equal(freed.openOrderCount, 0);
+  assert.equal(freed.nickname, null);
+});
