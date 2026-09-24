@@ -62,7 +62,7 @@ async function body(response){assert.match(response.headers.get("content-type")|
   assert.strictEqual((await body(await get("/api/coupons"))).items.find(item=>item.id===tableCoupon.id).remainingQuota,0);
 
   // ---- voiding the sale hands the coupon back ------------------------------------------------
-  response=await del(`/api/bills/${bill.id}`,{reason:"ทดสอบคืนคูปอง"});
+  response=await del(`/api/bills/${bill.id}`,{password:"123456789",reason:"ทดสอบคืนคูปอง"});
   assert.strictEqual(response.status,200);
   usage=await body(await get(`/api/coupons/${tableCoupon.id}/redemptions`));
   assert.strictEqual(usage.summary.applied,0);

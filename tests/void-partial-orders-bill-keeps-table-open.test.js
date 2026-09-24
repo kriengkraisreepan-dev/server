@@ -45,7 +45,7 @@ test("voiding a partial table-orders bill leaves the table playing and the clock
   const created = await response.json();
   assert.equal(created.bill.partialOrdersOnly, true);
 
-  response = await fetch(`${base}/api/bills/${created.bill.id}`, { method: "DELETE", headers, body: JSON.stringify({ reason: "คิดเงินผิดรายการ" }) });
+  response = await fetch(`${base}/api/bills/${created.bill.id}`, { method: "DELETE", headers, body: JSON.stringify({ password: "123456789", reason: "คิดเงินผิดรายการ" }) });
   assert.equal(response.status, 200);
   const voided = await response.json();
   assert.equal(voided.bill.status, "void");

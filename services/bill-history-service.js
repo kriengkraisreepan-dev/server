@@ -7,7 +7,7 @@ const { DEFAULT_HISTORY_MONTHS } = require("../repositories/json-billing-reposit
 // twenty instead of a read of every bill the shop has ever taken.
 class BillHistoryService {
   constructor(repository) { this.repository = repository; }
-  normalizeStatus(value) { const status = String(value || "").trim().toLowerCase(); return ["paid", "void", "awaiting_payment"].includes(status) ? status : ""; }
+  normalizeStatus(value) { const status = String(value || "").trim().toLowerCase(); return ["paid", "void", "awaiting_payment", "pending_review"].includes(status) ? status : ""; }
   search(query = {}) {
     const receipt = String(query.receipt || "").trim().toLowerCase();
     const table = String(query.table || "").trim().toLowerCase();

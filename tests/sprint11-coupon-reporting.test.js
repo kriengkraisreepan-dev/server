@@ -66,7 +66,7 @@ async function body(response){assert.match(response.headers.get("content-type")|
   // Voiding a paid bill takes its discount back out of the report.
   const paidBill=(await body(await get("/api/bills?pageSize=50"))).items.find(bill=>bill.status==="paid"&&bill.couponDiscountSatang);
   assert.ok(paidBill,"a paid bill carrying a coupon");
-  assert.strictEqual((await del(`/api/bills/${paidBill.id}`,{reason:"ทดสอบรายงาน"})).status,200);
+  assert.strictEqual((await del(`/api/bills/${paidBill.id}`,{password:"123456789",reason:"ทดสอบรายงาน"})).status,200);
   report=await analytics();
   assert.strictEqual(report.couponRedemptions,1,"a voided sale is no longer a redemption");
   assert.strictEqual(report.couponDiscount,20);

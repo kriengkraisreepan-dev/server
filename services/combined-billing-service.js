@@ -238,6 +238,63 @@ class CombinedBillingService {
     return { bill, preview, seat };
   }
 
+  // "Cancel" on a table or seat card used to make the tab simply vanish: a table's confirmed drinks
+  // were orphaned UNBILLED forever (their session cancelled, so no checkout could ever reach them)
+  // and a seat's were restocked on the spot — either way nothing reached Bill History, so a cancelled
+  // tab was invisible to the owner. Now the whole tab becomes a "pending_review" bill instead: it
+  // records what was on it (time used AND products) and who cancelled it and why, collects nothing,
+  // and restocks nothing yet. The owner closes it out with Void, where the existing
+  // restock / write-off choice records what actually happened to the goods — deciding that here as
+  // well would restock twice.
+  reviewExtra(reason, actorId, source) {
+    const now = new Date().toISOString();
+    return { reviewReason: String(reason || "").trim() || "ยกเลิกโดยไม่ระบุเหตุผล", reviewSource: source, cancelledAt: now, cancelledBy: actorId };
+  }
+  markOrdersBilled(orderIds, bill, actorId) {
+    for (const orderId of orderIds) {
+      const order = this.posOrderRepository.findById(orderId);
+      if (order) Object.assign(order, { billingStatus: "BILLED", billedBillId: bill.id, billedAt: bill.createdAt, billedBy: actorId });
+    }
+    if (orderIds.length) this.posOrderRepository.persist();
+  }
+  // Must run while the session is still ACTIVE/PAUSED — buildPreview is what prices the time used so
+  // far, exactly as a real checkout would, so the review bill shows the true value of what was
+  // cancelled. The caller cancels the session afterwards.
+  createTableReviewBill(sessionId, { reason = "", actorId = "SYSTEM" } = {}) {
+    const preview = this.buildPreview(sessionId);
+    const session = this.sessionRepository.findSession(sessionId), table = this.sessionRepository.findTable(session.tableId);
+    const now = new Date().toISOString();
+    const bill = this.billingService.createBillDraft({
+      table,
+      session: { id: session.id, openedAt: session.openedAt, closedAt: now, billableSeconds: preview.playDurationSeconds, finalChargeSatang: preview.breakdown.tableChargeSatang, pricingSnapshot: session.pricingSnapshot || null, mode: session.mode },
+      memberName: this.getMemberName(table.memberId), memberCode: this.getMember(table.memberId)?.memberCode || this.getMember(table.memberId)?.code || null,
+      actorId, extraItems: preview.items, tableSessionId: session.id, posOrderIds: preview.posOrders.map(order => order.id), breakdown: preview.breakdown, rateSegments: preview.rateSegments, saleSource: "TABLE",
+      initialStatus: "pending_review", extra: this.reviewExtra(reason, actorId, "TABLE_CANCEL")
+    });
+    this.markOrdersBilled(bill.posOrderIds, bill, actorId);
+    this.billingService.audit("TAB_CANCELLED_FOR_REVIEW", { tableId: table.id, sessionId: session.id, billId: bill.id, actorId, data: { source: "TABLE_CANCEL", reason: bill.reviewReason, totalSatang: bill.totalSatang, posOrderIds: bill.posOrderIds } });
+    return bill;
+  }
+  // Frees the seat outright — unlike checkout there is no payment to wait for, the tab is closed.
+  createSeatReviewBill(seatId, { reason = "", actorId = "SYSTEM" } = {}) {
+    const preview = this.previewSeatBilling(seatId);
+    const seat = this.requireSeat(seatId);
+    const now = new Date().toISOString();
+    const bill = this.billingService.createBillDraft({
+      table: { id: null, name: seat.name, memberId: null, items: [] },
+      session: { id: null, openedAt: null, closedAt: now, billableSeconds: 0, finalChargeSatang: 0, pricingSnapshot: null },
+      memberName: seat.nickname || "ลูกค้าทั่วไป", memberCode: null, actorId, extraItems: preview.items, tableSessionId: null, seatId: seat.id, posOrderIds: preview.orderIds, saleSource: "SEAT",
+      breakdown: { tableCharge: 0, food: asBaht(preview.foodSatang), drink: asBaht(preview.drinkSatang), products: preview.total, discount: 0, total: preview.total, tableChargeSatang: 0, foodSatang: preview.foodSatang, drinkSatang: preview.drinkSatang, productSatang: preview.productSatang, totalSatang: preview.totalSatang },
+      initialStatus: "pending_review", extra: this.reviewExtra(reason, actorId, "SEAT_CANCEL")
+    });
+    this.markOrdersBilled(bill.posOrderIds, bill, actorId);
+    seat.status = "free";
+    seat.nickname = null;
+    this.save();
+    this.billingService.audit("TAB_CANCELLED_FOR_REVIEW", { billId: bill.id, actorId, data: { source: "SEAT_CANCEL", seatId: seat.id, reason: bill.reviewReason, totalSatang: bill.totalSatang, posOrderIds: bill.posOrderIds } });
+    return { bill, seat };
+  }
+
   // Reverts a bill that was successfully created but never got a valid payment attached (e.g. the
   // client's split-payment amounts didn't add up) — reopens the table session (mirrors createBill's
   // own internal revert-on-failure branch) so the table isn't left stuck in "awaiting payment" with

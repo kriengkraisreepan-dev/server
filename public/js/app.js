@@ -1929,25 +1929,22 @@ function seatRenameDialog(id){
     try{await api(`/api/seats/${id}`,{method:"PATCH",body:JSON.stringify({name})});closeModal();await refresh();notify("เปลี่ยนชื่อแล้ว");}catch(error){notify(error.message,true);button.disabled=false;}
   };
 }
-// "ยกเลิกบิล" on an occupied seat card — the tab hasn't been billed yet (no bill exists), so this
-// cancels every confirmed-but-unbilled order on the seat directly (restocking each one, same as
-// cancelling any other confirmed POS order) rather than voiding a bill. Cancelling the last one
-// frees the seat automatically — see the /api/pos-orders/:id/cancel route.
+// "ยกเลิกบิล" on an occupied seat card — same rule as cancelling a table from its card: the whole
+// open tab becomes one "รอตรวจสอบ" bill in Bill History and the seat is freed. Nothing is restocked
+// here; the owner decides that when closing the review out (see createSeatReviewBill).
 function cancelSeatOrdersDialog(id){
   const seat=(state.seatTables||[]).find(item=>String(item.id)===String(id));
   const orders=(state.posOrders||[]).filter(order=>order.orderType==="SEAT"&&String(order.seatId)===String(id)&&order.status==="CONFIRMED"&&order.billingStatus==="UNBILLED");
   if(!orders.length){notify("ไม่มีรายการที่ยังไม่ได้ชำระสำหรับโซนนี้แล้ว",true);return;}
   const total=orders.reduce((sum,order)=>sum+Number(order.total||0),0);
-  openModal(`<h3>ยกเลิกบิล — ${escapeHtml(seat?.name||"")}</h3><p class="muted">จะยกเลิกออเดอร์ที่ยืนยันแล้วทั้งหมด ${orders.length} รายการ (${money(total)}) และคืนสต็อกสินค้าทุกชิ้น</p><form id="cancelSeatOrdersForm" class="form"><label>เหตุผล</label><input name="reason" required><div class="actions"><button class="outline" type="button" id="cancelSeatOrdersBack">กลับ</button><button class="danger">ยืนยันยกเลิกบิล</button></div></form>`);
+  openModal(`<h3>ยกเลิกบิล — ${escapeHtml(seat?.name||"")}</h3><p class="muted">ไม่เก็บเงิน · ออเดอร์ที่ยืนยันแล้ว ${orders.length} รายการ (${money(total)}) จะไปอยู่ในประวัติบิลสถานะ <b>รอตรวจสอบ</b> ให้เจ้าของร้านตรวจสอบ</p><form id="cancelSeatOrdersForm" class="form"><label>เหตุผลที่ยกเลิก</label><input name="reason" required><div class="actions"><button class="outline" type="button" id="cancelSeatOrdersBack">กลับ</button><button class="danger">ยืนยันยกเลิกบิล</button></div></form>`);
   $("#cancelSeatOrdersBack").onclick=closeModal;
   $("#cancelSeatOrdersForm").onsubmit=async event=>{
     event.preventDefault();
     const reason=new FormData(event.target).get("reason"),button=event.target.querySelector("button.danger");
     button.disabled=true;
-    try{
-      for(const order of orders) await api(`/api/pos-orders/${order.id}/cancel`,{method:"POST",body:JSON.stringify({reason})});
-      closeModal();await refresh();notify("ยกเลิกบิลแล้ว");
-    }catch(error){notify(error.message,true);button.disabled=false;}
+    try{await api(`/api/seats/${id}/cancel`,{method:"POST",body:JSON.stringify({reason})});closeModal();await refresh();notify("ยกเลิกบิลแล้ว — ส่งเข้ารายการรอตรวจสอบในประวัติบิล");}
+    catch(error){notify(error.message,true);button.disabled=false;}
   };
 }
 
@@ -2065,10 +2062,8 @@ const bindSeats=bind;bind=function(){
 const applyPermissionSeats=applyPermissionVisibility;applyPermissionVisibility=function(){
   applyPermissionSeats();
   if(!["OWNER","MANAGER","CASHIER"].includes(state.user?.role))document.querySelectorAll("[data-seat-checkout]").forEach(button=>button.remove());
-  // Cancelling a CONFIRMED order needs POS_ORDER_CANCEL_CONFIRMED — OWNER/MANAGER only, same as
-  // cancelling any other confirmed POS order (backend already enforces this; hide the button too
-  // rather than let CASHIER/STAFF hit a 403).
-  if(!["OWNER","MANAGER"].includes(state.user?.role))document.querySelectorAll("[data-seat-cancel-orders]").forEach(button=>button.remove());
+  // [data-seat-cancel-orders] is deliberately NOT gated: like a table card's "ยกเลิก" it only sends
+  // the tab to a "รอตรวจสอบ" bill — restocking and closing it out is the owner's password-gated Void.
 };
 
 // ---- Stuck "awaiting_payment" bills: pay or cancel, wherever one is visible ------------------
@@ -2125,12 +2120,107 @@ const tableCardAwaitingPayment=tableCardV2;tableCardV2=function(table){
 // (not a wrap — there is nothing to compose with, this is the only definition) that is the base
 // function plus one extra "ชำระเงิน" button per awaiting_payment row, reusing the same
 // data-resume-pay action every other stuck-bill surface uses.
+// "pending_review" is a tab cancelled from a table/seat card — nothing collected, waiting for the
+// owner to check it and close it out (the row's "ตรวจสอบ" button is the same password-gated Void).
+const BILL_STATUS_LABELS={paid:"ชำระแล้ว",awaiting_payment:"รอชำระ",void:"ยกเลิก",pending_review:"รอตรวจสอบ"};
+// The search form used to come back blank after every search (the page re-renders from scratch), so
+// a status filter that WAS applied looked like it had been ignored. Remember what was searched.
+let billSearchValues={};
+columnFilters.bills=columnFilters.bills||{};columnSorts.bills=columnSorts.bills||{};
+searchBills=async function(event){event.preventDefault();billSearchValues=Object.fromEntries(new FormData(event.target));const params=new URLSearchParams(billSearchValues);params.set("page","1");params.set("pageSize","50");await loadBillHistory(params.toString());render();};
 bills=function(){
   const result=billHistory||{items:state.bills,pagination:{page:1,total:state.bills.length,totalPages:1}};
   const method=b=>b.paymentMethod==="transfer"?"โอนเงิน":b.paymentMethod==="qr"?"QR Payment":"เงินสด";
-  const label=b=>b.status==="paid"?"ชำระแล้ว":b.status==="void"?"ยกเลิก":"รอชำระ";
-  const row=b=>`<tr><td>${escapeHtml(b.receiptNumber||b.number)}</td><td>${new Date(b.createdAt).toLocaleString("th-TH")}</td><td>${escapeHtml(b.tableName)}<br><small>${escapeHtml(b.memberName)}</small></td><td>${money(b.total)}</td><td>${method(b)}</td><td><span class="badge ${b.status}">${label(b)}</span></td><td><div class="actions">${b.status==="awaiting_payment"?`<button class="success" data-resume-pay="${b.id}">ชำระเงิน</button><button class="danger" data-cancel-awaiting="${b.id}" data-cancel-awaiting-label="${escapeHtml(b.tableName||b.number)}">ยกเลิก</button>`:""}<button class="outline" data-bill-details="${b.id}">รายละเอียด</button><button class="outline" data-bill-reprint="${b.id}">พิมพ์ซ้ำ</button>${b.status!=="void"?`<button class="danger" data-void-bill="${b.id}">Void</button>`:""}</div></td></tr>`;
-  return `<div class="card"><h3>ประวัติบิล</h3><form id="billSearchForm" class="two"><input name="receipt" placeholder="ค้นหาเลขใบเสร็จ"><input name="table" placeholder="ค้นหาโต๊ะ / หมายเลขโต๊ะ"><input name="from" type="date"><input name="to" type="date"><select name="status"><option value="">ทุกสถานะ</option><option value="paid">ชำระแล้ว</option><option value="void">ยกเลิก</option><option value="awaiting_payment">รอชำระ</option></select><button>ค้นหา</button></form><p class="muted">พบ ${result.pagination.total} บิล · เรียงรายการล่าสุดก่อน${historyScopeNote(result.scope)}</p><table><tr><th>เลขบิล</th><th>เวลา</th><th>โต๊ะ / ลูกค้า</th><th>ยอด</th><th>การชำระ</th><th>สถานะ</th><th></th></tr>${result.items.map(row).join("")||`<tr><td colspan="7" class="muted">ไม่พบบิลตามเงื่อนไข</td></tr>`}</table></div>`;
+  const label=b=>BILL_STATUS_LABELS[b.status]||"รอชำระ";
+  const value=name=>escapeHtml(billSearchValues[name]||"");
+  const statusOptions=Object.entries(BILL_STATUS_LABELS).map(([key,text])=>`<option value="${key}" ${billSearchValues.status===key?"selected":""}>${text}</option>`).join("");
+  const reviewNote=b=>b.status==="pending_review"?`<br><small class="review-note">ยกเลิกจาก${b.reviewSource==="SEAT_CANCEL"?"โซนที่นั่ง":"การ์ดโต๊ะ"} · ${escapeHtml(b.reviewReason||"-")}</small>`:"";
+  const row=b=>`<tr data-row data-status="${escapeHtml(b.status)}"><td>${escapeHtml(b.receiptNumber||b.number)}</td><td>${new Date(b.createdAt).toLocaleString("th-TH")}</td><td>${escapeHtml(b.tableName)}<br><small>${escapeHtml(b.memberName)}</small>${reviewNote(b)}</td><td>${money(b.total)}</td><td>${b.status==="pending_review"?"-":method(b)}</td><td><span class="badge ${escapeHtml(b.status)}">${label(b)}</span></td><td><div class="actions">${b.status==="awaiting_payment"?`<button class="success" data-resume-pay="${b.id}">ชำระเงิน</button><button class="danger" data-cancel-awaiting="${b.id}" data-cancel-awaiting-label="${escapeHtml(b.tableName||b.number)}">ยกเลิก</button>`:""}<button class="outline" data-bill-details="${b.id}">รายละเอียด</button><button class="outline" data-bill-reprint="${b.id}">พิมพ์ซ้ำ</button>${b.status==="pending_review"?`<button class="review" data-void-bill="${b.id}">ตรวจสอบ</button>`:b.status!=="void"?`<button class="danger" data-void-bill="${b.id}">Void</button>`:""}</div></td></tr>`;
+  const statusPick=colPick("bills","status",Object.entries(BILL_STATUS_LABELS).map(([key,text])=>({value:key,label:text})),"ทุกสถานะ");
+  return `<div class="card"><h3>ประวัติบิล</h3><form id="billSearchForm" class="two"><input name="receipt" placeholder="ค้นหาเลขใบเสร็จ" value="${value("receipt")}"><input name="table" placeholder="ค้นหาโต๊ะ / หมายเลขโต๊ะ" value="${value("table")}"><input name="from" type="date" value="${value("from")}"><input name="to" type="date" value="${value("to")}"><select name="status"><option value="">ทุกสถานะ</option>${statusOptions}</select><button>ค้นหา</button></form><p class="muted">พบ ${result.pagination.total} บิล · เรียงรายการล่าสุดก่อน${historyScopeNote(result.scope)}</p></div><div class="card inventory-table-wrap" id="billsTable">${colFilterNote}<table><tr><th>เลขบิล</th><th>เวลา</th><th>โต๊ะ / ลูกค้า</th><th>ยอด</th><th>การชำระ</th><th>สถานะ</th><th></th></tr><tr class="col-filter-row"><td></td><td></td><td></td><td></td><td></td><td>${statusPick}</td><td></td></tr>${result.items.map(row).join("")||`<tr><td colspan="7" class="muted">ไม่พบบิลตามเงื่อนไข</td></tr>`}<tr data-filter-empty class="hidden"><td colspan="7" class="muted">ไม่มีบิลที่ตรงกับตัวกรอง</td></tr></table></div>`;
 };
+const bindBillsColumnFilters=bind;bind=function(){bindBillsColumnFilters();bindColumnFilters("#billsTable","bills");};
+
+// Every Void needs the account password (checked on the server too), and a pending_review bill opens
+// as "ตรวจสอบ" — same Void underneath, worded as closing out the review. For a review bill no
+// restock choice is pre-selected: whether the goods were really consumed is exactly what the
+// reviewer is deciding, so they have to pick one rather than inherit a default.
+voidBillDialog=function(id){
+  const bill=(billHistory?.items||state.bills).find(item=>item.id===id);if(!bill)return;
+  const review=bill.status==="pending_review";
+  const choices=review?voidModeChoices(bill).replace(/\schecked(?=\s)/g,""):voidModeChoices(bill);
+  const intro=review?`<p>ยกเลิกจาก${bill.reviewSource==="SEAT_CANCEL"?"โซนที่นั่ง":"การ์ดโต๊ะ"} <b>${escapeHtml(bill.tableName)}</b>${bill.memberName&&bill.memberName!=="ลูกค้าทั่วไป"?` (${escapeHtml(bill.memberName)})`:""}<br>ยอดที่ไม่ได้เก็บเงิน: <b>${money(bill.total)}</b>${Number(bill.playAmount)?` (ค่าโต๊ะ ${money(bill.playAmount)} · สินค้า ${money(bill.foodAmount)})`:""}<br>เหตุผลที่แจ้งตอนยกเลิก: ${escapeHtml(bill.reviewReason||"-")}</p>`:`<p class="muted">ข้อมูลบิลและการชำระจะไม่ถูกลบ</p>`;
+  openModal(`<h3>${review?"ตรวจสอบและปิดรายการ":"Void บิล"} ${escapeHtml(bill.receiptNumber||bill.number)}</h3>${intro}${choices}<label>${review?"บันทึกผลการตรวจสอบ":"เหตุผลการ Void"}</label><textarea id="voidReason" required></textarea><label>รหัสผ่านบัญชีของคุณ (${escapeHtml(state.user.displayName)})</label><input id="voidPassword" type="password" autocomplete="current-password" required><button class="danger" id="confirmVoid">${review?"ยืนยันปิดรายการ":"ยืนยัน Void"}</button>`);
+  $("#confirmVoid").onclick=async()=>{
+    const reason=$("#voidReason").value.trim(),password=$("#voidPassword").value,hasChoices=Boolean(document.querySelector("input[name=voidMode]")),voidMode=document.querySelector("input[name=voidMode]:checked")?.value;
+    if(!reason)return notify(review?"กรุณาบันทึกผลการตรวจสอบ":"กรุณาระบุเหตุผลการ Void",true);
+    if(review&&hasChoices&&!voidMode)return notify("กรุณาเลือกว่าสินค้าในรายการนี้จะให้ทำอย่างไร",true);
+    if(!password)return notify("กรุณาใส่รหัสผ่านเพื่อยืนยัน",true);
+    const button=$("#confirmVoid");button.disabled=true;
+    try{const result=await api(`/api/bills/${id}`,{method:"DELETE",body:JSON.stringify({reason,password,...(voidMode?{voidMode}:{})})});closeModal();await refresh();await loadBillHistory();render();notify(result.message);}
+    catch(error){notify(error.message,true);button.disabled=false;if(error.code==="WRONG_PASSWORD"){$("#voidPassword").value="";$("#voidPassword").focus();}}
+  };
+};
+
+// Cancelling a table from its card no longer makes the tab vanish: it becomes a "รอตรวจสอบ" bill in
+// Bill History for the owner (see createTableReviewBill). The old handler was a bare confirm() with
+// no reason — the reason is now required, since it is the first thing the reviewer will read.
+function cancelTableForReviewDialog(id){
+  const table=state.tables.find(item=>String(item.id)===String(id));if(!table)return;
+  const orders=(state.posOrders||[]).filter(order=>order.status==="CONFIRMED"&&order.billingStatus==="UNBILLED"&&String(order.tableId)===String(id)&&order.tableSessionId===table.runtimeSessionId);
+  const productTotal=orders.reduce((sum,order)=>sum+Number(order.total||0),0);
+  openModal(`<h3>ยกเลิกโต๊ะ — ${escapeHtml(table.name)}</h3><p class="muted">ไม่เก็บเงิน · รายการนี้จะไปอยู่ในประวัติบิลสถานะ <b>รอตรวจสอบ</b> ให้เจ้าของร้านตรวจสอบ</p><p>ค่าโต๊ะที่ใช้ไปแล้ว: <b>${money(table.currentPrice||0)}</b><br>สินค้าที่สั่งแล้ว: <b>${money(productTotal)}</b> (${orders.length} ออเดอร์)</p><form id="cancelTableForm" class="form"><label>เหตุผลที่ยกเลิก</label><input name="reason" required><div class="actions"><button class="outline" type="button" id="cancelTableBack">กลับ</button><button class="danger">ยืนยันยกเลิกโต๊ะ</button></div></form>`);
+  $("#cancelTableBack").onclick=closeModal;
+  $("#cancelTableForm").onsubmit=async event=>{
+    event.preventDefault();
+    const reason=new FormData(event.target).get("reason"),button=event.target.querySelector("button.danger");button.disabled=true;
+    try{const result=await api(`/api/tables/${id}/cancel`,{method:"POST",body:JSON.stringify({reason})});closeModal();await refresh();notify(result.warning||"ยกเลิกโต๊ะแล้ว — ส่งเข้ารายการรอตรวจสอบในประวัติบิล",!!result.warning);}
+    catch(error){notify(error.message,true);button.disabled=false;}
+  };
+}
+const bindTableCancelReview=bind;bind=function(){bindTableCancelReview();document.querySelectorAll("[data-cancel]").forEach(button=>button.onclick=()=>cancelTableForReviewDialog(button.dataset.cancel));};
+
+// ---- Product screen: password step-up on a shared shop computer ------------------------------
+// Staff use the shop computer too, so an OWNER/MANAGER session left open must not let whoever sits
+// down edit prices or stock. The screen asks for the password once on the way in; every edit keeps
+// it open for another 10 minutes; 10 idle minutes, or leaving the screen, locks it again. The server
+// enforces the same rule (requireElevation in index.js) — this is the matching UI, not the guard.
+const PRODUCTS_ELEVATION_MS=10*60*1000;
+let productsElevatedUntil=0,productsElevatedFor=null;
+function productsElevated(){return productsElevatedUntil>Date.now()&&productsElevatedFor===state?.user?.userId;}
+function endProductsElevation(){if(!productsElevatedUntil)return;productsElevatedUntil=0;productsElevatedFor=null;api("/api/auth/elevate?scope=products",{method:"DELETE"}).catch(()=>{});}
+const productsBeforeElevation=products;products=function(){
+  if(productsElevated())return productsBeforeElevation();
+  return `<div class="card form products-lock"><h3>🔒 จัดการสินค้า</h3><p class="muted">หน้านี้แก้ไขราคาและสต็อกได้ — กรุณายืนยันรหัสผ่านของ <b>${escapeHtml(state.user.displayName)}</b> ก่อนเข้าใช้งาน<br>ถ้าไม่มีการแก้ไขภายใน 10 นาที หรือออกจากหน้านี้ ระบบจะล็อกหน้านี้อีกครั้ง</p><form id="productsUnlockForm"><label>รหัสผ่าน</label><input id="productsUnlockPassword" name="password" type="password" autocomplete="current-password" required><button>เข้าจัดการสินค้า</button></form></div>`;
+};
+const bindProductsElevation=bind;bind=function(){
+  bindProductsElevation();
+  const form=$("#productsUnlockForm");if(!form)return;
+  form.onsubmit=async event=>{
+    event.preventDefault();
+    const input=$("#productsUnlockPassword"),button=form.querySelector("button");button.disabled=true;
+    try{await api("/api/auth/elevate",{method:"POST",body:JSON.stringify({scope:"products",password:input.value})});productsElevatedUntil=Date.now()+PRODUCTS_ELEVATION_MS;productsElevatedFor=state.user.userId;await loadInventory();render();}
+    catch(error){notify(error.message,true);input.value="";input.focus();button.disabled=false;}
+  };
+};
+// Every successful product write keeps the screen open another 10 minutes (the server does the same
+// on its side); a REAUTH_REQUIRED from the server means it lapsed there first — show the lock again.
+const apiBeforeProductsElevation=api;api=async function(url,options={}){
+  const productWrite=(url.startsWith("/api/products")||url.startsWith("/api/product-categories"))&&options.method&&options.method!=="GET";
+  try{const result=await apiBeforeProductsElevation(url,options);if(productWrite&&productsElevated())productsElevatedUntil=Date.now()+PRODUCTS_ELEVATION_MS;return result;}
+  catch(error){if(error.code==="REAUTH_REQUIRED"){productsElevatedUntil=0;productsElevatedFor=null;if(page==="products"){closeModal();render();}}throw error;}
+};
+// Leaving the screen locks it. Also keeps a half-typed unlock password across the periodic re-render
+// (a table in play triggers a full re-render every 15 s, which would otherwise wipe the field).
+let lastRenderedPageForElevation=null;
+const renderBeforeProductsElevation=render;render=function(...args){
+  if(lastRenderedPageForElevation==="products"&&page!=="products")endProductsElevation();
+  lastRenderedPageForElevation=page;
+  const field=$("#productsUnlockPassword"),typed=field?.value,focused=Boolean(field)&&document.activeElement===field;
+  const result=renderBeforeProductsElevation.apply(this,args);
+  const again=$("#productsUnlockPassword");if(again&&typed)again.value=typed;if(again&&(focused||typed))again.focus();
+  return result;
+};
+setInterval(()=>{if(productsElevatedUntil&&!productsElevated()){productsElevatedUntil=0;productsElevatedFor=null;if(page==="products"){closeModal();render();notify("ไม่มีการแก้ไขสินค้าเกิน 10 นาที — ล็อกหน้าจัดการสินค้าแล้ว กรุณายืนยันรหัสผ่านอีกครั้ง",true);}}},15000);
 
 nav();
