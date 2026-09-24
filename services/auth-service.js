@@ -22,5 +22,39 @@ class AuthService {
   setStatus(id,status,actorId){ const user=this.repository.findById(id); if(!user) throw new Error("User not found"); if(!["ACTIVE","DISABLED"].includes(status)) throw new Error("Invalid status"); user.status=status; user.updatedAt=this.now(); if(status==="ACTIVE"){user.lockedUntil=null;user.failedLoginCount=0;this.audit("ACCOUNT_UNLOCKED",actorId,id);} this.repository.saveUser(user); this.audit(status==="ACTIVE"?"USER_ENABLED":"USER_DISABLED",actorId,id); return this.publicUser(user); }
   changePassword(id,password,actorId,reset=false){ const user=this.repository.findById(id); if(!user) throw new Error("User not found"); user.passwordHash=hashPassword(password); user.passwordChangedAt=this.now(); user.updatedAt=this.now(); user.mustChangePassword=!!reset; user.failedLoginCount=0; user.lockedUntil=null; this.repository.saveUser(user); this.audit(reset?"PASSWORD_RESET":"PASSWORD_CHANGED",actorId,id); return this.publicUser(user); }
   publicUser(user) { const { passwordHash, ...safe } = user; return safe; }
+  // Confirms the password of someone who is ALREADY logged in — for actions that must not be doable
+  // by whoever happens to be standing at a shared shop computer (Void, the product screen). Wrong
+  // attempts count toward the same lockout as failed logins, otherwise this would be an unthrottled
+  // way to guess the owner's password from inside their own open session.
+  verifyCurrentPassword(userId, password) {
+    const user = this.repository.findById(userId), now = Date.now(), policy = this.security();
+    const fail = (code, message) => { const error = new Error(message); error.code = code; throw error; };
+    if (!user) fail("USER_NOT_FOUND", "ไม่พบบัญชีผู้ใช้");
+    if (user.lockedUntil && new Date(user.lockedUntil).getTime() > now) fail("ACCOUNT_LOCKED", "บัญชีถูกล็อกชั่วคราวเพราะใส่รหัสผ่านผิดหลายครั้ง");
+    if (!password || !verifyPassword(String(password), user.passwordHash)) {
+      user.failedLoginCount = (user.failedLoginCount || 0) + 1;
+      if (user.failedLoginCount >= policy.maxLoginAttempts) { user.lockedUntil = new Date(now + policy.lockDurationMinutes * 60 * 1000).toISOString(); this.audit("ACCOUNT_LOCKED", "SYSTEM", user.userId); }
+      this.repository.saveUser(user); this.audit("REAUTH_FAILED", user.userId, user.userId);
+      fail("WRONG_PASSWORD", "รหัสผ่านไม่ถูกต้อง");
+    }
+    if (user.failedLoginCount) { user.failedLoginCount = 0; this.repository.saveUser(user); }
+    return this.publicUser(user);
+  }
+  // Step-up ("sudo mode") scoped to one part of the app: the session stays logged in as usual, but a
+  // scope such as "products" also needs the password re-entered and lapses after `minutes` with no
+  // qualifying action (extendElevation is called on each one). Lives on the in-memory session, so a
+  // logout, expiry or server restart always drops it.
+  elevate(token, password, scope, minutes) {
+    const session = this.sessions.get(token);
+    if (!session || !this.current(token)) { const error = new Error("Session expired"); error.code = "SESSION_EXPIRED"; throw error; }
+    this.verifyCurrentPassword(session.userId, password);
+    const until = Date.now() + minutes * 60 * 1000;
+    session.elevation = { ...(session.elevation || {}), [scope]: until };
+    this.audit("REAUTH_SUCCESS", session.userId, session.userId, { scope });
+    return { scope, elevatedUntil: new Date(until).toISOString() };
+  }
+  isElevated(token, scope) { const until = this.sessions.get(token)?.elevation?.[scope]; return Boolean(until && until > Date.now()); }
+  extendElevation(token, scope, minutes) { if (this.isElevated(token, scope)) this.sessions.get(token).elevation[scope] = Date.now() + minutes * 60 * 1000; }
+  dropElevation(token, scope) { const session = this.sessions.get(token); if (session?.elevation) delete session.elevation[scope]; }
 }
 module.exports = { AuthService, hashPassword, verifyPassword, assertPasswordPolicy, PASSWORD_POLICY };

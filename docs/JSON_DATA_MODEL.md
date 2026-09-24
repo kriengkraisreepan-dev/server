@@ -90,3 +90,13 @@ Bills gain `saleSource: "SEAT"` alongside `TABLE`/`WALK_IN`/`LEGACY`, plus a `se
 ## Resuming or cancelling a stuck "awaiting_payment" bill
 
 Every checkout (table, walk-in, seat) can leave a bill sitting `awaiting_payment` with a real pending payment record if the confirmation dialog is closed, the page is refreshed, or the customer walks off before paying. `POST /api/bills/:id/reopen` is the general-purpose undo for this: it cancels any pending payments on the bill, releases a held coupon, reactivates the table's session (or restores an `occupied` seat) and returns its POS orders to `UNBILLED`, then voids the bill with a reason. It is the same `reopenUnpaidBill` helper the create-bill routes already called automatically when payment creation itself failed outright (no payment record ever existed) — the new route additionally handles the more common case where a payment record *does* exist but nobody ever confirmed it. Resuming (rather than cancelling) needs no new endpoint: `GET /api/bills/:id` already returns `payments[]`, so a client can find the pending one and call the ordinary `POST /api/payments/:id/confirm` on it.
+
+## "pending_review" bills — a tab cancelled from its card
+
+Cancelling a table (`POST /api/tables/:id/cancel`) or an occupied seat (`POST /api/seats/:id/cancel`) from its card used to make the tab vanish: a table's confirmed orders were left `UNBILLED` against a cancelled session that no checkout could ever reach again, and a seat's were restocked immediately — neither left anything in Bill History. The tab now becomes a bill with `status: "pending_review"` instead, created through the same `createBillDraft` path as every other bill, carrying:
+
+- the full value of what was cancelled — for a table, the time used so far priced exactly as a checkout would (`playAmount`) plus its products (`foodAmount`); for a seat, its products;
+- `reviewReason` (what the person cancelling typed), `reviewSource` (`TABLE_CANCEL` or `SEAT_CANCEL`), `cancelledAt`, `cancelledBy`; a seat's nickname is kept as `memberName`;
+- `posOrderIds` — those orders are marked `BILLED` against it, so they are accounted for rather than orphaned.
+
+Nothing is collected and nothing is restocked at cancel time. The owner closes the item out with the ordinary password-gated Void, whose restock / write-off choice records what actually happened to the goods (deciding at cancel time too would restock twice). Until then it is non-terminal, so it stays in the working set and on the default Bill History view. Reports count `paid` bills only, so a pending-review bill is never revenue. Bill History filters on it like any other status (`GET /api/bills?status=pending_review`).

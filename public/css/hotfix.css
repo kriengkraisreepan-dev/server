@@ -113,5 +113,15 @@ select.col-filter{padding:6px 4px}
 .table.occupied{border-color:var(--green)}
 /* A stuck/pending payment (table or seat) gets its own amber look so it stands out from "playing"
    or "occupied" — it needs staff attention (pay it or cancel it), not just informational. */
-.badge.awaiting_payment{background:#854d0e}
+.badge.awaiting_payment{background:#c2410c;color:#fff}
 .table.awaiting_payment{border-color:var(--gold)}
+/* Bill status colours, readable at a glance in Bill History: ชำระแล้ว green, รอชำระ orange (above),
+   ยกเลิก red, รอตรวจสอบ purple. "paid"/"void"/"pending_review" are bill-only statuses, so these
+   never collide with the table/seat status badges that share the .badge class. */
+.badge.paid{background:#15803d;color:#fff}
+.badge.void{background:#b91c1c;color:#fff}
+.badge.pending_review{background:#7e22ce;color:#fff}
+.review-note{color:#d8b4fe}
+#billsTable .badge{white-space:nowrap}
+button.review{background:#7e22ce;color:#fff;border-color:#7e22ce}
+.products-lock{max-width:460px}
