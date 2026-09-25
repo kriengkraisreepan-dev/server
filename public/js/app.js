@@ -2032,6 +2032,41 @@ const settingsSeats=settings;settings=function(){
   return base+seatZonesPanel();
 };
 
+// One shared passcode, separate from anyone's login password, gating the product screen and Void —
+// OWNER-only to view or change (a MANAGER still types it to get past those two gates, same as
+// everyone else, but never sees whether it's set or gets to replace it).
+function managerPasscodePanel(){
+  const info=managerPasscodeInfo||{isSet:false,mustChange:false,setAt:null};
+  const nag=info.mustChange?`<p class="wizard-status warning">รหัสผู้จัดการถูกรีเซ็ตฉุกเฉินเป็นค่าเริ่มต้น (00000000) — เปลี่ยนเป็นรหัสใหม่ด้วยแบบฟอร์มนี้โดยเร็ว</p>`:"";
+  const status=info.isSet?`<p class="muted">ตั้งไว้แล้ว${info.setAt?` (${new Date(info.setAt).toLocaleString("th-TH")})`:""}</p>`:`<p class="muted">ยังไม่ได้ตั้ง — หน้าจัดการสินค้าและ Void จะยังไม่ถามรหัสจนกว่าจะตั้งที่นี่</p>`;
+  return `<div class="card form" style="margin-top:18px"><h3>รหัสผู้จัดการ (จัดการสินค้า / Void บิล)</h3><p class="muted">รหัสเดียวใช้ร่วมกันทั้งร้าน แยกจากรหัสผ่านล็อกอินของแต่ละคน — คอมพิวเตอร์ร้านมีคนอื่นใช้งานด้วย รหัสนี้กันไม่ให้คนที่ไม่รู้รหัสจัดการสินค้าหรือ Void บิลได้ แม้จะล็อกอินอยู่</p>${nag}${status}<form id="managerPasscodeForm">${info.isSet?`<label>รหัสผู้จัดการเดิม</label><input name="currentPasscode" type="password" autocomplete="off" required>`:""}<label>รหัสผู้จัดการใหม่ (อย่างน้อย 8 ตัว)</label><input name="newPasscode" type="password" autocomplete="off" required minlength="8"><label>ยืนยันรหัสใหม่</label><input name="confirmPasscode" type="password" autocomplete="off" required minlength="8"><button>${info.isSet?"เปลี่ยนรหัสผู้จัดการ":"ตั้งรหัสผู้จัดการ"}</button></form></div>`;
+}
+let managerPasscodeInfo=null;
+async function loadManagerPasscodeInfo(){try{managerPasscodeInfo=await api("/api/manager-passcode/status");}catch{managerPasscodeInfo=null;}}
+const settingsManagerPasscode=settings;settings=function(){
+  const base=settingsManagerPasscode();
+  if(state.user.role!=="OWNER"||settingsTabView!=="general")return base;
+  return base+managerPasscodePanel();
+};
+const bindManagerPasscode=bind;bind=function(){
+  bindManagerPasscode();
+  const form=$("#managerPasscodeForm");if(!form)return;
+  form.onsubmit=async event=>{
+    event.preventDefault();
+    const data=Object.fromEntries(new FormData(form)),button=form.querySelector("button");
+    if(data.newPasscode!==data.confirmPasscode)return notify("รหัสผู้จัดการใหม่ทั้งสองช่องไม่ตรงกัน",true);
+    button.disabled=true;
+    try{await api("/api/manager-passcode",{method:"PUT",body:JSON.stringify(data)});await loadManagerPasscodeInfo();render();notify("บันทึกรหัสผู้จัดการแล้ว");}
+    catch(error){notify(error.message,true);button.disabled=false;}
+  };
+};
+// Loaded once the Settings page is actually opened by an OWNER — not part of the shared /api/state
+// poll everyone gets, since it is OWNER-only information.
+const navManagerPasscode=nav;nav=function(){
+  navManagerPasscode();
+  document.querySelectorAll('aside button[data-page="settings"]').forEach(button=>{const original=button.onclick;button.onclick=async()=>{if(state?.user?.role==="OWNER")await loadManagerPasscodeInfo();await original();};});
+};
+
 const bindSeats=bind;bind=function(){
   bindSeats();
   document.querySelectorAll("[data-seat-order]").forEach(button=>button.onclick=()=>seatOrderDialog(button.dataset.seatOrder));
@@ -2150,15 +2185,17 @@ voidBillDialog=function(id){
   const review=bill.status==="pending_review";
   const choices=review?voidModeChoices(bill).replace(/\schecked(?=\s)/g,""):voidModeChoices(bill);
   const intro=review?`<p>ยกเลิกจาก${bill.reviewSource==="SEAT_CANCEL"?"โซนที่นั่ง":"การ์ดโต๊ะ"} <b>${escapeHtml(bill.tableName)}</b>${bill.memberName&&bill.memberName!=="ลูกค้าทั่วไป"?` (${escapeHtml(bill.memberName)})`:""}<br>ยอดที่ไม่ได้เก็บเงิน: <b>${money(bill.total)}</b>${Number(bill.playAmount)?` (ค่าโต๊ะ ${money(bill.playAmount)} · สินค้า ${money(bill.foodAmount)})`:""}<br>เหตุผลที่แจ้งตอนยกเลิก: ${escapeHtml(bill.reviewReason||"-")}</p>`:`<p class="muted">ข้อมูลบิลและการชำระจะไม่ถูกลบ</p>`;
-  openModal(`<h3>${review?"ตรวจสอบและปิดรายการ":"Void บิล"} ${escapeHtml(bill.receiptNumber||bill.number)}</h3>${intro}${choices}<label>${review?"บันทึกผลการตรวจสอบ":"เหตุผลการ Void"}</label><textarea id="voidReason" required></textarea><label>รหัสผ่านบัญชีของคุณ (${escapeHtml(state.user.displayName)})</label><input id="voidPassword" type="password" autocomplete="current-password" required><button class="danger" id="confirmVoid">${review?"ยืนยันปิดรายการ":"ยืนยัน Void"}</button>`);
+  const passcodeSet=state.managerPasscodeSet;
+  const passcodeField=passcodeSet?`<label>รหัสผู้จัดการ</label><input id="voidPassword" type="password" autocomplete="off" required>`:`<label>รหัสผู้จัดการ</label><p class="muted">ยังไม่ได้ตั้งรหัสผู้จัดการ — ตั้งได้ที่ตั้งค่า → ทั่วไป (ตอนนี้ยังไม่ต้องกรอก)</p>`;
+  openModal(`<h3>${review?"ตรวจสอบและปิดรายการ":"Void บิล"} ${escapeHtml(bill.receiptNumber||bill.number)}</h3>${intro}${choices}<label>${review?"บันทึกผลการตรวจสอบ":"เหตุผลการ Void"}</label><textarea id="voidReason" required></textarea>${passcodeField}<button class="danger" id="confirmVoid">${review?"ยืนยันปิดรายการ":"ยืนยัน Void"}</button>`);
   $("#confirmVoid").onclick=async()=>{
-    const reason=$("#voidReason").value.trim(),password=$("#voidPassword").value,hasChoices=Boolean(document.querySelector("input[name=voidMode]")),voidMode=document.querySelector("input[name=voidMode]:checked")?.value;
+    const reason=$("#voidReason").value.trim(),password=$("#voidPassword")?.value||"",hasChoices=Boolean(document.querySelector("input[name=voidMode]")),voidMode=document.querySelector("input[name=voidMode]:checked")?.value;
     if(!reason)return notify(review?"กรุณาบันทึกผลการตรวจสอบ":"กรุณาระบุเหตุผลการ Void",true);
     if(review&&hasChoices&&!voidMode)return notify("กรุณาเลือกว่าสินค้าในรายการนี้จะให้ทำอย่างไร",true);
-    if(!password)return notify("กรุณาใส่รหัสผ่านเพื่อยืนยัน",true);
+    if(passcodeSet&&!password)return notify("กรุณาใส่รหัสผู้จัดการเพื่อยืนยัน",true);
     const button=$("#confirmVoid");button.disabled=true;
     try{const result=await api(`/api/bills/${id}`,{method:"DELETE",body:JSON.stringify({reason,password,...(voidMode?{voidMode}:{})})});closeModal();await refresh();await loadBillHistory();render();notify(result.message);}
-    catch(error){notify(error.message,true);button.disabled=false;if(error.code==="WRONG_PASSWORD"){$("#voidPassword").value="";$("#voidPassword").focus();}}
+    catch(error){notify(error.message,true);button.disabled=false;if(error.code==="WRONG_PASSCODE"&&$("#voidPassword")){$("#voidPassword").value="";$("#voidPassword").focus();}}
   };
 };
 
@@ -2191,7 +2228,8 @@ function productsElevated(){return productsElevatedUntil>Date.now()&&productsEle
 function endProductsElevation(){if(!productsElevatedUntil)return;productsElevatedUntil=0;productsElevatedFor=null;api("/api/auth/elevate?scope=products",{method:"DELETE"}).catch(()=>{});}
 const productsBeforeElevation=products;products=function(){
   if(productsElevated())return productsBeforeElevation();
-  return `<div class="card form products-lock"><h3>🔒 จัดการสินค้า</h3><p class="muted">หน้านี้แก้ไขราคาและสต็อกได้ — กรุณายืนยันรหัสผ่านของ <b>${escapeHtml(state.user.displayName)}</b> ก่อนเข้าใช้งาน<br>ถ้าไม่มีการแก้ไขภายใน 10 นาที หรือออกจากหน้านี้ ระบบจะล็อกหน้านี้อีกครั้ง</p><form id="productsUnlockForm"><label>รหัสผ่าน</label><input id="productsUnlockPassword" name="password" type="password" autocomplete="current-password" required><button>เข้าจัดการสินค้า</button></form></div>`;
+  const notSetNote=state.managerPasscodeSet?"":`<p class="muted">ยังไม่ได้ตั้งรหัสผู้จัดการ — ตั้งได้ที่ตั้งค่า → ทั่วไป ก่อน ตอนนี้กดปุ่มด้านล่างได้เลยโดยไม่ต้องกรอกอะไร</p>`;
+  return `<div class="card form products-lock"><h3>🔒 จัดการสินค้า</h3><p class="muted">หน้านี้แก้ไขราคาและสต็อกได้ — กรุณายืนยัน<b>รหัสผู้จัดการ</b>ก่อนเข้าใช้งาน (แยกจากรหัสผ่านบัญชีของคุณ)<br>ถ้าไม่มีการแก้ไขภายใน 10 นาที หรือออกจากหน้านี้ ระบบจะล็อกหน้านี้อีกครั้ง</p>${notSetNote}<form id="productsUnlockForm"><label>รหัสผู้จัดการ</label><input id="productsUnlockPassword" name="password" type="password" autocomplete="off" ${state.managerPasscodeSet?"required":""}><button>เข้าจัดการสินค้า</button></form></div>`;
 };
 const bindProductsElevation=bind;bind=function(){
   bindProductsElevation();

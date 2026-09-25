@@ -25,11 +25,11 @@
 | Create/edit/pause coupons, print voucher batches | Yes | Yes | No | No |
 | Check a coupon code against a member (`/api/coupons/validate`) | Yes | Yes | Yes | Yes |
 
-## Password step-up on a shared shop computer
+## The manager passcode — a shared secret, separate from any login
 
-The shop computer is shared, so a logged-in OWNER/MANAGER session can be left open and used by whoever sits down. Two things therefore need the account password typed again even inside an open session, and both are enforced on the server, not only in the UI:
+The shop computer is shared, so a logged-in OWNER/MANAGER session can be left open and used by whoever sits down. If either gate below checked that person's own login password, knowing the login would be enough — so both check a single shop-wide **manager passcode** instead (`ManagerPasscodeService`, `store.managerPasscode`), set from Settings (OWNER only) and never returned to any client. Both checks are enforced on the server, not only in the UI:
 
-- **Product screen** — every product/category/stock write (`requireElevation("products")` in `index.js`) needs a step-up obtained with `POST /api/auth/elevate {scope:"products", password}`. It lasts 10 minutes and each write restarts the clock; leaving the screen drops it (`DELETE /api/auth/elevate?scope=products`), as does logout. Reads are not gated — the POS lists products all day.
-- **Void** — `DELETE /api/bills/:id` requires `password` in the body on every call.
+- **Product screen** — every product/category/stock write (`requireElevation("products")` in `index.js`) needs a step-up obtained with `POST /api/auth/elevate {scope:"products", password}` (`password` here is the manager passcode, not the caller's own). It lasts 10 minutes and each write restarts the clock; leaving the screen drops it (`DELETE /api/auth/elevate?scope=products`), as does logout. Reads are not gated — the POS lists products all day.
+- **Void** — `DELETE /api/bills/:id` requires the manager passcode as `password` in the body on every call.
 
-Wrong passwords at either prompt count toward the same lockout as failed logins (`AuthService#verifyCurrentPassword`), so neither can be used to guess the password from inside an open session.
+A shop that has not set a passcode yet elevates and voids for free (`ManagerPasscodeService#verify` is a no-op until `store.managerPasscode.hash` exists) — this is what makes the passcode optional-but-recommended rather than a breaking change for shops that upgrade before configuring it. Wrong passcodes count toward the same lockout policy as a failed login (`settings.security.maxLoginAttempts`/`lockDurationMinutes`). Forgetting it entirely needs the shop machine itself: `LUCKY_EMERGENCY_RESET_MANAGER_PASSCODE=1` at startup resets it to a known temporary value and flags `mustChange`, mirroring the existing `LUCKY_EMERGENCY_RESET` admin-password reset.

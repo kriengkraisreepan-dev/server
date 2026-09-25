@@ -13,6 +13,7 @@ const { BillHistoryService } = require("./services/bill-history-service");
 const { AuditLogService } = require("./services/audit-log-service");
 const { JsonUserRepository } = require("./repositories/json-user-repository");
 const { AuthService } = require("./services/auth-service");
+const { ManagerPasscodeService } = require("./services/manager-passcode-service");
 const { JsonInventoryRepository } = require("./repositories/json-inventory-repository");
 const { InventoryService } = require("./services/inventory-service");
 const { JsonPosOrderRepository } = require("./repositories/json-pos-order-repository");
@@ -132,6 +133,11 @@ const billHistoryService = new BillHistoryService(billingRepository);
 const auditLogService = new AuditLogService(billingRepository);
 const userRepository = new JsonUserRepository({ getStore: () => store, save });
 const authService = new AuthService(userRepository, () => new Date(), (event, actorId, targetUserId, details = {}) => billingService.audit(event, { actorId, data: { targetUserId, ...details } }), () => settingsService.getSettings().security);
+// Shared passcode, deliberately separate from any one login password — see ManagerPasscodeService.
+// Reuses the same lockout numbers as login itself, so there is one policy to tune, not two.
+const managerPasscodeService = new ManagerPasscodeService({ policy: () => { const security = settingsService.getSettings().security; return { maxAttempts: security.maxLoginAttempts, lockMinutes: security.lockDurationMinutes }; } });
+function managerPasscodeRecord() { if (!store.managerPasscode) store.managerPasscode = { hash: null, setAt: null, failedCount: 0, lockedUntil: null, mustChange: false }; return store.managerPasscode; }
+function managerPasscodeError(res, error) { const status = error.code === "SESSION_EXPIRED" ? 401 : error.code === "VALIDATION_ERROR" ? 400 : 403; res.status(status).json({ error: error.code || "WRONG_PASSCODE", message: error.message }); }
 const inventoryRepository = new JsonInventoryRepository({ getStore: () => store, save, history: historyStore });
 const inventoryService = new InventoryService(inventoryRepository, { audit: (event, actorId, data) => billingService.audit(event, { actorId, data }) });
 inventoryService.normalizeLegacyProducts();
@@ -263,6 +269,10 @@ const emergencyResetRequested = process.env.LUCKY_EMERGENCY_RESET === "1";
 if (!emergencyResetRequested) authService.bootstrap();
 if (emergencyResetRequested) { const reset = authService.emergencyResetAdmin(); console.log(reset ? "Emergency password reset completed for admin.\nLogin:\nUsername: admin\nPassword: 123456789\n\nYou must change password after login." : "Admin account not found.\nEmergency reset skipped."); delete process.env.LUCKY_EMERGENCY_RESET; }
 if (process.env.LUCKY_EMERGENCY_ENABLE_OWNER === "1") { const result=authService.emergencyReactivateOwner(); if(result.status==="reactivated") console.log("Emergency OWNER reactivation completed.\nUsername: admin\nStatus: ACTIVE"); else if(result.status==="not_found") console.log("OWNER account admin not found.\nEmergency reactivation skipped."); else console.error("Emergency reactivation stopped: admin is not an OWNER account."); delete process.env.LUCKY_EMERGENCY_ENABLE_OWNER; }
+// Break-glass path for a forgotten manager passcode — same shape as the two resets above: an
+// environment variable read once at startup, since changing it needs file/process access to the
+// shop machine itself, not just a login. mustChange (surfaced in Settings) is the nag to replace it.
+if (process.env.LUCKY_EMERGENCY_RESET_MANAGER_PASSCODE === "1") { managerPasscodeService.reset(managerPasscodeRecord()); save(); console.log("Emergency manager passcode reset completed.\nTemporary passcode: 00000000\n\nChange it from ตั้งค่า after logging in."); delete process.env.LUCKY_EMERGENCY_RESET_MANAGER_PASSCODE; }
 function tokenFromRequest(req) { return (req.headers.cookie || "").split(";").map(item => item.trim()).find(item => item.startsWith("lucky_session="))?.slice("lucky_session=".length) || req.get("x-session-token") || ""; }
 function actorId(req) { return req.user?.userId || "SYSTEM"; }
 function requireAuth(req, res, next) { const user = authService.current(tokenFromRequest(req)); if (!user) return res.status(401).json({ error: "กรุณาเข้าสู่ระบบ" }); req.user = user; next(); }
@@ -272,7 +282,6 @@ function requirePermission(permission) { return (req, res, next) => { if (!hasPe
 // step-up lasts with no qualifying action; each action restarts the clock.
 const ELEVATION_SCOPES = Object.freeze({ products: 10 });
 function requireElevation(scope) { return (req, res, next) => { const token = tokenFromRequest(req); if (!authService.isElevated(token, scope)) return res.status(403).json({ error: "REAUTH_REQUIRED", message: "หมดเวลาจัดการสินค้า กรุณายืนยันรหัสผ่านอีกครั้ง" }); authService.extendElevation(token, scope, ELEVATION_SCOPES[scope]); next(); }; }
-function reauthError(res, error) { const status = error.code === "SESSION_EXPIRED" ? 401 : 403; res.status(status).json({ error: error.code || "WRONG_PASSWORD", message: error.message }); }
 function requireHardwareAdmin(req, res, next) { if (!["OWNER", "ADMIN"].includes(req.user.role)) return res.status(403).json({ error: "HARDWARE_ACCESS_DENIED", message: "เฉพาะเจ้าของร้านหรือผู้ดูแลระบบเท่านั้น" }); next(); }
 function requireLoopback(req,res,next){const address=String(req.socket.remoteAddress||"").replace(/^::ffff:/,"");if(address!=="::1"&&!address.startsWith("127."))return res.status(403).json({error:"FLASH_LOCAL_ONLY",message:"สั่ง Flash ได้เฉพาะเครื่องเซิร์ฟเวอร์"});const origin=req.get("origin");if(origin){try{const host=new URL(origin).hostname;if(host!=="localhost"&&host!=="::1"&&!host.startsWith("127."))return res.status(403).json({error:"FLASH_ORIGIN_REJECTED",message:"หน้าเว็บนี้ไม่ได้เปิดจากเครื่องเซิร์ฟเวอร์"});}catch{return res.status(403).json({error:"FLASH_ORIGIN_REJECTED"});}}next();}
 function requireMemberManage(req,res,next){if(!["OWNER","MANAGER"].includes(req.user.role))return res.status(403).json({error:"คุณไม่มีสิทธิ์จัดการสมาชิก"});next();}
@@ -434,13 +443,25 @@ app.use(express.json());
 app.post("/api/auth/login", (req, res) => { try { const result = authService.login(req.body?.username, req.body?.password); res.setHeader("Set-Cookie", `lucky_session=${result.token}; HttpOnly; SameSite=Strict; Path=/`); res.json({ user: result.user }); } catch (error) { res.status(401).json({ error: error.message }); } });
 app.post("/api/auth/logout", (req, res) => { authService.logout(tokenFromRequest(req)); res.setHeader("Set-Cookie", "lucky_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"); res.json({ message: "ออกจากระบบแล้ว" }); });
 app.get("/api/auth/me", requireAuth, (req, res) => res.json({ user: req.user }));
-app.post("/api/auth/elevate", requireAuth, (req, res) => { const scope = String(req.body?.scope || ""); if (!ELEVATION_SCOPES[scope]) return res.status(400).json({ error: "INVALID_SCOPE", message: "ไม่รู้จักส่วนที่ขอยืนยันรหัสผ่าน" }); if (scope === "products" && !hasPermission(req.user.role, PERMISSIONS.PRODUCT_MANAGE)) return res.status(403).json({ error: "คุณไม่มีสิทธิ์ใช้งานรายการนี้" }); try { res.json(authService.elevate(tokenFromRequest(req), req.body?.password, scope, ELEVATION_SCOPES[scope])); } catch (error) { reauthError(res, error); } });
+// Verifies the shared manager passcode, not the caller's own login password — see
+// ManagerPasscodeService for why. A shop that has not set one yet elevates for free (verify() is a
+// no-op until store.managerPasscode.hash exists), matching how it already worked before this passcode
+// existed, so upgrading never locks anyone out of a screen that worked yesterday.
+app.post("/api/auth/elevate", requireAuth, (req, res) => { const scope = String(req.body?.scope || ""); if (!ELEVATION_SCOPES[scope]) return res.status(400).json({ error: "INVALID_SCOPE", message: "ไม่รู้จักส่วนที่ขอยืนยันรหัสผ่าน" }); if (scope === "products" && !hasPermission(req.user.role, PERMISSIONS.PRODUCT_MANAGE)) return res.status(403).json({ error: "คุณไม่มีสิทธิ์ใช้งานรายการนี้" }); try { managerPasscodeService.verify(managerPasscodeRecord(), req.body?.password); save(); res.json(authService.markElevated(tokenFromRequest(req), scope, ELEVATION_SCOPES[scope])); } catch (error) { save(); managerPasscodeError(res, error); } });
 // Leaving the product screen ends the step-up there and then — otherwise someone else could sit
 // down and walk straight back in for the rest of the ten minutes.
 app.delete("/api/auth/elevate", requireAuth, (req, res) => { authService.dropElevation(tokenFromRequest(req), String(req.query.scope || req.body?.scope || "")); res.json({ dropped: true }); });
+// Never returns the hash — only whether one is set and whether it still needs changing (after an
+// emergency reset). Restricted to OWNER: a MANAGER can be asked to type the passcode, same as
+// everyone else, but does not get to see its configuration state or change it.
+// requireAuth is explicit here (not implied by requirePermission) because these two routes are
+// registered before the blanket `app.use("/api", requireAuth, ...)` further down — same reason the
+// /api/auth/elevate routes just above chain it themselves.
+app.get("/api/manager-passcode/status", requireAuth, requirePermission(PERMISSIONS.SETTINGS_MANAGE), (req, res) => { const record = managerPasscodeRecord(); res.json({ isSet: managerPasscodeService.isSet(record), mustChange: Boolean(record.mustChange), setAt: record.setAt }); });
+app.put("/api/manager-passcode", requireAuth, requirePermission(PERMISSIONS.SETTINGS_MANAGE), (req, res) => { try { managerPasscodeService.set(managerPasscodeRecord(), req.body?.newPasscode, req.body?.currentPasscode); save(); res.json({ message: "ตั้งรหัสผู้จัดการแล้ว" }); } catch (error) { save(); managerPasscodeError(res, error); } });
 app.get("/api/session/status", requireAuth, (req,res)=>res.json(authService.sessionStatus(tokenFromRequest(req))));
 app.patch("/api/session/refresh", requireAuth, (req,res)=>{try{res.json(authService.refreshSession(tokenFromRequest(req),actorId(req)));}catch(error){res.status(401).json({error:error.message});}});
-app.get("/api/state", requireAuth, async (req, res) => { await reservationService.processDue(); res.json({ settings: settingsService.getSettings(), tables: store.tables.map(enrichTable), seatTables: (store.seatTables || []).map(enrichSeat), members: store.members, products: inventoryService.listProducts({ pageSize: 1000 }, req.user.role).items, posOrders: store.posOrders || [], bills: store.bills, payments: store.payments, reservations: reservationService.list(), reservationDeposits: reservationDepositService.list(), reservationDashboard: { ...reservationService.dashboard(), ...depositSettlementService.dashboard() }, waitingReservations: reservationService.waitingWithTable(), user: req.user }); });
+app.get("/api/state", requireAuth, async (req, res) => { await reservationService.processDue(); res.json({ settings: settingsService.getSettings(), managerPasscodeSet: managerPasscodeService.isSet(managerPasscodeRecord()), managerPasscodeMustChange: Boolean(managerPasscodeRecord().mustChange), tables: store.tables.map(enrichTable), seatTables: (store.seatTables || []).map(enrichSeat), members: store.members, products: inventoryService.listProducts({ pageSize: 1000 }, req.user.role).items, posOrders: store.posOrders || [], bills: store.bills, payments: store.payments, reservations: reservationService.list(), reservationDeposits: reservationDepositService.list(), reservationDashboard: { ...reservationService.dashboard(), ...depositSettlementService.dashboard() }, waitingReservations: reservationService.waitingWithTable(), user: req.user }); });
 // No-login table-status view for customers checking availability from their own phone (e.g. a QR
 // code / LINE rich-menu link, or a TV in the shop). Deliberately exposes only these 4 fields —
 // never price, member identity, or revenue. See public/status.html and public-table-status-route.test.js.
@@ -857,9 +878,9 @@ app.post("/api/payments/:id/confirm", requirePermission(PERMISSIONS.PAYMENT_CONF
 app.post("/api/payments/:id/cancel", (req, res) => { try { res.json(paymentService.cancelPayment(req.params.id)); } catch (error) { res.status(409).json({ error: error.message }); } });
 const BILL_VOID_MODES = ["CANCEL_RESTORE_STOCK", "RETURN_TO_TAB", "CANCEL_KEEP_STOCK"];
 app.delete("/api/bills/:id", requirePermission(PERMISSIONS.BILL_VOID), (req, res) => { try { const bill = billingRepository.findBill(req.params.id); if (!bill) return res.status(404).json({ error: "ไม่พบบิลที่ต้องการยกเลิก" });
-  // Every Void needs the account password again, checked here rather than only in the dialog: the
-  // shop computer is shared, and an OWNER/MANAGER session left open must not let someone else void.
-  try { authService.verifyCurrentPassword(req.user.userId, req.body?.password); } catch (error) { return reauthError(res, error); }
+  // Every Void needs the shared manager passcode again, checked here rather than only in the
+  // dialog: the shop computer is shared, and an OWNER/MANAGER's own login is not this secret.
+  try { managerPasscodeService.verify(managerPasscodeRecord(), req.body?.password); } catch (error) { save(); return managerPasscodeError(res, error); }
   // Older clients (and any bill with no POS orders) send no mode at all; keep the historical
   // behaviour for them rather than making the field mandatory.
   const voidMode = req.body?.voidMode || "CANCEL_RESTORE_STOCK";
