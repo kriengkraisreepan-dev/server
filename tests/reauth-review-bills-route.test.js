@@ -26,7 +26,7 @@ async function boot(t, prefix) {
   return { base, owner, call, addUser };
 }
 
-test("the product screen's edits need the password re-entered, and leaving it ends that", async t => {
+test("the product screen's edits need a step-up, and leaving it ends that (no manager passcode set yet, so any value works)", async t => {
   const { owner, call, addUser } = await boot(t, "lucky-reauth-products-");
 
   let response = await call(owner, "PATCH", "/api/products/p-water", { price: 20 });
@@ -35,11 +35,9 @@ test("the product screen's edits need the password re-entered, and leaving it en
   // Reading is untouched — the POS screen lists products all day without any re-auth.
   assert.equal((await call(owner, "GET", "/api/products?pageSize=10")).status, 200);
 
-  response = await call(owner, "POST", "/api/auth/elevate", { scope: "products", password: "nope" });
-  assert.equal(response.status, 403);
-  assert.equal((await response.json()).error, "WRONG_PASSWORD");
-
-  response = await call(owner, "POST", "/api/auth/elevate", { scope: "products", password: "123456789" });
+  // No manager passcode has been set up yet, so elevating is permissive — an upgrade must not lock
+  // anyone out of a screen that worked yesterday before the owner turns this on.
+  response = await call(owner, "POST", "/api/auth/elevate", { scope: "products", password: "anything" });
   assert.equal(response.status, 200);
   assert.ok((await response.json()).elevatedUntil);
   response = await call(owner, "PATCH", "/api/products/p-water", { price: 20 });
@@ -57,8 +55,91 @@ test("the product screen's edits need the password re-entered, and leaving it en
   assert.equal((await call(owner, "POST", "/api/auth/elevate", { scope: "bogus", password: "123456789" })).status, 400);
 });
 
-test("every Void needs the account password, and voiding an old bill never touches the game now on that table", async t => {
+test("once a manager passcode is set, it — not anyone's login password — gates the product screen and Void", async t => {
+  const { owner, call, addUser } = await boot(t, "lucky-manager-passcode-");
+  const manager = await addUser("manager1", "MANAGER");
+
+  // Only OWNER can see or change the passcode's configuration state.
+  let response = await call(manager, "GET", "/api/manager-passcode/status");
+  assert.equal(response.status, 403);
+  response = await call(owner, "GET", "/api/manager-passcode/status");
+  assert.deepEqual(await response.json(), { isSet: false, mustChange: false, setAt: null });
+
+  // Too short is rejected before it ever gets set (reuses the same 8-character policy as a login
+  // password, via hashPassword's own check).
+  response = await call(owner, "PUT", "/api/manager-passcode", { newPasscode: "short" });
+  assert.equal(response.status, 400);
+  assert.equal((await response.json()).error, "VALIDATION_ERROR");
+
+  response = await call(owner, "PUT", "/api/manager-passcode", { newPasscode: "shopwide1" });
+  assert.equal(response.status, 200);
+  assert.equal((await (await call(owner, "GET", "/api/manager-passcode/status")).json()).isSet, true);
+  // /api/state carries only the boolean, never the hash — the Void dialog and product lock screen
+  // need to know whether a passcode is required at all, but MANAGER never sees its configuration.
+  const managerState = await (await call(manager, "GET", "/api/state")).json();
+  assert.equal(managerState.managerPasscodeSet, true);
+  assert.equal(managerState.managerPasscodeMustChange, false);
+  assert.equal(JSON.stringify(managerState).includes("hash"), false, "the passcode hash must never reach a client");
+
+  // The OWNER's own login password no longer has anything to do with this gate.
+  response = await call(owner, "POST", "/api/auth/elevate", { scope: "products", password: "123456789" });
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error, "WRONG_PASSCODE");
+  response = await call(owner, "POST", "/api/auth/elevate", { scope: "products", password: "shopwide1" });
+  assert.equal(response.status, 200);
+
+  // A MANAGER — who cannot see the passcode's status — can still type it correctly to get in.
+  response = await call(manager, "POST", "/api/auth/elevate", { scope: "products", password: "shopwide1" });
+  assert.equal(response.status, 200);
+
+  // Changing it requires the current one — the login password is not a substitute for that either.
+  response = await call(owner, "PUT", "/api/manager-passcode", { currentPasscode: "123456789", newPasscode: "newvalue1" });
+  assert.equal(response.status, 403);
+  assert.equal((await response.json()).error, "WRONG_PASSCODE");
+  response = await call(owner, "PUT", "/api/manager-passcode", { currentPasscode: "shopwide1", newPasscode: "newvalue1" });
+  assert.equal(response.status, 200);
+  response = await call(owner, "POST", "/api/auth/elevate", { scope: "products", password: "shopwide1" });
+  assert.equal(response.status, 403, "the old passcode stops working the moment it is changed");
+});
+
+test("wrong passcodes lock out after enough attempts, same policy as a login lockout", async t => {
+  const { owner, call } = await boot(t, "lucky-manager-passcode-lockout-");
+  await call(owner, "PUT", "/api/manager-passcode", { newPasscode: "shopwide1" });
+  for (let i = 0; i < 5; i += 1) assert.equal((await call(owner, "POST", "/api/auth/elevate", { scope: "products", password: "wrong" })).status, 403);
+  const locked = await call(owner, "POST", "/api/auth/elevate", { scope: "products", password: "shopwide1" });
+  assert.equal(locked.status, 403);
+  assert.equal((await locked.json()).error, "LOCKED", "even the right passcode is refused once locked");
+});
+
+test("an emergency reset flags the passcode as needing to be changed", async t => {
+  const root = path.resolve(__dirname, "..");
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "lucky-manager-passcode-reset-"));
+  t.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
+  const port = 39680 + Math.floor(Math.random() * 90), base = `http://127.0.0.1:${port}`;
+  let child = spawn(process.execPath, ["index.js"], { cwd: root, env: { ...process.env, PORT: String(port), LUCKY_DATA_DIR: dataDir }, stdio: "ignore" });
+  t.after(() => child.kill());
+  for (let i = 0; i < 100; i += 1) { try { if ((await fetch(`${base}/api/state`)).status === 401) break; } catch {} await new Promise(resolve => setTimeout(resolve, 50)); if (i === 99) throw new Error("server did not start"); }
+  let login = await fetch(`${base}/api/auth/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "admin", password: "123456789" }) });
+  const headers = { Cookie: login.headers.get("set-cookie").split(";")[0], "Content-Type": "application/json" };
+  await fetch(`${base}/api/manager-passcode`, { method: "PUT", headers, body: JSON.stringify({ newPasscode: "shopwide1" }) });
+  // Same restart pattern as tests/business-day-cutoff.test.js: kill, a short pause for the OS to
+  // release the port, then restart on it (the store.json in dataDir is what needs to persist).
+  child.kill();
+  await new Promise(resolve => setTimeout(resolve, 200));
+  child = spawn(process.execPath, ["index.js"], { cwd: root, env: { ...process.env, PORT: String(port), LUCKY_DATA_DIR: dataDir, LUCKY_EMERGENCY_RESET_MANAGER_PASSCODE: "1" }, stdio: "ignore" });
+  t.after(() => child.kill());
+  for (let i = 0; i < 100; i += 1) { try { if ((await fetch(`${base}/api/state`)).status === 401) break; } catch {} await new Promise(resolve => setTimeout(resolve, 50)); if (i === 99) throw new Error("server did not restart"); }
+  login = await fetch(`${base}/api/auth/login`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ username: "admin", password: "123456789" }) });
+  const freshHeaders = { Cookie: login.headers.get("set-cookie").split(";")[0], "Content-Type": "application/json" };
+  const status = await (await fetch(`${base}/api/manager-passcode/status`, { headers: freshHeaders })).json();
+  assert.equal(status.mustChange, true);
+  const elevate = await fetch(`${base}/api/auth/elevate`, { method: "POST", headers: freshHeaders, body: JSON.stringify({ scope: "products", password: "00000000" }) });
+  assert.equal(elevate.status, 200, "the known temporary value works until the owner changes it");
+});
+
+test("every Void needs the manager passcode, and voiding an old bill never touches the game now on that table", async t => {
   const { owner, call } = await boot(t, "lucky-reauth-void-");
+  await call(owner, "PUT", "/api/manager-passcode", { newPasscode: "shopwide1" });
 
   // Customer A plays and pays.
   let response = await call(owner, "POST", "/api/tables/1/start", {});
@@ -71,12 +152,14 @@ test("every Void needs the account password, and voiding an old bill never touch
 
   response = await call(owner, "DELETE", `/api/bills/${paid.bill.id}`, { reason: "ทดสอบ" });
   assert.equal(response.status, 403);
-  assert.equal((await response.json()).error, "WRONG_PASSWORD", "no password, no Void");
+  assert.equal((await response.json()).error, "WRONG_PASSCODE", "no passcode, no Void");
+  response = await call(owner, "DELETE", `/api/bills/${paid.bill.id}`, { reason: "ทดสอบ", password: "123456789" });
+  assert.equal(response.status, 403, "the owner's own login password is not the Void passcode");
   response = await call(owner, "DELETE", `/api/bills/${paid.bill.id}`, { reason: "ทดสอบ", password: "wrong" });
   assert.equal(response.status, 403);
   assert.equal((await (await call(owner, "GET", `/api/bills/${paid.bill.id}`)).json()).bill.status, "paid", "a refused Void changes nothing");
 
-  response = await call(owner, "DELETE", `/api/bills/${paid.bill.id}`, { reason: "คิดเงินผิด", password: "123456789" });
+  response = await call(owner, "DELETE", `/api/bills/${paid.bill.id}`, { reason: "คิดเงินผิด", password: "shopwide1" });
   assert.equal(response.status, 200);
   const state = await (await call(owner, "GET", "/api/state")).json();
   const table = state.tables.find(item => item.id === 1);

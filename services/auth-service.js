@@ -41,17 +41,25 @@ class AuthService {
     return this.publicUser(user);
   }
   // Step-up ("sudo mode") scoped to one part of the app: the session stays logged in as usual, but a
-  // scope such as "products" also needs the password re-entered and lapses after `minutes` with no
+  // scope such as "products" also needs a secret re-entered and lapses after `minutes` with no
   // qualifying action (extendElevation is called on each one). Lives on the in-memory session, so a
-  // logout, expiry or server restart always drops it.
-  elevate(token, password, scope, minutes) {
+  // logout, expiry or server restart always drops it. markElevated is the primitive (raise the flag,
+  // no opinion on how it was earned) — elevate() is the per-user-password flavor built on it; a scope
+  // gated by a different secret (e.g. the shared manager passcode) verifies that itself and calls
+  // markElevated directly, which is what index.js does for "products" and Void today.
+  markElevated(token, scope, minutes) {
     const session = this.sessions.get(token);
     if (!session || !this.current(token)) { const error = new Error("Session expired"); error.code = "SESSION_EXPIRED"; throw error; }
-    this.verifyCurrentPassword(session.userId, password);
     const until = Date.now() + minutes * 60 * 1000;
     session.elevation = { ...(session.elevation || {}), [scope]: until };
     this.audit("REAUTH_SUCCESS", session.userId, session.userId, { scope });
     return { scope, elevatedUntil: new Date(until).toISOString() };
+  }
+  elevate(token, password, scope, minutes) {
+    const session = this.sessions.get(token);
+    if (!session || !this.current(token)) { const error = new Error("Session expired"); error.code = "SESSION_EXPIRED"; throw error; }
+    this.verifyCurrentPassword(session.userId, password);
+    return this.markElevated(token, scope, minutes);
   }
   isElevated(token, scope) { const until = this.sessions.get(token)?.elevation?.[scope]; return Boolean(until && until > Date.now()); }
   extendElevation(token, scope, minutes) { if (this.isElevated(token, scope)) this.sessions.get(token).elevation[scope] = Date.now() + minutes * 60 * 1000; }
