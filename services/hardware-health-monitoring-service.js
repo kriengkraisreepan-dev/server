@@ -14,8 +14,8 @@ class HardwareHealthMonitoringService {
   // `reconcileRelays(deviceId, { reason })` is HardwareService's relay reconciler. It is injected
   // rather than imported so this service keeps knowing nothing about tables or billing; see the
   // call in perform() for why a health poll is the right place to run it.
-  constructor({ repository, driver, audit = () => {}, log = () => {}, now = () => new Date(), timeoutMs = 5000, offlineThreshold = 3, staleMs = 90000, backgroundIntervalMs = 60000, manualCooldownMs = 3000, maxConcurrent = 4, enabled = true, reconcileRelays = null } = {}) {
-    Object.assign(this, { repository, driver, audit, log, now, timeoutMs, offlineThreshold, staleMs, backgroundIntervalMs, manualCooldownMs, maxConcurrent, enabled, reconcileRelays });
+  constructor({ repository, driver, audit = () => {}, log = () => {}, now = () => new Date(), timeoutMs = 5000, offlineThreshold = 3, staleMs = 90000, backgroundIntervalMs = 60000, manualCooldownMs = 3000, maxConcurrent = 4, enabled = true, reconcileRelays = null, onUnreachable = null, healAfterFailures = 2 } = {}) {
+    Object.assign(this, { repository, driver, audit, log, now, timeoutMs, offlineThreshold, staleMs, backgroundIntervalMs, manualCooldownMs, maxConcurrent, enabled, reconcileRelays, onUnreachable, healAfterFailures });
     this.inFlight = new Map();
     this.manualChecks = new Map();
     this.timer = null;
@@ -111,6 +111,12 @@ class HardwareHealthMonitoringService {
       const event = mismatch ? "HARDWARE_IDENTITY_MISMATCH" : error.code === "DEVICE_TIMEOUT" ? "HARDWARE_HEALTH_CHECK_TIMEOUT" : "HARDWARE_STATUS_CHANGED";
       this.log(mismatch ? "ERROR" : "WARN", event, { hardwareRecordId: device.id, deviceId: device.deviceId, ip: device.ipAddress, result: error.code, durationMs: Math.max(0, completed.getTime() - started), previousStatus, newStatus: status, failureCount: failures });
       if (status !== previousStatus || mismatch) this.audit(event, "SYSTEM", { deviceId: device.id, controllerDeviceId: device.deviceId, result: error.code, previousStatus, newStatus: status, failureCount: failures });
+      // A dead address is the usual face of a DHCP change, so ask the healer to go and look for the box.
+      // Two failures in a row (not one) so a single dropped packet never starts a network sweep.
+      if (this.onUnreachable && (mismatch || failures >= this.healAfterFailures)) {
+        try { this.onUnreachable(updated || device, { errorCode: error.code, failures }); }
+        catch (hookError) { this.log("ERROR", "HARDWARE_UNREACHABLE_HOOK_FAILED", { hardwareRecordId: device.id, errorCode: hookError.code || "HOOK_FAILED" }); }
+      }
       return this.publicDevice(updated);
     }
   }
