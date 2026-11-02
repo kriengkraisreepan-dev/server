@@ -46,6 +46,7 @@ const { HardwareController } = require("./controllers/hardware-controller");
 const { HardwareSetupWizardService } = require("./services/hardware-setup-wizard-service");
 const { UdpDiscoveryAdapter, MdnsDiscoveryAdapter } = require("./drivers/hardware-discovery-adapters");
 const { HardwareDiscoveryService } = require("./services/hardware-discovery-service");
+const { HardwareIpHealerService } = require("./services/hardware-ip-healer-service");
 const { HardwareWifiProvisioningService } = require("./services/hardware-wifi-provisioning-service");
 const { HardwareSetupModeService } = require("./services/hardware-setup-mode-service");
 const { HardwareWiringAssistantService } = require("./services/hardware-wiring-assistant-service");
@@ -156,6 +157,7 @@ const hardwareService = new HardwareService(hardwareRepository, relayControllerD
   log: operationalLog
 });
 const hardwareController = new HardwareController(hardwareService);
+let hardwareIpHealerService = null; // built below, once discovery exists; the monitor only calls it later
 const hardwareHealthMonitoringService = new HardwareHealthMonitoringService({
   repository: hardwareRepository,
   driver: relayControllerDriver,
@@ -164,6 +166,8 @@ const hardwareHealthMonitoringService = new HardwareHealthMonitoringService({
   // The controller turns every relay off when it boots, so a restart leaves the shop dark with no
   // way for the box to know better. The health poll is where we notice and put the lights back.
   reconcileRelays: (deviceId, options) => hardwareService.reconcileRelayStates(deviceId, options),
+  // A dead address usually means the router handed the box a new one; let the healer go and find it.
+  onUnreachable: device => hardwareIpHealerService?.request(device),
   enabled: process.env.LUCKY_HARDWARE_HEALTH_POLLING !== "0"
 });
 const hardwareSetupWizardService = new HardwareSetupWizardService({
@@ -180,6 +184,16 @@ const hardwareDiscoveryService = new HardwareDiscoveryService({
   udp: new UdpDiscoveryAdapter(),
   enabled: () => settingsService.getSettings().hardware.discoveryEnabled,
   log: operationalLog
+});
+hardwareIpHealerService = new HardwareIpHealerService({
+  discovery: hardwareDiscoveryService,
+  repository: hardwareRepository,
+  audit: (event, actorId, data) => billingService.audit(event, { actorId, data }),
+  log: operationalLog,
+  // Re-check straight away so reconcileRelays puts the table lights back without waiting a minute.
+  afterHeal: id => hardwareHealthMonitoringService.check(id, { manual: true }),
+  // Same switch a person has in Settings for manual discovery, plus an environment kill-switch.
+  enabled: () => process.env.LUCKY_HARDWARE_AUTO_HEAL !== "0" && settingsService.getSettings().hardware.discoveryEnabled
 });
 const hardwareWifiProvisioningService = new HardwareWifiProvisioningService({
   hardwareService,

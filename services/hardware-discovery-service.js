@@ -34,7 +34,10 @@ class HardwareDiscoveryService {
       completedAt: session.completedAt || null, retryable: session.state === STATES.FAILED
     };
   }
-  start(actorId, { updateExisting = true } = {}) {
+  // `deepScan` keeps sweeping the subnet until every saved box has been found, not just until the first
+  // hit; the unattended IP healer needs that because it is looking for one specific, missing box.
+  // `overallTimeoutMs` lets it also ask for a longer budget than a person watching a spinner would.
+  start(actorId, { updateExisting = true, deepScan = false, overallTimeoutMs = this.overallTimeoutMs } = {}) {
     if (!this.enabled()) {
       const error = Error("การค้นหากล่องอัตโนมัติถูกปิดใช้งาน");
       error.code = "HARDWARE_DISCOVERY_DISABLED"; error.status = 404; throw error;
@@ -47,10 +50,18 @@ class HardwareDiscoveryService {
       running: true, controller: new AbortController(), seen: new Set()
     };
     session.updateExisting = updateExisting;
+    session.deepScan = deepScan;
+    session.overallTimeoutMs = overallTimeoutMs;
     this.sessions.set(session.id, session);
     this.log("INFO", "HARDWARE_DISCOVERY_STARTED", { sessionId: session.id, actorId });
-    this.run(session).catch(error => this.fail(session, error));
+    session.done = this.run(session).catch(error => this.fail(session, error));
     return this.publicSession(session);
+  }
+  // Start a session and wait for it to finish; resolves to the final public session either way.
+  async startAndWait(actorId, options) {
+    const started = this.start(actorId, options);
+    await this.sessions.get(started.id).done;
+    return this.get(started.id);
   }
   get(id) {
     this.cleanup();
@@ -78,7 +89,7 @@ class HardwareDiscoveryService {
     return true;
   }
   async run(session) {
-    const timeout = setTimeout(() => { session.timedOut = true; session.controller.abort(); }, this.overallTimeoutMs);
+    const timeout = setTimeout(() => { session.timedOut = true; session.controller.abort(); }, session.overallTimeoutMs);
     timeout.unref?.();
     try {
       const saved = this.repository.list().map(device => ({
@@ -98,7 +109,8 @@ class HardwareDiscoveryService {
         await this.verifyCandidates(session, udp.map(item => ({ ...item, method: "UDP", expectedDeviceId: item.deviceId })));
       }
 
-      if (!session.results.length && !session.controller.signal.aborted) {
+      const foundAll = saved.every(candidate => session.results.some(item => item.deviceId === candidate.expectedDeviceId));
+      if ((!session.results.length || (session.deepScan && !foundAll)) && !session.controller.signal.aborted) {
         this.setState(session, STATES.SEARCHING_SUBNET, "กำลังตรวจสอบอุปกรณ์ในเครือข่าย");
         await this.scanSubnet(session);
       }
@@ -124,7 +136,13 @@ class HardwareDiscoveryService {
         const verified = await this.verify(candidate, session.controller.signal);
         if (candidate.expectedDeviceId &&
             verified.deviceId !== candidate.expectedDeviceId &&
-            verified.previousDeviceId !== candidate.expectedDeviceId) continue;
+            verified.previousDeviceId !== candidate.expectedDeviceId) {
+          // A different box answers at the address we remembered. That happens when two boxes swap
+          // addresses after a router restart; forgetting the address lets the mDNS/UDP stage still
+          // match it to whichever saved record it really belongs to.
+          session.seen.delete(key);
+          continue;
+        }
         this.accept(session, verified, candidate);
       } catch (error) {
         session.errors.push({ method: candidate.method, code: error.code || "DEVICE_NOT_VERIFIED" });
