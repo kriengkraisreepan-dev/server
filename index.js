@@ -47,6 +47,7 @@ const { HardwareSetupWizardService } = require("./services/hardware-setup-wizard
 const { UdpDiscoveryAdapter, MdnsDiscoveryAdapter } = require("./drivers/hardware-discovery-adapters");
 const { HardwareDiscoveryService } = require("./services/hardware-discovery-service");
 const { HardwareIpHealerService } = require("./services/hardware-ip-healer-service");
+const { tunnelGuard, rateLimiter, ttlCache } = require("./infrastructure/public-status-guard");
 const { HardwareWifiProvisioningService } = require("./services/hardware-wifi-provisioning-service");
 const { HardwareSetupModeService } = require("./services/hardware-setup-mode-service");
 const { HardwareWiringAssistantService } = require("./services/hardware-wiring-assistant-service");
@@ -67,6 +68,8 @@ const { HardwareUsbAdoptionService } = require("./services/hardware-usb-adoption
 const { PortableMigrationService } = require("./services/portable-migration-service");
 
 const app = express();
+// Requests that arrive through the Cloudflare Tunnel may reach only the public table-status page.
+app.use(tunnelGuard());
 const PORT = process.env.PORT || 3000;
 const HOST = process.env.LUCKY_HOST || undefined;
 const dataLayout = resolveServerDataLayout();
@@ -479,7 +482,13 @@ app.get("/api/state", requireAuth, async (req, res) => { await reservationServic
 // No-login table-status view for customers checking availability from their own phone (e.g. a QR
 // code / LINE rich-menu link, or a TV in the shop). Deliberately exposes only these 4 fields —
 // never price, member identity, or revenue. See public/status.html and public-table-status-route.test.js.
-app.get("/api/public/tables", (req, res) => { res.json({ shopName: store.settings.shopName || "", items: store.tables.map(table => { const enriched = enrichTable(table); return { id: enriched.id, name: enriched.name, status: enriched.status, elapsedSeconds: enriched.elapsedSeconds || 0 }; }) }); });
+// Anyone on the internet can reach this once the tunnel is up, so it is rate limited per client and the
+// answer is computed at most once every 5 seconds no matter how many phones are looking.
+const publicTablesCache = ttlCache({ ttlMs: Number(process.env.LUCKY_PUBLIC_STATUS_CACHE_MS ?? 5000) });
+app.get("/api/public/tables", rateLimiter({ limit: 30, windowMs: 60 * 1000 }), (req, res) => {
+  res.set("Cache-Control", "public, max-age=5");
+  res.json(publicTablesCache(() => ({ shopName: store.settings.shopName || "", items: store.tables.map(table => { const enriched = enrichTable(table); return { id: enriched.id, name: enriched.name, status: enriched.status, elapsedSeconds: enriched.elapsedSeconds || 0 }; }) })));
+});
 app.use("/api", (req, res, next) => { if (req.path.startsWith("/auth/") || req.path === "/public/tables") return next(); return requireAuth(req, res, next); });
 const reservationError = (res, error) => res.status(error.code === "FORBIDDEN" ? 403 : /not found/i.test(error.message) ? 404 : ["VERSION_CONFLICT","RESERVATION_OPERATION_IN_PROGRESS"].includes(error.code) ? 409 : 400).json({ error: error.code || "RESERVATION_ERROR", message: error.message });
 app.get("/api/reservations", requirePermission(PERMISSIONS.RESERVATION_VIEW), async (req, res) => { try { await reservationService.processDue(); res.json({ items: reservationService.list(req.query), dashboard: reservationService.dashboard() }); } catch (error) { reservationError(res, error); } });

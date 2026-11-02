@@ -2,7 +2,7 @@ const assert = require("assert");
 const fs = require("fs"), os = require("os"), path = require("path");
 const { spawn } = require("child_process");
 const root = path.resolve(__dirname, ".."), dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "lucky-publicstatus-")), port = 37000 + Math.floor(Math.random() * 1000), base = `http://127.0.0.1:${port}`;
-const child = spawn(process.execPath, ["index.js"], { cwd: root, env: { ...process.env, PORT: String(port), LUCKY_DATA_DIR: dataDir }, stdio: "ignore" });
+const child = spawn(process.execPath, ["index.js"], { cwd: root, env: { ...process.env, PORT: String(port), LUCKY_DATA_DIR: dataDir, LUCKY_PUBLIC_STATUS_CACHE_MS: "0" }, stdio: "ignore" });
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function wait(){for(let i=0;i<40;i+=1){try{if((await fetch(`${base}/api/state`)).status===401)return;}catch{}await pause(100);}throw new Error("test server did not start");}
 async function body(response){assert.match(response.headers.get("content-type")||"",/application\/json/);return response.json();}
