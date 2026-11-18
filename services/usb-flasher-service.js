@@ -65,22 +65,45 @@ class UsbFlasherService {
     op.completedAt = new Date().toISOString();
     this.log("FLASH_RECOVERY_VERIFIED", { operationId: op.id, port: op.port, firmwareVersion: op.firmwareVersion, deviceId: op.deviceId, relayCount: op.relayCount, nvsPreservation: op.nvsPreservation });
   }
+  // Who the board on this port is and whether any of its relays is on, or null when it cannot say (not
+  // our firmware, port busy, no transport). The transport opens the port with DTR and RTS off, so
+  // asking does not reset the board.
+  identifyBoard(port) {
+    if (!this.recoveryTransport) return null;
+    try {
+      const identity = this.recoveryTransport.request(port, { command: "IDENTIFY" });
+      if (!identity?.ok || !identity.deviceId) return null;
+      const safety = this.recoveryTransport.request(port, { command: "GET_RELAY_SAFETY" });
+      const activeChannels = safety?.activeChannels || [];
+      return { deviceId: identity.deviceId, relaysOff: Boolean(safety?.ok && safety.safe && !activeChannels.length), activeChannels };
+    } catch { return null; }
+  }
+  // relaySafe decides whether resetting this board would cut a table in play; it may answer true, or
+  // { safe, message } to say which tables are in the way. The board is asked at most once per
+  // operation: esptool resets it between the two checks, and a board that is still booting cannot answer.
+  async assertFlashSafe(board, fallbackMessage) {
+    const identify = () => { if (!("identity" in board)) board.identity = this.identifyBoard(board.port); return board.identity; };
+    const verdict = await this.relaySafe({ port: board.port, identify });
+    if (verdict === true || verdict?.safe === true) return;
+    throw new FlasherError("RELAY_SAFE_STATE_CONFLICT", verdict?.message || fallbackMessage, 409);
+  }
   async start({ mode = "update", port, operationToken, destructiveConfirmation, relayCount }, actorId) {
     if (this.active) throw new FlasherError("FLASH_OPERATION_BUSY", "มีการ Flash กล่องอื่นอยู่", 409);
     this.consumeToken(operationToken, actorId);
     if (!PORT_RE.test(port || "")) throw new FlasherError("COM_PORT_INVALID", "COM Port ไม่ถูกต้อง", 400);
-    if (!await this.relaySafe()) throw new FlasherError("RELAY_SAFE_STATE_CONFLICT", "กรุณาปิด Relay ทุกช่องผ่านขั้นตอนปกติก่อน", 409);
+    const board = { port };
+    await this.assertFlashSafe(board, "กรุณาปิด Relay ทุกช่องผ่านขั้นตอนปกติก่อน");
     if (mode === "new" && destructiveConfirmation !== "ERASE NEW DEVICE") throw new FlasherError("DESTRUCTIVE_CONFIRMATION_REQUIRED", "ต้องยืนยันการติดตั้งกล่องใหม่สองขั้น", 400);
     if(mode==="new"&&![2,4,8].includes(Number(relayCount)))throw new FlasherError("RELAY_COUNT_REQUIRED","กรุณาเลือก Relay Count 2, 4 หรือ 8",400);
     if (!["update", "new", "recover"].includes(mode)) throw new FlasherError("FLASH_MODE_INVALID", "วิธีดำเนินการไม่ถูกต้อง", 400);
-    const operation = this.active = { id: crypto.randomUUID(), actorId, state: "VERIFYING_PACKAGE", mode, port, relayCount:mode==="new"?Number(relayCount):undefined, progress: 5, cancellable: true, startedAt: new Date().toISOString() };
+    const operation = this.active = { id: crypto.randomUUID(), actorId, state: "VERIFYING_PACKAGE", mode, port, board, relayCount:mode==="new"?Number(relayCount):undefined, progress: 5, cancellable: true, startedAt: new Date().toISOString() };
     this.execute(operation, actorId).catch(error => { operation.state = "FAILED"; operation.error = error.code || "FLASH_FAILED"; operation.message = error.message; operation.cancellable = false; this.log("FLASH_FAILED", { operationId: operation.id, port, stage: operation.state, errorCategory: operation.error, exitCode: error.exitCode }); }).finally(() => { this.nvsGenerator?.cleanup?.(operation.id); if (operation.state !== "ENROLLMENT_PENDING") setTimeout(() => { if (this.active?.id === operation.id) this.active = null; }, 300000).unref?.(); });
     return this.public(operation);
   }
   async execute(op, actorId) {
     const pkg = this.packageService.verify(); op.firmwareVersion = pkg.manifest.firmwareVersion; op.releaseChannel = pkg.manifest.releaseChannel;
     op.state = "VALIDATING_DEVICE"; op.progress = 15; await this.inspect(op.port, pkg);
-    if (!await this.relaySafe()) throw new FlasherError("RELAY_SAFE_STATE_CONFLICT", "Relay เปิดขึ้นก่อนเริ่ม Flash", 409);
+    await this.assertFlashSafe(op.board || { port: op.port }, "Relay เปิดขึ้นก่อนเริ่ม Flash");
     if (op.mode === "recover") {
       if (!this.recoveryTransport) throw new FlasherError("USB_RECOVERY_UNAVAILABLE", "ไม่สามารถตรวจสอบงาน Flash เดิมผ่าน USB ได้", 503);
       await this.recoverExistingUpdate(op, pkg);
@@ -142,6 +165,6 @@ class UsbFlasherService {
   current(actorId) { if (!this.active) throw new FlasherError("FLASH_OPERATION_NOT_FOUND", "ไม่มี Flash operation ที่กำลังทำงาน", 404);if(this.active.actorId!==actorId)throw new FlasherError("FLASH_OPERATION_OWNER_MISMATCH","Flash operation นี้เป็นของผู้ดูแลคนอื่น",403);return this.public(this.active); }
   cancel(id, actorId) { const op = this.status(id, actorId); if (!op.cancellable) throw new FlasherError("FLASH_CANCELLATION_UNSAFE", "ไม่สามารถยกเลิกระหว่างเขียน Flash", 409); this.active.state = "CANCELLED"; this.active.cancellable = false; return this.public(this.active); }
   dismiss(id, actorId) { const op=this.status(id,actorId);if(!["COMPLETED","FAILED","CANCELLED","ENROLLMENT_RECOVERY_REQUIRED"].includes(op.state))throw new FlasherError("FLASH_DISMISSAL_UNSAFE","ไม่สามารถปิดงาน Flash ที่ยังทำงานหรือรอ Enrollment อยู่",409);if(this.active?.id===id)this.active=null;return{dismissed:true}; }
-  public(op, { revealSetupCode = true } = {}) { const { pendingEnrollment, actorId, enrollmentExpiryTimer, ...safe } = op;let setupCode;if(revealSetupCode&&op.state==="ENROLLMENT_PENDING"&&pendingEnrollment?.setupCode&&!pendingEnrollment.setupCodeRevealed){setupCode=pendingEnrollment.setupCode;pendingEnrollment.setupCodeRevealed=true;}return { ...safe, setupCode, displayOnce: setupCode ? true : undefined, enrollmentExpiresAt: op.enrollmentExpiresAt ? new Date(op.enrollmentExpiresAt).toISOString() : undefined }; }
+  public(op, { revealSetupCode = true } = {}) { const { pendingEnrollment, actorId, enrollmentExpiryTimer, board, ...safe } = op;let setupCode;if(revealSetupCode&&op.state==="ENROLLMENT_PENDING"&&pendingEnrollment?.setupCode&&!pendingEnrollment.setupCodeRevealed){setupCode=pendingEnrollment.setupCode;pendingEnrollment.setupCodeRevealed=true;}return { ...safe, setupCode, displayOnce: setupCode ? true : undefined, enrollmentExpiresAt: op.enrollmentExpiresAt ? new Date(op.enrollmentExpiresAt).toISOString() : undefined }; }
 }
 module.exports = { UsbFlasherService, PORT_RE };
