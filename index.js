@@ -57,6 +57,7 @@ const { HardwareEnrollmentHandoffService } = require("./services/hardware-enroll
 const { FirmwarePackageService } = require("./services/firmware-package-service");
 const { resolveDevelopmentFirmwarePackage } = require("./services/development-firmware-package-config");
 const { UsbFlasherService } = require("./services/usb-flasher-service");
+const { flashSafetyVerdict } = require("./services/flash-safety");
 const { UsbFlasherLog } = require("./services/usb-flasher-log");
 const { PerDeviceNvsService } = require("./services/per-device-nvs-service");
 const { WindowsComPortProvider } = require("./drivers/windows-com-port-provider");
@@ -221,7 +222,8 @@ const usbFlasherService = new UsbFlasherService({
     mode: developmentFirmwarePackage.mode
   }),
   portProvider: new WindowsComPortProvider(),
-  relaySafe: async () => store.tables.every(table => !["playing", "paused", "awaiting_payment"].includes(table.status)),
+  // Only tables in play that depend on the board being flashed can block it; see flash-safety.js.
+  relaySafe: ({ identify } = {}) => flashSafetyVerdict({ tables: store.tables, devices: hardwareRepository.list(), identify }),
   recoveryTransport: serialRecoveryTransport,
   log: (event, details) => usbFlasherLog.write(event, details),
   nvsGenerator: new PerDeviceNvsService()
