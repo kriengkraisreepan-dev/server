@@ -23,6 +23,9 @@ class ConfigService {
   }
   bool resetToDefaults();
   bool usedRelayCountFallback() const;
+  // True when this boot found the NVS namespace empty (no device id, no API key) and had to write
+  // defaults. A controller that was provisioned earlier and reports this lost its stored settings.
+  bool storageWasEmptyAtBoot() const;
   bool hasUniqueDeviceKey() const;
   bool stageDeviceKey(const String& newKey, const String& transitionId);
   bool commitDeviceKey(const String& transitionId);
@@ -57,6 +60,7 @@ class ConfigService {
   DeviceConfig config_{};
   bool initialized_{false};
   bool usedFallback_{false};
+  bool freshStorage_{false};
   DeviceConfig defaults() const;
 };
 

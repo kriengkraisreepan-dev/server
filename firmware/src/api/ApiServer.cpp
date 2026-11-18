@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <mbedtls/md.h>
 #include "config/DeviceConfig.h"
+#include "health/RestartCause.h"
 #include "lucky/RelayConfig.h"
 #include "utils/ApiJson.h"
 
@@ -136,6 +137,11 @@ void ApiServer::handleHealth() {
   document["relayCount"] = relays_.getRelayCount();
   document["activeRelayCount"] = relays_.getRelayCount();
   document["freeHeapBytes"] = health_.freeHeapBytes();
+  // Why this boot happened. resetReason is the chip's own answer (POWERON, BROWNOUT, TASK_WDT,
+  // PANIC, SW ...); restartCause is only present when the firmware restarted itself on purpose.
+  document["resetReason"] = bootResetReason();
+  if (bootRestartCause()[0] != '\0') document["restartCause"] = bootRestartCause();
+  document["storageEmptyAtBoot"] = config_.storageWasEmptyAtBoot();
   sendSuccess(200, document);
 }
 

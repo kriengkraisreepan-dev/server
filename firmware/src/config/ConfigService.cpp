@@ -59,6 +59,8 @@ bool ConfigService::initialize() {
 
 bool ConfigService::load() {
   if (!initialized_) return false;
+  freshStorage_ = !storage_.hasKey(kApiKeyKey) && !storage_.hasKey(kDeviceIdKey);
+  if (freshStorage_) logger_.warning("STORAGE_EMPTY_AT_BOOT", "NVS holds no device settings; writing defaults");
   if (!storage_.hasKey(kWifiSSIDKey)) storage_.putString(kWifiSSIDKey, LUCKY_BOOTSTRAP_WIFI_SSID);
   if (!storage_.hasKey(kWifiPasswordKey)) storage_.putString(kWifiPasswordKey, LUCKY_BOOTSTRAP_WIFI_PASSWORD);
   if (!storage_.hasKey(kApiKeyKey)) storage_.putString(kApiKeyKey, LUCKY_BOOTSTRAP_API_KEY);
@@ -135,6 +137,7 @@ const DeviceConfig& ConfigService::getConfig() const { return config_; }
 RelayBoardSize ConfigService::getRelayBoardSize() const { return config_.relayBoardSize; }
 std::uint8_t ConfigService::getRelayCount() const { return relayCount(config_.relayBoardSize); }
 bool ConfigService::usedRelayCountFallback() const { return usedFallback_; }
+bool ConfigService::storageWasEmptyAtBoot() const { return freshStorage_; }
 bool ConfigService::hasUniqueDeviceKey() const {
   return !config_.apiKey.isEmpty() && config_.apiKey != LUCKY_BOOTSTRAP_API_KEY;
 }
