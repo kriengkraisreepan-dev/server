@@ -6,6 +6,7 @@
 #include "config/ConfigService.h"
 #include "discovery/DiscoveryService.h"
 #include "health/HealthService.h"
+#include "health/RestartCause.h"
 #include "logging/Logger.h"
 #include "relay/ArduinoGpioDriver.h"
 #include "relay/RelayService.h"
@@ -33,10 +34,30 @@ lucky::ApiServer api(config, relays, auth, health, wifiProvisioning, setupMode, 
 lucky::SerialRecoveryService serialRecovery(Serial, config, relays, wifiProvisioning, setupMode, logger);
 lucky::WatchdogService watchdog(logger);
 
+// A box that has been off the network this long is not coming back by retrying: the Wi-Fi stack
+// can wedge after a router restart, and only a reboot clears it. Nobody can reach it meanwhile, so
+// waiting longer buys nothing.
+constexpr unsigned long kWifiOfflineRestartMs = 10UL * 60UL * 1000UL;
+
+// Restarting turns every relay off, so it is only done when that changes nothing: every relay
+// already off, no setup portal open, no Wi-Fi change half-way through, and Wi-Fi actually set up
+// (a box with no SSID is waiting for enrollment, not stuck).
+void restartIfWifiStuck() {
+  if (wifi.offlineMs() < kWifiOfflineRestartMs) return;
+  if (config.getConfig().wifiSSID.isEmpty() || setupMode.active() || !wifiProvisioning.relaySafe()) return;
+  const String& provisioning = wifiProvisioning.state();
+  if (provisioning != "IDLE" && provisioning != "COMMITTED") return;
+  logger.warning("WIFI_OFFLINE_RESTART", "Wi-Fi unavailable for 10 minutes; restarting controller");
+  lucky::rememberRestartCause(lucky::RestartCause::WifiOffline);
+  Serial.flush();
+  ESP.restart();
+}
+
 }  // namespace
 
 void setup() {
   Serial.begin(115200);
+  lucky::captureBootReset();
 
   // Safe boot invariant: every known relay output is deactivated before Wi-Fi or any network
   // activity. config.initialize() (a local NVS read, no network involved) now has to run first
@@ -49,7 +70,12 @@ void setup() {
   relays.safeInitializeAllPins();
   logger.info("BOOT", "Lucky Relay Controller boot started");
   logger.info("FIRMWARE_VERSION", lucky::defaults::kFirmwareVersion);
-  if (esp_reset_reason() != ESP_RST_POWERON) logger.warning("RESTART_DETECTED", "Controller restarted");
+  if (esp_reset_reason() != ESP_RST_POWERON) {
+    char restartMessage[48];
+    snprintf(restartMessage, sizeof(restartMessage), "Controller restarted (%s%s%s)", lucky::bootResetReason(),
+             lucky::bootRestartCause()[0] ? ", " : "", lucky::bootRestartCause());
+    logger.warning("RESTART_DETECTED", restartMessage);
+  }
 
   relays.initialize(config.getRelayBoardSize());
   relays.turnAllOff();
@@ -72,6 +98,7 @@ void setup() {
 
 void loop() {
   wifi.loop();
+  restartIfWifiStuck();
   wifiProvisioning.loop();
   setupMode.loop();
   serialRecovery.loop();
