@@ -17,6 +17,8 @@ class StorageService {
   bool hasKey(const char* key);
   bool remove(const char* key);
   bool clear();
+  // Erases the whole NVS partition and opens it again. Only for NVS that cannot be opened at all.
+  bool reformat();
 
  private:
   static constexpr const char* kNamespace = "lucky-relay";

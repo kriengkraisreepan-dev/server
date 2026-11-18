@@ -47,20 +47,32 @@ String ConfigService::deviceIdFromHardware(const std::uint64_t hardwareId) {
   return String(value.data());
 }
 
+void ConfigService::attachBackup(ProvisioningBackup& backup) { backup_ = &backup; }
+
 bool ConfigService::initialize() {
   if (!storage_.initialize()) {
-    logger_.error("CONFIG_STORAGE_INIT_FAILED", "NVS namespace could not be opened");
-    config_ = defaults();
-    return false;
+    // NVS that cannot even be opened leaves the controller unreachable until it is re-installed over
+    // USB. When there is a backup to restore from, starting NVS over is the better of the two.
+    ProvisioningSnapshot saved;
+    if (!readBackup(saved) || !storage_.reformat()) {
+      logger_.error("CONFIG_STORAGE_INIT_FAILED", "NVS namespace could not be opened");
+      config_ = defaults();
+      return false;
+    }
+    logger_.warning("CONFIG_STORAGE_REFORMATTED", "NVS could not be opened; erased it to restore from backup");
   }
   initialized_ = true;
-  return load();
+  freshStorage_ = !storage_.hasKey(kApiKeyKey) && !storage_.hasKey(kDeviceIdKey);
+  if (freshStorage_) logger_.warning("STORAGE_EMPTY_AT_BOOT", "NVS holds no device settings");
+  // Before load(): a key NVS lost is still missing at this point instead of already replaced by a default.
+  restoreFromBackup();
+  const bool loaded = load();
+  syncBackup();
+  return loaded;
 }
 
 bool ConfigService::load() {
   if (!initialized_) return false;
-  freshStorage_ = !storage_.hasKey(kApiKeyKey) && !storage_.hasKey(kDeviceIdKey);
-  if (freshStorage_) logger_.warning("STORAGE_EMPTY_AT_BOOT", "NVS holds no device settings; writing defaults");
   if (!storage_.hasKey(kWifiSSIDKey)) storage_.putString(kWifiSSIDKey, LUCKY_BOOTSTRAP_WIFI_SSID);
   if (!storage_.hasKey(kWifiPasswordKey)) storage_.putString(kWifiPasswordKey, LUCKY_BOOTSTRAP_WIFI_PASSWORD);
   if (!storage_.hasKey(kApiKeyKey)) storage_.putString(kApiKeyKey, LUCKY_BOOTSTRAP_API_KEY);
@@ -138,6 +150,8 @@ RelayBoardSize ConfigService::getRelayBoardSize() const { return config_.relayBo
 std::uint8_t ConfigService::getRelayCount() const { return relayCount(config_.relayBoardSize); }
 bool ConfigService::usedRelayCountFallback() const { return usedFallback_; }
 bool ConfigService::storageWasEmptyAtBoot() const { return freshStorage_; }
+bool ConfigService::storageRestoredAtBoot() const { return restoredAtBoot_; }
+bool ConfigService::provisioningBackedUp() const { return backupCurrent_; }
 bool ConfigService::hasUniqueDeviceKey() const {
   return !config_.apiKey.isEmpty() && config_.apiKey != LUCKY_BOOTSTRAP_API_KEY;
 }
@@ -155,6 +169,7 @@ bool ConfigService::commitDeviceKey(const String& transitionId) {
   if (!storage_.putString(kApiKeyKey, candidate)) return false;
   config_.apiKey = candidate;
   storage_.remove(kKeyCandidateKey); storage_.remove(kKeyTransitionKey); storage_.remove(kKeyRotationStateKey);
+  syncBackup();
   return true;
 }
 bool ConfigService::rollbackDeviceKey(const String& transitionId) {
@@ -181,6 +196,7 @@ bool ConfigService::commitWifiCandidate(const String& transitionId) {
       !storage_.putString(kWifiPasswordKey, candidateWifiPassword())) return false;
   config_.wifiSSID = candidateWifiSSID(); config_.wifiPassword = candidateWifiPassword();
   storage_.remove(kWifiCandidateSSIDKey); storage_.remove(kWifiCandidatePasswordKey); storage_.remove(kWifiTransitionKey);
+  syncBackup();
   return setWifiProvisioningState("COMMITTED");
 }
 bool ConfigService::clearWifiCandidate() {
@@ -197,6 +213,8 @@ bool validSetupCode(const String& code) {
   }
   return true;
 }
+
+bool uniqueKey(const String& key) { return !key.isEmpty() && key != LUCKY_BOOTSTRAP_API_KEY; }
 }  // namespace
 
 bool ConfigService::hasSetupCode() const { return validSetupCode(setupCode()); }
@@ -217,6 +235,7 @@ bool ConfigService::commitSetupCode(const String& transitionId) {
   const std::uint8_t nextVersion = static_cast<std::uint8_t>(min<unsigned int>(255, setupCodeVersion() + 1));
   storage_.putUInt8(kSetupCodeVersionKey, nextVersion);
   storage_.remove(kSetupCodeCandidateKey); storage_.remove(kSetupCodeTransitionKey); storage_.remove(kSetupCodeStateKey);
+  syncBackup();
   return true;
 }
 bool ConfigService::rollbackSetupCode(const String& transitionId) {
@@ -238,6 +257,7 @@ bool ConfigService::setRelayCount(const std::uint8_t count) {
   config_.relayBoardSize = static_cast<RelayBoardSize>(count);
   usedFallback_ = false;
   logger_.info("CONFIG_RELAY_COUNT_CHANGED", "relayCount persisted");
+  syncBackup();
   return true;
 }
 
@@ -249,15 +269,100 @@ bool ConfigService::setRelayActiveHigh(const bool activeHigh) {
   }
   config_.relayActiveHigh = activeHigh;
   logger_.info("CONFIG_RELAY_POLARITY_CHANGED", "relayActiveHigh persisted");
+  syncBackup();
   return true;
 }
 
 bool ConfigService::resetToDefaults() {
+  // A deliberate reset must not be undone by the next boot restoring the backup.
+  if (backup_ && !backup_->erase()) return false;
   if (!storage_.clear()) return false;
   config_ = defaults();
   usedFallback_ = false;
   return storage_.putUInt8(kRelayCountKey, relayCount(kDefaultRelayBoardSize)) &&
          storage_.putUInt8(kRelayActiveHighKey, 0);
+}
+
+ProvisioningSnapshot ConfigService::storedSnapshot() {
+  ProvisioningSnapshot snapshot;
+  snapshot.apiKey = storage_.getString(kApiKeyKey, "");
+  snapshot.wifiSSID = storage_.getString(kWifiSSIDKey, "");
+  snapshot.wifiPassword = storage_.getString(kWifiPasswordKey, "");
+  snapshot.setupCode = storage_.getString(kSetupCodeKey, "");
+  snapshot.setupVersion = storage_.getUInt8(kSetupCodeVersionKey, 0);
+  snapshot.relayCount = storage_.getUInt8(kRelayCountKey, 0);
+  snapshot.relayActiveHigh = storage_.getUInt8(kRelayActiveHighKey, 0) != 0;
+  return snapshot;
+}
+
+// putString reports an empty string as a failure (Preferences returns the length written), so
+// success is judged by reading the values back rather than by the individual return codes.
+bool ConfigService::writeSnapshot(const ProvisioningSnapshot& snapshot) {
+  storage_.putString(kApiKeyKey, snapshot.apiKey);
+  storage_.putString(kWifiSSIDKey, snapshot.wifiSSID);
+  storage_.putString(kWifiPasswordKey, snapshot.wifiPassword);
+  storage_.putString(kSetupCodeKey, snapshot.setupCode);
+  storage_.putUInt8(kSetupCodeVersionKey, snapshot.setupVersion);
+  storage_.putUInt8(kRelayCountKey, snapshot.relayCount);
+  storage_.putUInt8(kRelayActiveHighKey, snapshot.relayActiveHigh ? 1 : 0);
+  return storedSnapshot() == snapshot;
+}
+
+// Only a copy that carries an identity of its own is worth restoring.
+bool ConfigService::readBackup(ProvisioningSnapshot& snapshot) {
+  return backup_ && backup_->read(snapshot) && uniqueKey(snapshot.apiKey) && isSupportedRelayCount(snapshot.relayCount);
+}
+
+void ConfigService::restoreFromBackup() {
+  ProvisioningSnapshot saved;
+  if (!readBackup(saved)) return;
+  const String storedKey = storage_.getString(kApiKeyKey, "");
+  if (!uniqueKey(storedKey)) {
+    // No identity of its own left: NVS was wiped. Put everything back.
+    restoredAtBoot_ = writeSnapshot(saved);
+    if (restoredAtBoot_) logger_.warning("STORAGE_RESTORED_FROM_BACKUP", "All settings restored from backup");
+    else logger_.error("STORAGE_RESTORE_FAILED", "Settings backup could not be written back to NVS");
+    return;
+  }
+  // A different Device Key means NVS was provisioned afresh (New Install), or a key rotation committed
+  // before the backup caught up. Either way NVS is newer, and syncBackup() replaces the copy.
+  if (storedKey != saved.apiKey) return;
+  // Same identity: fill in only what NVS has lost. A value it still holds is never overwritten, since
+  // it may be a change committed just before the power went, ahead of the backup.
+  int restored = 0;
+  if (storage_.getString(kWifiSSIDKey, "").isEmpty() && !saved.wifiSSID.isEmpty()) {
+    storage_.putString(kWifiSSIDKey, saved.wifiSSID);
+    storage_.putString(kWifiPasswordKey, saved.wifiPassword);
+    ++restored;
+  }
+  if (!hasSetupCode() && validSetupCode(saved.setupCode)) {
+    storage_.putString(kSetupCodeKey, saved.setupCode);
+    storage_.putUInt8(kSetupCodeVersionKey, saved.setupVersion);
+    ++restored;
+  }
+  if (!isSupportedRelayCount(storage_.getUInt8(kRelayCountKey, 0))) {
+    storage_.putUInt8(kRelayCountKey, saved.relayCount);
+    ++restored;
+  }
+  if (!storage_.hasKey(kRelayActiveHighKey)) {
+    storage_.putUInt8(kRelayActiveHighKey, saved.relayActiveHigh ? 1 : 0);
+    ++restored;
+  }
+  if (restored) {
+    restoredAtBoot_ = true;
+    logger_.warning("STORAGE_RESTORED_FROM_BACKUP", "Lost settings restored from backup");
+  }
+}
+
+// Copies the committed settings to the backup when they differ from it. A controller with no Device
+// Key of its own is never backed up: that would replace a good copy with a blank one.
+void ConfigService::syncBackup() {
+  backupCurrent_ = false;
+  if (!backup_ || !initialized_) return;
+  const ProvisioningSnapshot current = storedSnapshot();
+  if (!uniqueKey(current.apiKey) || !isSupportedRelayCount(current.relayCount)) return;
+  ProvisioningSnapshot saved;
+  backupCurrent_ = (backup_->read(saved) && saved == current) || backup_->write(current);
 }
 
 }  // namespace lucky

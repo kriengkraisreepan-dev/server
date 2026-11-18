@@ -1,5 +1,7 @@
 #include "storage/StorageService.h"
 
+#include <nvs_flash.h>
+
 namespace lucky {
 
 bool StorageService::initialize() {
@@ -37,5 +39,11 @@ bool StorageService::hasKey(const char* key) {
 bool StorageService::remove(const char* key) { return initialized_ && preferences_.remove(key); }
 
 bool StorageService::clear() { return initialized_ && preferences_.clear(); }
+
+bool StorageService::reformat() {
+  close();
+  if (nvs_flash_erase() != ESP_OK || nvs_flash_init() != ESP_OK) return false;
+  return initialize();
+}
 
 }  // namespace lucky

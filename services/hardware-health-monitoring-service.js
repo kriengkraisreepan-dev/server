@@ -81,7 +81,7 @@ class HardwareHealthMonitoringService {
     try {
       const health = this.validate(device, await this.driver.health(device, { timeoutMs: this.timeoutMs }));
       const completed = this.now(), latencyMs = Math.max(0, completed.getTime() - started);
-      const fields = { status: "ONLINE", lastSeen: completed.toISOString(), lastOnlineAt: completed.toISOString(), lastCheckedAt: completed.toISOString(), lastErrorCode: null, consecutiveFailures: 0, firmwareVersion: health.firmwareVersion || device.firmwareVersion, relayCount: Number(health.relayCount), health: { uptimeSeconds: health.uptimeSeconds ?? health.uptime, rssi: health.rssi, freeHeapBytes: health.freeHeapBytes, latencyMs, ...this.bootDiagnostics(health) }, updatedAt: completed.toISOString() };
+      const fields = { status: "ONLINE", lastSeen: completed.toISOString(), lastOnlineAt: completed.toISOString(), lastCheckedAt: completed.toISOString(), lastErrorCode: null, consecutiveFailures: 0, firmwareVersion: health.firmwareVersion || device.firmwareVersion, relayCount: Number(health.relayCount), health: { uptimeSeconds: health.uptimeSeconds ?? health.uptime, rssi: health.rssi, freeHeapBytes: health.freeHeapBytes, latencyMs, ...this.firmwareDiagnostics(health) }, updatedAt: completed.toISOString() };
       const restart = this.detectRestart(device, fields.health.uptimeSeconds);
       const updated = this.repository.update(device.id, fields);
       if (previousStatus !== "ONLINE") {
@@ -92,8 +92,9 @@ class HardwareHealthMonitoringService {
       // the shop went out at once", which otherwise looks like an application fault.
       if (restart) {
         // Newer firmware says why it restarted (POWERON, BROWNOUT, TASK_WDT, PANIC, SW, and
-        // restartCause WIFI_OFFLINE for a deliberate one); older firmware sends neither, so both are absent.
-        const diagnostics = this.bootDiagnostics(health);
+        // restartCause WIFI_OFFLINE for a deliberate one) and whether it had to restore lost settings
+        // from its backup; older firmware sends none of it, so those fields are absent.
+        const diagnostics = this.firmwareDiagnostics(health);
         this.audit("HARDWARE_CONTROLLER_RESTARTED", "SYSTEM", { deviceId: device.id, controllerDeviceId: device.deviceId, previousUptimeSeconds: restart.previous, uptimeSeconds: restart.current, ...diagnostics });
         this.log("WARN", "HARDWARE_CONTROLLER_RESTARTED", { hardwareRecordId: device.id, deviceId: device.deviceId, ip: device.ipAddress, previousUptimeSeconds: restart.previous, uptimeSeconds: restart.current, ...diagnostics });
       }
@@ -125,11 +126,15 @@ class HardwareHealthMonitoringService {
   }
 
   // Only fields the firmware actually sent, so a record never claims a reset reason it does not know.
-  bootDiagnostics(health) {
+  // provisioningBackup false on firmware that has the backup means the box could NOT recover by
+  // itself from a wiped NVS right now.
+  firmwareDiagnostics(health) {
     const out = {};
     if (typeof health.resetReason === "string") out.resetReason = health.resetReason;
     if (typeof health.restartCause === "string") out.restartCause = health.restartCause;
-    if (typeof health.storageEmptyAtBoot === "boolean") out.storageEmptyAtBoot = health.storageEmptyAtBoot;
+    for (const field of ["storageEmptyAtBoot", "storageRestoredAtBoot", "provisioningBackup"]) {
+      if (typeof health[field] === "boolean") out[field] = health[field];
+    }
     return out;
   }
 

@@ -3,6 +3,7 @@
 #include <cstdint>
 #include "config/DeviceConfig.h"
 #include "logging/ILogger.h"
+#include "storage/ProvisioningBackup.h"
 #include "storage/StorageService.h"
 
 namespace lucky {
@@ -10,6 +11,10 @@ namespace lucky {
 class ConfigService {
  public:
   ConfigService(StorageService& storage, ILogger& logger);
+  // Call before initialize(). With a backup attached, a boot that finds NVS wiped puts the Wi-Fi,
+  // Device Key, Setup Code and relay settings back instead of coming up blank, and every change to
+  // them is copied to the backup as it is committed.
+  void attachBackup(ProvisioningBackup& backup);
   bool initialize();
   bool load();
   const DeviceConfig& getConfig() const;
@@ -26,6 +31,10 @@ class ConfigService {
   // True when this boot found the NVS namespace empty (no device id, no API key) and had to write
   // defaults. A controller that was provisioned earlier and reports this lost its stored settings.
   bool storageWasEmptyAtBoot() const;
+  // True when this boot put lost settings back from the backup.
+  bool storageRestoredAtBoot() const;
+  // True when the backup holds exactly the settings in use: the controller can recover by itself.
+  bool provisioningBackedUp() const;
   bool hasUniqueDeviceKey() const;
   bool stageDeviceKey(const String& newKey, const String& transitionId);
   bool commitDeviceKey(const String& transitionId);
@@ -61,7 +70,15 @@ class ConfigService {
   bool initialized_{false};
   bool usedFallback_{false};
   bool freshStorage_{false};
+  ProvisioningBackup* backup_{nullptr};
+  bool restoredAtBoot_{false};
+  bool backupCurrent_{false};
   DeviceConfig defaults() const;
+  ProvisioningSnapshot storedSnapshot();
+  bool writeSnapshot(const ProvisioningSnapshot& snapshot);
+  bool readBackup(ProvisioningSnapshot& snapshot);
+  void restoreFromBackup();
+  void syncBackup();
 };
 
 }  // namespace lucky
