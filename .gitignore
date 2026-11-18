@@ -5,6 +5,9 @@ data/
 *.sqlite
 *.sqlite3
 *.pem
+# Public half only, and it must ship with the manifest.sig it verifies: every firmware repackage
+# signs with a fresh key, so leaving this out made a clean checkout fail its own package check.
+!resources/firmware/internal-test/internal-test-public.pem
 *.key
 .phase51-build-tools/
 .phase51-downloads/

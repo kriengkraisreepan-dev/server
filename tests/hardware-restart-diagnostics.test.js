@@ -34,6 +34,15 @@ test("a deliberate Wi-Fi-offline restart is distinguishable from a crash", async
   assert.equal(restart.data.restartCause, "WIFI_OFFLINE");
 });
 
+test("a controller that lost its settings and restored them from its backup says so", async () => {
+  const { service, record, audits } = setup({ resetReason: "BROWNOUT", storageEmptyAtBoot: true, storageRestoredAtBoot: true, provisioningBackup: true });
+  await service.check("hw-1");
+  const restart = audits.find(item => item.event === "HARDWARE_CONTROLLER_RESTARTED");
+  assert.equal(restart.data.storageEmptyAtBoot, true);
+  assert.equal(restart.data.storageRestoredAtBoot, true);
+  assert.equal(record.health.provisioningBackup, true);
+});
+
 test("older firmware that reports no reason never gets one invented", async () => {
   const { service, record, audits } = setup({});
   await service.check("hw-1");
@@ -41,4 +50,5 @@ test("older firmware that reports no reason never gets one invented", async () =
   assert.ok(restart);
   assert.equal("resetReason" in restart.data, false);
   assert.equal("resetReason" in record.health, false);
+  assert.equal("provisioningBackup" in record.health, false);
 });

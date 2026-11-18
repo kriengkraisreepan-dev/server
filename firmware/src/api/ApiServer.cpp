@@ -142,6 +142,10 @@ void ApiServer::handleHealth() {
   document["resetReason"] = bootResetReason();
   if (bootRestartCause()[0] != '\0') document["restartCause"] = bootRestartCause();
   document["storageEmptyAtBoot"] = config_.storageWasEmptyAtBoot();
+  // storageRestoredAtBoot: this boot put lost settings back from the backup (it lost its memory and
+  // recovered). provisioningBackup: the backup matches the settings in use, so it would again.
+  document["storageRestoredAtBoot"] = config_.storageRestoredAtBoot();
+  document["provisioningBackup"] = config_.provisioningBackedUp();
   sendSuccess(200, document);
 }
 

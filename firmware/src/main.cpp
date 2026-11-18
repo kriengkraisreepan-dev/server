@@ -12,6 +12,7 @@
 #include "relay/RelayService.h"
 #include "setup/SetupModeService.h"
 #include "serial/SerialRecoveryService.h"
+#include "storage/ProvisioningBackup.h"
 #include "storage/StorageService.h"
 #include "watchdog/WatchdogService.h"
 #include "wifi/WifiService.h"
@@ -21,6 +22,7 @@ namespace {
 
 lucky::Logger logger(Serial);
 lucky::StorageService storage;
+lucky::ProvisioningBackup provisioningBackup(logger);
 lucky::ConfigService config(storage, logger);
 lucky::ArduinoGpioDriver gpio;
 lucky::RelayService relays(gpio, logger);
@@ -64,7 +66,9 @@ void setup() {
   // so relays knows this board's polarity — a relay board wired active-high would otherwise get
   // its outputs driven ON by a "safe" write that assumed active-low. If NVS itself is
   // unavailable/corrupt, ConfigService falls back to its in-memory defaults (active-low)
-  // immediately rather than blocking, so this still resolves fast.
+  // immediately rather than blocking, so this still resolves fast. The backup is attached first
+  // so a wiped NVS gets its settings (polarity included) back before anything reads them.
+  config.attachBackup(provisioningBackup);
   config.initialize();
   relays.setActiveHigh(config.getRelayActiveHigh());
   relays.safeInitializeAllPins();
