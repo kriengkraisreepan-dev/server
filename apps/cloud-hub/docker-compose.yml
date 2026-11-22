@@ -1,0 +1,41 @@
+# Dev stack, one command (from apps/cloud-hub):  docker compose up --build
+# Admin web: http://localhost:8080/admin/  — the dev owner password is printed in the hub's log
+# (or set DEV_ADMIN_PASSWORD / ADMIN_PASSWORD_HASH). Not for production: no TLS, dev password.
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: hub
+      POSTGRES_PASSWORD: hub-dev-only
+      POSTGRES_DB: cloud_hub
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hub -d cloud_hub"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  hub:
+    build:
+      context: ../..
+      dockerfile: apps/cloud-hub/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      HOST: 0.0.0.0
+      PORT: 8080
+      DATABASE_URL: postgres://hub:hub-dev-only@db:5432/cloud_hub
+      PUBLIC_WS_URL: ws://localhost:8080/bridge/v1
+      DEV_ADMIN_PASSWORD: ${DEV_ADMIN_PASSWORD:-}
+      ADMIN_PASSWORD_HASH: ${ADMIN_PASSWORD_HASH:-}
+    command: ["node", "scripts/dev.js"]
+    ports:
+      - "8080:8080"
+
+volumes:
+  db-data:
