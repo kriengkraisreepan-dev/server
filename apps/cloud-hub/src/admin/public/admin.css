@@ -1,0 +1,23 @@
+:root { --bg: #0b1120; --panel: #131c31; --text: #e5e7eb; --muted: #94a3b8; --ok: #22c55e; --warn: #f59e0b; --bad: #ef4444; --accent: #38bdf8; }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 system-ui, "Noto Sans Thai", sans-serif; }
+header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid #1f2a44; }
+h1 { font-size: 18px; margin: 0; }
+h2 { font-size: 16px; margin: 0 0 8px; }
+main { max-width: 1000px; margin: 0 auto; padding: 16px; }
+section { background: var(--panel); border-radius: 10px; padding: 16px; margin-bottom: 16px; overflow-x: auto; }
+.row { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.hint { color: var(--muted); font-size: 13px; margin: 0 0 8px; }
+.error { color: var(--bad); }
+button { background: var(--accent); color: #04121f; border: 0; border-radius: 6px; padding: 6px 12px; font: inherit; cursor: pointer; }
+button.ghost { background: transparent; color: var(--text); border: 1px solid #334155; }
+button.danger { background: var(--bad); color: #fff; }
+input { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: var(--text); }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #1f2a44; white-space: nowrap; }
+.badge { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 12px; }
+.badge.ok { background: #14532d; color: #bbf7d0; } .badge.warn { background: #78350f; color: #fde68a; } .badge.bad { background: #7f1d1d; color: #fecaca; } .badge.off { background: #334155; }
+.switches { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; }
+.switch { display: flex; justify-content: space-between; align-items: center; background: #0f172a; border-radius: 8px; padding: 10px 12px; }
+.pairing { background: #0f172a; border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+.pairing code { font-size: 22px; letter-spacing: 3px; color: var(--accent); }

@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="th">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>88 Snooker Club — Cloud hub</title>
+  <link rel="stylesheet" href="admin.css">
+  <script src="admin.js" defer></script>
+</head>
+<body>
+  <header>
+    <h1>88 Snooker Club · Cloud hub</h1>
+    <button id="logout" class="ghost" hidden>ออกจากระบบ</button>
+  </header>
+
+  <main>
+    <section id="login-view" hidden>
+      <h2>เข้าสู่ระบบเจ้าของร้าน</h2>
+      <form id="login-form">
+        <label>รหัสผ่าน <input type="password" id="password" autocomplete="current-password" required></label>
+        <button type="submit">เข้าสู่ระบบ</button>
+        <p id="login-error" class="error" role="alert"></p>
+      </form>
+    </section>
+
+    <div id="app-view" hidden>
+      <section>
+        <h2>Kill switch</h2>
+        <p class="hint">ปิดได้ทันทีแม้ยังไม่มีฟีเจอร์ให้ปิด (S-1.5)</p>
+        <div id="kill-switches" class="switches"></div>
+      </section>
+
+      <section>
+        <div class="row">
+          <h2>เครื่องร้าน</h2>
+          <button id="new-code">เพิ่มเครื่องร้าน (สร้าง pairing code)</button>
+        </div>
+        <div id="pairing" class="pairing" hidden>
+          <div>Pairing code: <code id="pairing-code"></code></div>
+          <div class="hint">ใช้ได้ครั้งเดียว หมดอายุ <span id="pairing-expiry"></span> — ใส่ใน 88Snooker: Settings → AI Bridge → เชื่อมต่อ</div>
+        </div>
+        <table>
+          <thead><tr><th>ชื่อเครื่อง</th><th>สถานะ</th><th>ข้อมูลล่าสุด</th><th>เวอร์ชัน</th><th>เชื่อมเมื่อ</th><th></th></tr></thead>
+          <tbody id="devices"></tbody>
+        </table>
+      </section>
+
+      <section>
+        <h2>บันทึกล่าสุด (audit log)</h2>
+        <table>
+          <thead><tr><th>เวลา</th><th>ผู้ทำ</th><th>การกระทำ</th><th>เป้าหมาย</th></tr></thead>
+          <tbody id="audit"></tbody>
+        </table>
+      </section>
+    </div>
+  </main>
+</body>
+</html>
