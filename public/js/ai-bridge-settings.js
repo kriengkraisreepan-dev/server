@@ -40,14 +40,16 @@ function aiBridgePanel() {
       <button ${s.shopInfo && s.safeStorageAvailable ? "" : "disabled"}>เชื่อมต่อ</button>
     </form></div>`;
   const dayRows = AI_BRIDGE_DAYS.map((label, day) => {
-    const h = hours[day];
-    return `<div class="two" data-ai-day="${day}"><label><input type="checkbox" class="ai-day-closed" ${h ? "" : "checked"}> ${label} ปิด</label>
-      <div class="two"><div>เปิด ${hourMinuteFieldHtml({ hiddenAttributes: 'class="ai-day-open"', value: h?.open || "12:00" })}</div><div>ปิด ${hourMinuteFieldHtml({ hiddenAttributes: 'class="ai-day-close"', value: h?.close || "02:00" })}</div></div></div>`;
+    // Not configured yet → every day starts open 12:00–02:00 for staff to adjust; null = closed.
+    const h = s.shopInfo ? hours[day] : { open: "12:00", close: "02:00" };
+    return `<tr data-ai-day="${day}"><td>${label}</td><td style="white-space:nowrap"><label><input type="checkbox" class="ai-day-closed" ${h ? "" : "checked"}> หยุด</label></td>
+      <td style="min-width:170px">${hourMinuteFieldHtml({ hiddenAttributes: 'class="ai-day-open"', value: h?.open || "12:00" })}</td><td style="min-width:170px">${hourMinuteFieldHtml({ hiddenAttributes: 'class="ai-day-close"', value: h?.close || "02:00" })}</td></tr>`;
   }).join("");
   const tableRows = (state.tables || []).map(table => `<label>${escapeHtml(table.name)} <select data-ai-table-kind="${escapeHtml(String(table.id))}"><option value="snooker" ${kinds[table.id] === "pool" ? "" : "selected"}>สนุกเกอร์</option><option value="pool" ${kinds[table.id] === "pool" ? "selected" : ""}>พูล</option></select></label>`).join("");
   const infoCard = `<div class="card form" style="margin-top:18px"><h3>ข้อมูลร้านสำหรับผู้ช่วย AI</h3>
     <form id="aiBridgeShopForm">
-      <p class="muted">เวลาเปิด-ปิด (เวลาไทย) ถ้าเวลาปิดน้อยกว่าเวลาเปิด = ปิดหลังเที่ยงคืน</p>${dayRows}
+      <p class="muted">เวลาเปิด-ปิด (เวลาไทย, 24 ชม.) ถ้าเวลาปิดน้อยกว่าเวลาเปิด = ปิดหลังเที่ยงคืน</p>
+      <table><tr><th>วัน</th><th></th><th>เปิด</th><th>ปิด</th></tr>${dayRows}</table>
       <label>ประกาศวันนี้ (ไม่เกิน 200 ตัวอักษร)<textarea name="note" maxlength="200">${escapeHtml(s.shopInfo?.note || "")}</textarea></label>
       <h4>ประเภทโต๊ะ</h4>${tableRows || `<p class="muted">ยังไม่มีโต๊ะ</p>`}
       <button>บันทึก</button>
