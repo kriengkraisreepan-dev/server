@@ -1,0 +1,12 @@
+{
+  "name": "@88snooker/bridge-protocol",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Zod schemas for the Shop PC <-> Cloud hub bridge protocol v1 (docs/ai-assistant/BRIDGE_PROTOCOL.md)",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "license": "ISC",
+  "dependencies": {
+    "zod": "4.6.7"
+  }
+}
