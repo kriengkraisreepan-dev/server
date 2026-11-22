@@ -3,12 +3,13 @@ const net = require("net");
 const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
-const { app, BrowserWindow, Menu, dialog, ipcMain, session, screen } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain, session, screen, safeStorage } = require("electron");
 const { atomicWriteJson } = require("../infrastructure/safe-json-file");
 const { validateDataRoot, prepareDataLayout, isWithin } = require("../infrastructure/trusted-data-root");
 const { LegacyDataHandoffService } = require("../services/legacy-data-handoff-service");
 const { BackendSupervisor } = require("./backend-supervisor");
 const { BackupExportService } = require("../services/backup-export-service");
+const { installAiBridge } = require("./ai-bridge/main-integration");
 const { IPC_CHANNELS, WINDOW_SECURITY, trustedOrigin, validateSender, contentSecurityPolicy, isAllowedNavigation } = require("./security-policy");
 
 const programRoot = path.resolve(__dirname, "..");
@@ -35,6 +36,9 @@ let mainWindow = null;
 let supervisor = null;
 let quitting = false;
 let runtimeMarkerFile = null;
+let aiBridge = null;
+// Per-launch secret for the backend's loopback-only AI Bridge source route (Task A3).
+const aiBridgeSourceKey = crypto.randomBytes(32).toString("hex");
 const gotLock = app.requestSingleInstanceLock({ owner: "88 Snooker Manager", schemaVersion: 1 });
 if (!gotLock) app.quit();
 app.on("second-instance", () => { if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.show(); mainWindow.focus(); } });
@@ -159,10 +163,12 @@ async function boot() {
   createRuntimeMarker(layout, port);
   installSessionPolicy(origin); installIpc(origin, layout);
   buildAppMenu(layout, networkAccess, port);
-  supervisor = new BackendSupervisor({ entry: path.join(programRoot, "index.js"), programRoot, dataRoot: layout.root, port, host, logFile: path.join(layout.logs, "desktop-backend.log") });
+  supervisor = new BackendSupervisor({ entry: path.join(programRoot, "index.js"), programRoot, dataRoot: layout.root, port, host, logFile: path.join(layout.logs, "desktop-backend.log"), extraEnv: { LUCKY_AI_BRIDGE_SOURCE_KEY: aiBridgeSourceKey } });
   supervisor.onCrash = async () => { if (quitting) return; if (!supervisor.canRestart()) return dialog.showErrorBox("Backend หยุดทำงาน", "ระบบหยุดการเริ่มใหม่อัตโนมัติหลังล้มเหลว 3 ครั้งใน 5 นาที กรุณาปิดโปรแกรมและตรวจ logs"); try { supervisor.launch(); await supervisor.waitUntilReady(); mainWindow?.reload(); } catch { dialog.showErrorBox("เริ่ม Backend ไม่สำเร็จ", "กรุณาปิดโปรแกรมและตรวจสอบโฟลเดอร์ logs"); } };
   supervisor.launch(); await supervisor.waitUntilReady(); createWindow(layout, origin);
-  app.on("before-quit", event => { if (quitting) return; event.preventDefault(); quitting = true; saveBounds(layout); supervisor.stop(10000).finally(() => { removeRuntimeMarker(); app.quit(); }); });
+  // AI Bridge must never block or break the shop: any failure here is logged and the app carries on.
+  try { aiBridge = installAiBridge({ ipcMain, session: session.defaultSession, safeStorage, layout, origin, sourceKey: aiBridgeSourceKey, appVersion: app.getVersion(), channels: IPC_CHANNELS, validateSender }); aiBridge.start(); } catch (error) { try { fs.appendFileSync(path.join(layout.logs, "ai-bridge.log"), JSON.stringify({ at: new Date().toISOString(), level: "error", event: "bridge.install_failed", error: error.code || error.message }) + "\n"); } catch {} }
+  app.on("before-quit", event => { if (quitting) return; event.preventDefault(); quitting = true; saveBounds(layout); try { aiBridge?.shutdown(); } catch {} supervisor.stop(10000).finally(() => { removeRuntimeMarker(); app.quit(); }); });
 }
 if (gotLock) app.whenReady().then(boot).catch(error => { removeRuntimeMarker(); dialog.showErrorBox("เปิด 88 Snooker Manager ไม่สำเร็จ", `${error.code || "STARTUP_FAILED"}\nกรุณาตรวจสอบ Customer Data และ logs`); app.quit(); });
 app.on("window-all-closed", () => app.quit());

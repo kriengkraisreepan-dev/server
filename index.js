@@ -67,6 +67,7 @@ const { WindowsSerialRecoveryTransport } = require("./drivers/windows-serial-rec
 const { HardwareUsbRecoveryService } = require("./services/hardware-usb-recovery-service");
 const { HardwareUsbAdoptionService } = require("./services/hardware-usb-adoption-service");
 const { PortableMigrationService } = require("./services/portable-migration-service");
+const { buildSnapshotSource } = require("./services/ai-snapshot-source");
 
 const app = express();
 // Requests that arrive through the Cloudflare Tunnel may reach only the public table-status page.
@@ -490,6 +491,26 @@ const publicTablesCache = ttlCache({ ttlMs: Number(process.env.LUCKY_PUBLIC_STAT
 app.get("/api/public/tables", rateLimiter({ limit: 30, windowMs: 60 * 1000 }), (req, res) => {
   res.set("Cache-Control", "public, max-age=5");
   res.json(publicTablesCache(() => ({ shopName: store.settings.shopName || "", items: store.tables.map(table => { const enriched = enrichTable(table); return { id: enriched.id, name: enriched.name, status: enriched.status, elapsedSeconds: enriched.elapsedSeconds || 0 }; }) })));
+});
+// AI Bridge (Task A3) — the Electron main process reads the Public snapshot fields from here.
+// Read-only: the handler only reads store data and hands plain values to buildSnapshotSource, which
+// requires nothing (SAFETY S-1.1/S-1.2). Loopback only, never through the tunnel (tunnelGuard 404s
+// it), and only with the per-launch key Electron main passes in LUCKY_AI_BRIDGE_SOURCE_KEY. Without
+// that key (plain `npm start`) the route does not exist.
+app.get("/internal/ai-bridge/snapshot-source", (req, res) => {
+  const key = process.env.LUCKY_AI_BRIDGE_SOURCE_KEY || "";
+  const given = String(req.get("x-lucky-ai-bridge-key") || "");
+  const loopback = ["127.0.0.1", "::1", "::ffff:127.0.0.1"].includes(String(req.socket?.remoteAddress || ""));
+  const keyOk = key.length >= 32 && given.length === key.length && crypto.timingSafeEqual(Buffer.from(given), Buffer.from(key));
+  if (!loopback || !keyOk || req.headers["cf-connecting-ip"] || req.headers["cf-ray"]) return res.status(404).type("text/plain").send("Not found");
+  try {
+    const settings = settingsService.getSettings();
+    res.set("Cache-Control", "no-store");
+    res.json({ generatedAt: new Date().toISOString(), ...buildSnapshotSource({ tables: store.tables.map(enrichTable), reservations: reservationService.list(), pricingProfiles: settings.pricingProfiles, defaultPricingProfileId: settings.defaultPricingProfileId }) });
+  } catch (error) {
+    operationalLog("warn", "ai_bridge.snapshot_source_failed", { error: error.message });
+    res.status(500).json({ error: "SNAPSHOT_SOURCE_FAILED" });
+  }
 });
 app.use("/api", (req, res, next) => { if (req.path.startsWith("/auth/") || req.path === "/public/tables") return next(); return requireAuth(req, res, next); });
 const reservationError = (res, error) => res.status(error.code === "FORBIDDEN" ? 403 : /not found/i.test(error.message) ? 404 : ["VERSION_CONFLICT","RESERVATION_OPERATION_IN_PROGRESS"].includes(error.code) ? 409 : 400).json({ error: error.code || "RESERVATION_ERROR", message: error.message });

@@ -310,6 +310,8 @@ function settings(){
   if(["OWNER","MANAGER"].includes(role))tabDefs.push(["sessions","Active Sessions"]);
   tabDefs.push(["account","บัญชีของฉัน"]);
   if(showAuditTab)tabDefs.push(["auditlog","ประวัติการใช้งาน"]);
+  // Task A3: Settings → AI Bridge (public/js/ai-bridge-settings.js). Main re-checks the role itself.
+  if(typeof aiBridgePanel==="function"&&["OWNER","MANAGER"].includes(role))tabDefs.push(["aibridge","AI Bridge"]);
   const validTabs=tabDefs.map(([key])=>key);
   const activeTab=validTabs.includes(settingsTabView)?settingsTabView:tabDefs[0][0];
   // Persist the resolved tab back to the global: the general-tab-only patches below (Security,
@@ -318,7 +320,7 @@ function settings(){
   // land on "account"), those patches must see the ACTUAL displayed tab, not the stale request.
   settingsTabView=activeTab;
   const tabs=`<div class="page-settings-tabs">${tabDefs.map(([key,label])=>`<button type="button" class="settings-tab-btn ${activeTab===key?"active":""}" data-settings-tab="${key}">${label}</button>`).join("")}</div>`;
-  const panels={general:settingsGeneralPanel,pricing:pricingProfilesPanel,coupons,staff,sessions,account,auditlog};
+  const panels={general:settingsGeneralPanel,pricing:pricingProfilesPanel,coupons,staff,sessions,account,auditlog,aibridge:()=>aiBridgePanel()};
   return `${tabs}${panels[activeTab]()}`;
 }
 function backupSection(){ const list=backups||[],health=healthStatus||{},external=health.backup?.externalBackup; const externalNote=!external?"":external.status==="VERIFIED"?`<p class="muted">สำรองภายนอกล่าสุด: <b style="color:#4ade80">✓ สำเร็จ</b> (${escapeHtml(external.path)}, ${new Date(external.checkedAt).toLocaleString("th-TH")})</p>`:`<p class="wizard-status warning">สำรองภายนอกล่าสุด: ✕ ไม่สำเร็จ — ${escapeHtml(external.message||"ตรวจสอบว่าไดรฟ์/โฟลเดอร์เชื่อมต่ออยู่หรือไม่")} (${escapeHtml(external.path)})</p>`; return `<div class="card" style="margin-top:18px"><h3>สถานะระบบ: ${escapeHtml(health.status||"ยังไม่ได้ตรวจ")}</h3><p class="muted">JSON: ${escapeHtml(health.repositories||"-")} · Integrity: ${escapeHtml(health.integrity?.status||"-")} · Recovery รอตรวจ: ${(health.pendingRecoveryItems||[]).length} · Uptime: ${duration(health.uptimeSeconds||0)}</p></div><div class="card" style="margin-top:18px"><h3>สำรองข้อมูล (Backup)</h3><p class="muted">ระบบสำรองข้อมูลอัตโนมัติทุก 24 ชั่วโมง เก็บล่าสุด ${MAX_BACKUPS_LABEL} ชุด และสำรองให้เองก่อนกู้คืนทุกครั้ง</p>${externalNote}<button id="backupNow">สำรองข้อมูลตอนนี้</button><table style="margin-top:14px"><tr><th>วันที่สำรอง</th><th>ขนาดไฟล์</th><th>ตรวจสอบ</th><th></th></tr>${list.length?list.map(b=>`<tr><td>${new Date(b.createdAt).toLocaleString("th-TH")}</td><td>${(b.size/1024).toFixed(1)} KB</td><td>${escapeHtml(b.verificationStatus||"UNKNOWN")}</td><td><div class="actions"><button class="outline" data-backup-download="${b.file}">ดาวน์โหลด</button><button data-backup-restore="${b.file}">กู้คืน</button><button class="danger" data-backup-delete="${b.file}">ลบ</button></div></td></tr>`).join(""):`<tr><td colspan="4" class="muted">ยังไม่มีข้อมูลสำรอง</td></tr>`}</table></div>`; }
@@ -1056,6 +1058,7 @@ const bindSettingsAuditTab1=bind;bind=function(){
     settingsTabView=button.dataset.settingsTab;
     if(settingsTabView==="auditlog"&&auditLogAllowed()){auditLogFilters={};await Promise.all([loadAuditEventTypes(),loadAuditLog(auditLogQueryString(1))]);}
     if(settingsTabView==="coupons"&&couponAllowed())await loadCoupons();
+    if(settingsTabView==="aibridge"&&typeof loadAiBridgeStatus==="function")await loadAiBridgeStatus();
     render();
   });
   const form=$("#auditLogFilterForm");if(form)form.onsubmit=searchAuditLog;

@@ -55,6 +55,7 @@
       "controllers/**/*",
       "config/**/*",
       "resources/**/*",
+      "packages/bridge-protocol/**/*",
       "package.json",
       "!**/*.test.js"
     ],
@@ -62,15 +63,11 @@
       "target": [
         {
           "target": "nsis",
-          "arch": [
-            "x64"
-          ]
+          "arch": ["x64"]
         },
         {
           "target": "appx",
-          "arch": [
-            "x64"
-          ]
+          "arch": ["x64"]
         }
       ]
     },

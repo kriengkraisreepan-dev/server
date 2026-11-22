@@ -1,4 +1,4 @@
-const IPC_CHANNELS = Object.freeze({ APP_INFO: "lucky-desktop:app-info", RUNTIME_STATUS: "lucky-desktop:runtime-status", BACKUP_EXPORT: "lucky-desktop:backup-export" });
+const IPC_CHANNELS = Object.freeze({ APP_INFO: "lucky-desktop:app-info", RUNTIME_STATUS: "lucky-desktop:runtime-status", BACKUP_EXPORT: "lucky-desktop:backup-export", AI_BRIDGE_STATUS: "lucky-desktop:ai-bridge-status", AI_BRIDGE_PAIR: "lucky-desktop:ai-bridge-pair", AI_BRIDGE_DISCONNECT: "lucky-desktop:ai-bridge-disconnect", AI_BRIDGE_SAVE_SHOP_INFO: "lucky-desktop:ai-bridge-save-shop-info" });
 const WINDOW_SECURITY = Object.freeze({ nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, allowRunningInsecureContent: false });
 function trustedOrigin(port) { return `http://127.0.0.1:${Number(port)}`; }
 function validateSender(event, origin) { try { const url = new URL(event.senderFrame?.url || ""); return url.origin === origin && url.pathname.startsWith("/"); } catch { return false; } }
