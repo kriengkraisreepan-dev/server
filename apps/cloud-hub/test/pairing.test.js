@@ -107,4 +107,15 @@ test('pairing', async (t) => {
     const r = await h.http('POST', '/bridge/v1/pair', { body: body(code) });
     assert.equal(r.status, 503);
   });
+
+  await t.test('unpair from the Shop revokes the device and closes its connection', async () => {
+    const { deviceToken, client } = await h.onlineDevice();
+    assert.equal((await h.http('POST', '/bridge/v1/unpair')).status, 401);
+    assert.equal((await h.http('POST', '/bridge/v1/unpair', { headers: { authorization: 'Bearer ' + 'x'.repeat(43) } })).status, 401);
+    const r = await h.http('POST', '/bridge/v1/unpair', { headers: { authorization: `Bearer ${deviceToken}` } });
+    assert.equal(r.status, 200);
+    assert.equal((await client.closed()).code, 4401);
+    await assert.rejects(h.connect(deviceToken), { status: 401 });
+    assert.equal((await h.http('POST', '/bridge/v1/unpair', { headers: { authorization: `Bearer ${deviceToken}` } })).status, 401);
+  });
 });

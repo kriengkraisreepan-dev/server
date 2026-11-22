@@ -76,6 +76,20 @@ async function createHub(config, deps = {}) {
     }
   });
 
+  // BRIDGE_PROTOCOL §2 "Disconnect จากฝั่งร้าน": the Shop deletes its token and tells the Cloud
+  // (best effort, when online). Bearer = the device's own token; result = the same as an owner revoke.
+  const unpairLimiter = createRateLimiter({ limit: 20, windowMs: HOUR, clock });
+  app.post('/bridge/v1/unpair', async (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    if (!unpairLimiter.hit(req.ip)) return res.status(429).json({ error: 'rate_limited' });
+    const m = /^Bearer ([A-Za-z0-9_-]+)$/.exec(String(req.headers.authorization || '').trim());
+    const device = m ? await devices.authenticate(m[1]) : null;
+    if (!device) return res.status(401).json({ error: 'unauthorized' });
+    await devices.revoke(device.deviceId, `device:${device.deviceId}`);
+    bridge.disconnect(device.deviceId);
+    res.json({ ok: true });
+  });
+
   app.use('/admin', adminRouter({ config, clock, devices, snapshots, bridge, killSwitches, audit, loginLimiter }));
   app.get('/', (req, res) => res.redirect('/admin/'));
 

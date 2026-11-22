@@ -64,6 +64,9 @@ const SHOP_TO_CLOUD = Object.freeze({
   heartbeat: HeartbeatPayload,
   snapshot: Snapshot,
   'approval.decision': ApprovalDecisionPayload,
+  // Gate G6 approved by the owner 2026-11-22: the Shop confirms Cloud messages that need an
+  // ack (approval.created / approval.updated / token.rotate) — BRIDGE_PROTOCOL §4–5.
+  ack: AckPayload,
 });
 
 const CLOUD_TO_SHOP = Object.freeze({

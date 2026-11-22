@@ -16,14 +16,15 @@ test('A1 exports Envelope, Snapshot, ApprovalItem and every allowlisted type', (
   assert.equal(typeof bp.Envelope, 'function');
   assert.ok(bp.Snapshot);
   assert.ok(bp.ApprovalItem);
-  assert.deepEqual(Object.keys(bp.SHOP_TO_CLOUD).sort(), ['approval.decision', 'heartbeat', 'hello', 'snapshot']);
+  // `ack` Shop → Cloud: Gate G6 approved by the owner 2026-11-22 (Task A3).
+  assert.deepEqual(Object.keys(bp.SHOP_TO_CLOUD).sort(), ['ack', 'approval.decision', 'heartbeat', 'hello', 'snapshot']);
   assert.deepEqual(
     Object.keys(bp.CLOUD_TO_SHOP).sort(),
     ['ack', 'approval.created', 'approval.updated', 'hello.ack', 'token.rotate'],
   );
   assert.deepEqual(
     Object.keys(bp.MESSAGE_SCHEMAS).sort(),
-    [...Object.keys(bp.SHOP_TO_CLOUD), ...Object.keys(bp.CLOUD_TO_SHOP)].sort(),
+    [...new Set([...Object.keys(bp.SHOP_TO_CLOUD), ...Object.keys(bp.CLOUD_TO_SHOP)])].sort(),
   );
 });
 

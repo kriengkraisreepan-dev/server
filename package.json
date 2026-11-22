@@ -28,6 +28,7 @@
   "type": "commonjs",
   "dependencies": {
     "express": "^5.2.1",
+    "ws": "8.23.0",
     "zod": "4.6.7"
   },
   "devDependencies": {
@@ -61,11 +62,15 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         },
         {
           "target": "appx",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ]
     },

@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 const { parseMessage, serializeMessage, MAX_MESSAGE_BYTES, REJECT_CODES } = require('../packages/bridge-protocol');
 const fx = require('./ai-a1-fixtures');
 
-const SHOP_TYPES = ['hello', 'heartbeat', 'snapshot', 'approval.decision'];
+const SHOP_TYPES = ['hello', 'heartbeat', 'snapshot', 'approval.decision', 'ack'];
 const CLOUD_TYPES = ['hello.ack', 'ack', 'approval.created', 'approval.updated', 'token.rotate'];
 
 const wire = (type, payload, overrides) => JSON.stringify(fx.envelope(type, payload, overrides));
@@ -39,10 +39,11 @@ test('A1 parser S-1.3: unknown types are rejected as unknown_type', () => {
 
 test('A1 parser S-1.3: a type from the other direction is unknown', () => {
   const payloads = fx.validPayloads();
-  for (const type of SHOP_TYPES) {
+  // `ack` travels both ways (G6), so it is the only type allowed in both directions.
+  for (const type of SHOP_TYPES.filter((t) => !CLOUD_TYPES.includes(t))) {
     assert.equal(parseMessage(wire(type, payloads[type]), { direction: 'cloud_to_shop' }).code, 'unknown_type');
   }
-  for (const type of CLOUD_TYPES) {
+  for (const type of CLOUD_TYPES.filter((t) => !SHOP_TYPES.includes(t))) {
     assert.equal(parseMessage(wire(type, payloads[type]), { direction: 'shop_to_cloud' }).code, 'unknown_type');
   }
 });
@@ -102,4 +103,11 @@ test('A1 serializeMessage: round-trips and refuses unknown types', () => {
     (e) => e.code === 'unknown_type');
   assert.throws(() => serializeMessage('heartbeat', {}, { direction: 'shop_to_cloud', id: 'nope' }),
     (e) => e.code === 'invalid_envelope');
+});
+
+test('A3 / G6: Shop → Cloud `ack { refId }` is allowed and strict', () => {
+  const d = { direction: 'shop_to_cloud' };
+  assert.equal(parseMessage(wire('ack', { refId: fx.ULID_B }), d).ok, true);
+  assert.equal(parseMessage(wire('ack', { refId: fx.ULID_B, extra: 1 }), d).code, 'invalid_payload');
+  assert.equal(parseMessage(wire('ack', { refId: 'nope' }), d).code, 'invalid_payload');
 });
