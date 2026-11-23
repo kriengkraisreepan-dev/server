@@ -259,7 +259,28 @@ test('bridge WSS', async (t) => {
     await viaNewLater.hello(deviceId);
   });
 
-  await t.test('token.rotate is resent until the retry limit (no Shop→Cloud ack in protocol v1)', async () => {
+  await t.test('token.rotate acked by the Shop (G6) is not resent', async () => {
+    await h.close();
+    h = await startHub({ bridgeOptions: { ackTimeoutMs: 50, maxSendAttempts: 3 } });
+    const { deviceId, client } = await h.onlineDevice();
+    await h.hub.bridge.rotateToken(deviceId);
+    const first = await client.next((m) => m.type === 'token.rotate');
+    client.send('ack', { refId: first.id });
+    await client.flush();
+    await assert.rejects(client.next((m) => m.type === 'token.rotate', 200));
+    assert.ok(!h.logger.has('bridge.ack_timeout'));
+    const audit = await h.db.query("SELECT action FROM audit_log WHERE action = 'device.token_rotate_acked'");
+    assert.equal(audit.rows.length, 1);
+  });
+
+  await t.test('ack with an unknown refId is ignored and logged', async () => {
+    const { client } = await h.onlineDevice();
+    client.send('ack', { refId: ids.ulid() });
+    await client.flush();
+    assert.ok(h.logger.has('bridge.ack_unknown_ref'));
+  });
+
+  await t.test('token.rotate is resent until the retry limit when the Shop never acks', async () => {
     await h.close();
     h = await startHub({ bridgeOptions: { ackTimeoutMs: 50, maxSendAttempts: 3 } });
     const { deviceId, client } = await h.onlineDevice();

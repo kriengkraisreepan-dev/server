@@ -176,6 +176,20 @@ function createBridgeServer({
         send(conn, 'ack', { refId: msg.id }, { track: false });
         return;
       }
+      case 'ack': {
+        // Gate G6 (approved 2026-11-22): the Shop confirms approval.* / token.rotate; stop resending.
+        const p = conn.pending.get(msg.payload.refId);
+        if (!p) {
+          logger.info('bridge.ack_unknown_ref', { deviceId, refId: msg.payload.refId });
+          return;
+        }
+        clearTimeout(p.timer);
+        conn.pending.delete(msg.payload.refId);
+        if (p.type === 'token.rotate') {
+          await audit.record({ actor: `device:${deviceId}`, action: 'device.token_rotate_acked', target: deviceId });
+        }
+        return;
+      }
       default:
         // Unreachable while parseMessage enforces the allowlist; kept as a fail-safe.
         logger.warn('bridge.unhandled_type', { deviceId, type: msg.type, id: msg.id });
@@ -184,9 +198,8 @@ function createBridgeServer({
 
   /**
    * Validate (strict) and send one Cloud → Shop message. Types that need an ack are resent
-   * every ackTimeoutMs, up to maxSendAttempts. Note: protocol v1 has no Shop → Cloud `ack` in
-   * its allowlist yet (open question for Gate G6), so today these are always resent and the
-   * Shop must treat a repeat (same payload) as idempotent.
+   * every ackTimeoutMs, up to maxSendAttempts, until the Shop answers `ack { refId }` (G6).
+   * The Shop still treats a repeat as idempotent (dedupe by envelope id).
    */
   function send(conn, type, payload, { track = ACK_REQUIRED[type] === 'ack' } = {}) {
     const id = ids.ulid();

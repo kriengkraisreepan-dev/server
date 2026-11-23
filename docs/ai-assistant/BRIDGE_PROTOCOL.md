@@ -59,6 +59,7 @@ type Envelope<T extends string, P> = {
 | `heartbeat` | `{}` | ไม่มี |
 | `snapshot` | `Snapshot` (ดูข้อ 6) | ไม่มี (ส่งใหม่ทั้งก้อนทุกครั้ง) |
 | `approval.decision` | `{ approvalId, decision: 'approved' \| 'rejected', reasonCode?, note?, decidedBy, editedPayload? }` | `ack` |
+| `ack` | `{ refId }` — ยืนยัน `approval.created` / `approval.updated` / `token.rotate` (G6 อนุมัติ 2026-11-22) | ไม่มี |
 
 ### Cloud → Shop
 

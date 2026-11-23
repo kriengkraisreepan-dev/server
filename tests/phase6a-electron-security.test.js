@@ -14,7 +14,8 @@ test("Electron BrowserWindow security baseline is locked", () => {
 
 test("preload exposes fixed allowlisted operations and no generic IPC", () => {
   const preload = fs.readFileSync(path.join(root, "electron", "preload.js"), "utf8");
-  assert.deepEqual(Object.keys(IPC_CHANNELS).sort(), ["APP_INFO", "BACKUP_EXPORT", "RUNTIME_STATUS"]);
+  // Task A3 adds 4 fixed AI Bridge operations (status/pair/disconnect/save shop info); still no generic IPC.
+  assert.deepEqual(Object.keys(IPC_CHANNELS).sort(), ["AI_BRIDGE_DISCONNECT", "AI_BRIDGE_PAIR", "AI_BRIDGE_SAVE_SHOP_INFO", "AI_BRIDGE_STATUS", "APP_INFO", "BACKUP_EXPORT", "RUNTIME_STATUS"]);
   assert.match(preload, /getAppInfo/); assert.match(preload, /getRuntimeStatus/);
   assert.doesNotMatch(preload, /ipcRenderer\.(send|on)|\brequire\(["'](?:fs|path|child_process)["']\)|process\.env/);
 });
