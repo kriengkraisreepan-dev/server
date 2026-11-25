@@ -7,6 +7,9 @@ const { hhmm, localDate, localWeekday } = require('./time');
 
 const KIND_TH = { snooker: 'สนุกเกอร์', pool: 'พูล' };
 const AVG_SESSION_MIN = 90; // used only for the wait *estimate*
+// Live table state older than this is not told to customers at all (staff answer instead).
+// Prices / promotions change rarely: they are still given, with the data date+time.
+const LIVE_DATA_MAX_AGE_MS = 30 * 60 * 1000;
 
 /** Tool definitions for the Claude API (JSON Schema, strict). */
 const TOOL_DEFINITIONS = [
@@ -79,14 +82,37 @@ function createToolRunner({ snapshots, knowledge, clock }) {
     return s && s.snapshot ? s : null;
   }
 
+  /** Data time for the customer: "HH:MM" today, "DD/MM HH:MM" for an older day. */
+  function asOfLocal(s) {
+    const t = Date.parse(s.asOf);
+    const time = hhmm(t);
+    if (localDate(t) === localDate(clock.now())) return time;
+    const [, mm, dd] = localDate(t).split('-');
+    return `${dd}/${mm} ${time}`;
+  }
+
   function meta(s) {
-    return { asOfLocal: hhmm(s.asOf), stale: s.stale };
+    return { asOfLocal: asOfLocal(s), stale: s.stale };
+  }
+
+  function tooOld(s) {
+    return clock.now() - Date.parse(s.asOf) > LIVE_DATA_MAX_AGE_MS;
+  }
+
+  function tooOldResult(s) {
+    return {
+      available: false,
+      reason: 'shop_data_too_old',
+      asOfLocal: asOfLocal(s),
+      message: 'Live table data from the shop PC is too old to tell the customer. Do not state table availability or waiting time; offer staff.',
+    };
   }
 
   const impl = {
     async get_table_status() {
       const s = await snap();
       if (!s) return noData();
+      if (tooOld(s)) return tooOldResult(s);
       const byKind = {};
       for (const t of s.snapshot.tables) {
         const k = (byKind[t.kind] ||= { kind: t.kind, kindTh: KIND_TH[t.kind], total: 0, available: 0, in_use: 0, reserved: 0, maintenance: 0, availableTables: [] });
@@ -106,6 +132,7 @@ function createToolRunner({ snapshots, knowledge, clock }) {
     async get_wait_estimate({ kind = 'any' } = {}) {
       const s = await snap();
       if (!s) return noData();
+      if (tooOld(s)) return tooOldResult(s);
       const tables = s.snapshot.tables.filter((t) => kind === 'any' || t.kind === kind);
       if (tables.some((t) => t.status === 'available')) return { available: true, ...meta(s), isEstimate: true, freeNow: true, waitMinutes: 0 };
       const remaining = tables
@@ -139,7 +166,8 @@ function createToolRunner({ snapshots, knowledge, clock }) {
     },
 
     async get_shop_info() {
-      const s = await snap();
+      const s0 = await snap();
+      const s = s0 && !tooOld(s0) ? s0 : null; // "open now" from an old snapshot would be wrong
       const info = await knowledge.getShopInfo();
       return {
         nowLocal: hhmm(clock.now()),
@@ -183,4 +211,4 @@ function createToolRunner({ snapshots, knowledge, clock }) {
   };
 }
 
-module.exports = { TOOL_DEFINITIONS, createToolRunner, KIND_TH };
+module.exports = { TOOL_DEFINITIONS, createToolRunner, KIND_TH, LIVE_DATA_MAX_AGE_MS };

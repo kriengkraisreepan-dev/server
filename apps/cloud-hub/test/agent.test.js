@@ -8,7 +8,7 @@ const { startHub, snapshot } = require('./helpers');
 const safety = require('../src/agent/safety');
 const { createClaudeProvider } = require('../src/agent/llm-claude');
 const { SYSTEM_PROMPT, CANARY } = require('../src/agent/system-prompt');
-const { TOOL_DEFINITIONS } = require('../src/agent/tools');
+const { TOOL_DEFINITIONS, createToolRunner } = require('../src/agent/tools');
 const { runEval } = require('../scripts/eval-chat');
 
 /** A provider that calls the given tools, then answers with `text`, like a model would. */
@@ -23,13 +23,14 @@ function scripted(text, tools = []) {
   };
 }
 
-async function ask(t, provider, text, { stale = false } = {}) {
+async function ask(t, provider, text, { stale = false, ageMs = 0 } = {}) {
   const h = await startHub({ deps: { aiProvider: provider } });
   t.after(() => h.close());
   const d = await h.onlineDevice();
   d.client.send('snapshot', snapshot(h.clock, 1));
   await d.client.flush();
   if (stale) h.clock.advance(3 * 60 * 1000);
+  if (ageMs) h.clock.advance(ageMs);
   const admin = await h.adminLogin();
   return (await admin('POST', '/chat/try', { text })).json;
 }
@@ -87,6 +88,35 @@ test('agent guards (a misbehaving model cannot get a bad reply out)', async (t) 
   await t.test('S-3.5: stale data → data time appended when the model forgets it', async (t) => {
     const r = await ask(t, scripted('โต๊ะสนุกเกอร์ว่าง 1 โต๊ะครับ', [['get_table_status']]), 'มีโต๊ะว่างไหม', { stale: true });
     assert.match(r.reply, /ข้อมูล ณ 22:00 น\./);
+  });
+  await t.test('table data older than 30 min → no table answer, staff take over (free rules AI)', async (t) => {
+    const r = await ask(t, undefined, 'มีโต๊ะว่างไหม', { ageMs: 31 * 60 * 1000 });
+    assert.equal(r.handoff, 'no_shop_data');
+    assert.doesNotMatch(r.reply, /ว่าง \d+ โต๊ะ/);
+  });
+  await t.test('table data older than 30 min → tool result has no table state at all', async (t) => {
+    const h = await startHub();
+    t.after(() => h.close());
+    const d = await h.onlineDevice();
+    d.client.send('snapshot', snapshot(h.clock, 1));
+    await d.client.flush();
+    h.clock.advance(31 * 60 * 1000);
+    const runTool = createToolRunner({ snapshots: h.hub.snapshots, knowledge: h.hub.knowledge, clock: h.clock });
+    const run = (name, input = {}) => runTool(name, input, { onHandoff: async () => {} });
+    for (const name of ['get_table_status', 'get_wait_estimate']) {
+      const out = await run(name);
+      assert.equal(out.available, false, name);
+      assert.equal(out.reason, 'shop_data_too_old', name);
+      assert.equal(out.kinds, undefined);
+    }
+    assert.equal((await run('get_shop_info')).fromShopPc, null, '"open now" from old data is not given');
+    assert.equal((await run('get_price_list')).available, true, 'prices still given (with the data time)');
+  });
+  await t.test('price data from another day → the reply carries the date, not only the time', async (t) => {
+    const r = await ask(t, undefined, 'ราคาเท่าไหร่', { ageMs: 2 * 24 * 60 * 60 * 1000 });
+    assert.equal(r.handoff, null);
+    assert.match(r.reply, /120 บาท/);
+    assert.match(r.reply, /ข้อมูล ณ \d\d\/\d\d \d\d:\d\d น\./);
   });
   await t.test('model calls handoff_to_staff → fixed staff message', async (t) => {
     const r = await ask(t, scripted('อะไรก็ได้', [['handoff_to_staff', { reason: 'unsure' }]]), 'บลา ๆ');
