@@ -6,6 +6,7 @@
 // are dropped by message id anyway).
 const express = require('express');
 const { safeEqual } = require('../ids');
+const { webhookEvents } = require('./fb-messenger');
 
 function messengerWebhookRouter({ adapter, chat, verifyToken, logger, onProcessed = () => {} }) {
   const router = express.Router();
@@ -35,8 +36,9 @@ function messengerWebhookRouter({ adapter, chat, verifyToken, logger, onProcesse
       return res.status(400).json({ error: 'bad_json' });
     }
     // Counts only: never the message text or the customer id.
-    const events = Array.isArray(body && body.entry) ? body.entry.reduce((n, e) => n + (Array.isArray(e && e.messaging) ? e.messaging.length : 0), 0) : 0;
-    logger.info('fb.webhook_received', { object: body && body.object, entries: Array.isArray(body && body.entry) ? body.entry.length : 0, events });
+    const entries = Array.isArray(body && body.entry) ? body.entry : [];
+    const fields = [...new Set(entries.flatMap((e) => (e && Array.isArray(e.changes) ? e.changes.map((c) => String(c && c.field).slice(0, 40)) : [])))];
+    logger.info('fb.webhook_received', { object: body && body.object, entries: entries.length, events: webhookEvents(body).length, ...(fields.length ? { fields } : {}) });
     res.sendStatus(200);
     chat.handleWebhook(body).then(onProcessed, (err) => logger.error('fb.webhook_failed', { error: err && err.message }));
   });

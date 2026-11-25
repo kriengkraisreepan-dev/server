@@ -23,6 +23,36 @@ function verifySignature(rawBody, header, appSecret) {
 }
 
 /**
+ * Meta delivers Messenger events in two shapes:
+ *  - classic:  entry[].messaging[] = { sender, recipient, timestamp, message }
+ *  - "changes" (newer app dashboard / Webhook fields): entry[].changes[] =
+ *      { field: 'messages' | 'message_echoes', value: { sender, recipient, timestamp, message } }
+ * Both become the same list of events here.
+ */
+function webhookEvents(body) {
+  const out = [];
+  for (const entry of Array.isArray(body && body.entry) ? body.entry : []) {
+    if (!entry || typeof entry !== 'object') continue;
+    if (Array.isArray(entry.messaging)) out.push(...entry.messaging);
+    if (Array.isArray(entry.changes)) {
+      for (const c of entry.changes) {
+        if (!c || !c.value || typeof c.value !== 'object') continue;
+        if (c.field === 'messages') out.push(c.value);
+        else if (c.field === 'message_echoes') out.push({ ...c.value, isEcho: true });
+      }
+    }
+  }
+  return out;
+}
+
+/** Event timestamp → ms. Meta sends ms numbers; test events may send seconds or strings. */
+function toMs(t) {
+  const n = typeof t === 'string' && /^\d+$/.test(t) ? Number(t) : t;
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n < 1e12 ? n * 1000 : n;
+}
+
+/**
  * Webhook JSON → InboundMessage[] (customer messages) and echoes[] (messages the Page sent,
  * e.g. a staff member answering from the Page inbox). Unknown event kinds are ignored.
  */
@@ -30,42 +60,41 @@ function parse(body, { pageAppId = null, now = Date.now() } = {}) {
   const messages = [];
   const echoes = [];
   if (!body || body.object !== 'page' || !Array.isArray(body.entry)) return { messages, echoes };
-  for (const entry of body.entry) {
-    for (const ev of Array.isArray(entry && entry.messaging) ? entry.messaging : []) {
-      const msg = ev && ev.message;
-      if (!msg || typeof msg.mid !== 'string') continue;
-      const at = Number.isFinite(ev.timestamp) ? new Date(ev.timestamp).toISOString() : new Date(now).toISOString();
-      if (msg.is_echo) {
-        // Echo of a Page message. Our own replies carry our app_id; anything else is a human.
-        const recipient = ev.recipient && String(ev.recipient.id || '');
-        if (!recipient) continue;
-        echoes.push({
-          channel: CHANNEL,
-          channelMessageId: msg.mid,
-          customerRef: recipient,
-          fromOurApp: pageAppId != null && String(msg.app_id || '') === String(pageAppId),
-          text: typeof msg.text === 'string' ? msg.text : '',
-          at,
-        });
-        continue;
-      }
-      const sender = ev.sender && String(ev.sender.id || '');
-      if (!sender) continue;
-      const attachments = Array.isArray(msg.attachments)
-        ? msg.attachments
-          .filter((a) => a && typeof a.type === 'string')
-          .map((a) => ({ type: ['image', 'video', 'file'].includes(a.type) ? a.type : 'sticker', url: String((a.payload && a.payload.url) || '') }))
-        : undefined;
-      messages.push({
+  for (const ev of webhookEvents(body)) {
+    const msg = ev && ev.message;
+    if (!msg || typeof msg.mid !== 'string') continue;
+    const ts = toMs(ev.timestamp);
+    const at = new Date(ts === null ? now : ts).toISOString();
+    if (msg.is_echo || ev.isEcho) {
+      // Echo of a Page message. Our own replies carry our app_id; anything else is a human.
+      const recipient = ev.recipient && String(ev.recipient.id || '');
+      if (!recipient) continue;
+      echoes.push({
         channel: CHANNEL,
         channelMessageId: msg.mid,
-        customerRef: sender,
-        threadType: 'dm',
-        text: typeof msg.text === 'string' ? msg.text : undefined,
-        attachments: attachments && attachments.length ? attachments : undefined,
-        receivedAt: at,
+        customerRef: recipient,
+        fromOurApp: pageAppId != null && String(msg.app_id || '') === String(pageAppId),
+        text: typeof msg.text === 'string' ? msg.text : '',
+        at,
       });
+      continue;
     }
+    const sender = ev.sender && String(ev.sender.id || '');
+    if (!sender) continue;
+    const attachments = Array.isArray(msg.attachments)
+      ? msg.attachments
+        .filter((a) => a && typeof a.type === 'string')
+        .map((a) => ({ type: ['image', 'video', 'file'].includes(a.type) ? a.type : 'sticker', url: String((a.payload && a.payload.url) || '') }))
+      : undefined;
+    messages.push({
+      channel: CHANNEL,
+      channelMessageId: msg.mid,
+      customerRef: sender,
+      threadType: 'dm',
+      text: typeof msg.text === 'string' ? msg.text : undefined,
+      attachments: attachments && attachments.length ? attachments : undefined,
+      receivedAt: at,
+    });
   }
   return { messages, echoes };
 }
@@ -125,4 +154,4 @@ function createMessengerAdapter({ pageAccessToken, appSecret, pageAppId = null, 
   };
 }
 
-module.exports = { createMessengerAdapter, verifySignature, parse, CHANNEL, MESSAGING_WINDOW_MS, GRAPH_VERSION };
+module.exports = { createMessengerAdapter, verifySignature, parse, webhookEvents, CHANNEL, MESSAGING_WINDOW_MS, GRAPH_VERSION };
