@@ -35,4 +35,13 @@ textarea { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px soli
 .msg.system { background: transparent; color: var(--muted); font-size: 13px; }
 .msg small { display: block; color: var(--muted); font-size: 11px; }
 td.wrap { white-space: normal; min-width: 160px; }
+/* A5: คลังรูป + ตัวอย่างภาพโพสต์ */
+select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: var(--text); }
+.assets { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-top: 12px; }
+.asset { background: #0f172a; border-radius: 8px; padding: 8px; display: grid; gap: 6px; font-size: 13px; }
+.asset img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; background: #1e293b; }
+.asset.locked img { opacity: .45; }
+.asset select { width: 100%; font-size: 13px; }
+#preview-form label { display: flex; gap: 6px; align-items: center; }
+img.preview { display: block; width: 100%; max-width: 540px; margin-top: 8px; border-radius: 8px; }
 [hidden] { display: none !important; }

@@ -90,7 +90,9 @@ async function startHub({ bridgeOptions = {}, clock = makeClock(), config: confi
       const r = await h.http('POST', '/admin/api/login', { body: { password: ADMIN_PASSWORD }, headers: { 'x-hub-admin': '1' } });
       if (r.status !== 200) throw new Error('login failed ' + r.status);
       const cookie = r.headers.get('set-cookie').split(';')[0];
-      return (method, path, body) => h.http(method, '/admin/api' + path, { body, headers: { 'x-hub-admin': '1', cookie } });
+      const call = (method, path, body) => h.http(method, '/admin/api' + path, { body, headers: { 'x-hub-admin': '1', cookie } });
+      call.cookie = cookie;
+      return call;
     },
 
     async newCode() {

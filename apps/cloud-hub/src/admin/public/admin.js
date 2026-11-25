@@ -40,7 +40,7 @@
     $('login-view').hidden = true;
     $('app-view').hidden = false;
     $('logout').hidden = false;
-    await Promise.all([refresh(), refreshChat(), loadShopInfo(), loadFaq()]);
+    await Promise.all([refresh(), refreshChat(), loadShopInfo(), loadFaq(), loadAssets(), loadTemplates()]);
   }
 
   function statusBadge(d) {
@@ -235,6 +235,102 @@
     $('try-log').replaceChildren();
   });
   $('conv-handoff-only').addEventListener('change', () => refreshChat().catch(() => {}));
+
+  // ---- A5: คลังรูป + ตัวอย่างภาพโพสต์ ----
+  const SOURCE_TH = { real: 'รูปจริงของร้าน', ai: 'รูปจาก AI', template: 'ภาพตกแต่ง' };
+  const CONSENT_TH = { not_needed: 'ไม่มีคนในรูป', recorded: 'มีคน · อนุญาตแล้ว', missing: 'มีคน · ยังไม่ได้รับอนุญาต' };
+  const ASSET_ERR_TH = {
+    too_large: 'ไฟล์ใหญ่เกิน 5 MB', unsupported_type: 'รองรับเฉพาะรูป JPG, PNG, WebP', image_too_small: 'รูปเล็กเกินไป (อย่างน้อย 200×200)',
+    image_too_big: 'รูปใหญ่เกินไป', bad_source: 'กรุณาเลือกว่ารูปมาจากไหน', bad_consent: 'กรุณาเลือกว่าในรูปมีคนไหม',
+    bad_tags: 'คำค้นยาวหรือเยอะเกินไป', storage_full: 'ที่เก็บรูปเต็ม ลบรูปที่ไม่ใช้ก่อน', file_required: 'กรุณาเลือกรูป',
+    consent_missing: 'รูปนี้มีคนแต่ยังไม่ได้รับอนุญาต ใช้ทำโพสต์ไม่ได้', renderer_unavailable: 'ระบบทำภาพยังไม่พร้อม ลองใหม่อีกครั้ง',
+    busy: 'กำลังทำภาพอื่นอยู่ รอสักครู่', asset_not_found: 'ไม่พบรูปนี้แล้ว',
+  };
+  const objectUrls = [];
+
+  async function fetchBlobUrl(path) {
+    const res = await fetch('/admin/api' + path, { credentials: 'same-origin', headers: { 'x-hub-admin': '1' } });
+    if (!res.ok) throw new Error('load failed');
+    const url = URL.createObjectURL(await res.blob());
+    objectUrls.push(url);
+    return url;
+  }
+
+  async function loadAssets() {
+    const { assets, usage } = await api('GET', '/assets');
+    for (const u of objectUrls.splice(0)) URL.revokeObjectURL(u);
+    $('asset-usage').textContent = `${usage.count} รูป · ใช้ไป ${(usage.bytes / 1048576).toFixed(1)} จาก ${Math.round(usage.maxBytes / 1048576)} MB`;
+    $('assets').replaceChildren(...(assets.length ? assets.map((a) => {
+      const img = el('img', { alt: '' });
+      fetchBlobUrl(`/assets/${encodeURIComponent(a.id)}/image`).then((u) => { img.src = u; }).catch(() => {});
+      const consentSel = el('select', { onchange: async (ev) => {
+        await api('PATCH', '/assets/' + encodeURIComponent(a.id), { consent: ev.target.value });
+        await loadAssets();
+      } }, ...Object.entries(CONSENT_TH).map(([v, label]) => el('option', { value: v }, label)));
+      consentSel.value = a.consent;
+      return el('div', { class: 'asset' + (a.usable ? '' : ' locked') },
+        img,
+        el('div', {}, a.usable ? el('span', { class: 'badge ok' }, 'ใช้ทำโพสต์ได้') : el('span', { class: 'badge bad' }, 'ล็อก: ยังไม่ได้รับอนุญาต')),
+        el('div', {}, `${SOURCE_TH[a.source] || a.source} · ${a.width}×${a.height}`),
+        a.tags.length ? el('div', { class: 'hint' }, a.tags.join(', ')) : '',
+        consentSel,
+        el('button', { class: 'danger', onclick: async () => {
+          if (!confirm('ลบรูปนี้ถาวร?')) return;
+          await api('DELETE', '/assets/' + encodeURIComponent(a.id));
+          await loadAssets();
+        } }, 'ลบรูป'));
+    }) : [el('p', { class: 'hint' }, 'ยังไม่มีรูป')]));
+
+    const sel = $('preview-asset');
+    const keep = sel.value;
+    sel.replaceChildren(el('option', { value: '' }, 'ไม่ใช้รูป (พื้นสีกรมท่า)'),
+      ...assets.filter((a) => a.usable).map((a) => el('option', { value: a.id }, `${SOURCE_TH[a.source]} ${a.width}×${a.height}${a.tags.length ? ' · ' + a.tags.join(', ') : ''}`)));
+    sel.value = assets.some((a) => a.id === keep && a.usable) ? keep : '';
+  }
+
+  async function loadTemplates() {
+    const { templates } = await api('GET', '/content/templates');
+    $('preview-template').replaceChildren(...templates.map((t) => el('option', { value: t.id }, t.label)));
+  }
+
+  $('asset-form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const file = $('asset-file').files[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) { $('asset-status').textContent = ASSET_ERR_TH.too_large; return; }
+    const q = new URLSearchParams({ source: $('asset-source').value, consent: $('asset-consent').value, tags: $('asset-tags').value });
+    $('asset-status').textContent = 'กำลังอัปโหลด…';
+    const res = await fetch('/admin/api/assets?' + q, {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'x-hub-admin': '1', 'content-type': 'application/octet-stream' }, body: file,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { $('asset-status').textContent = 'อัปโหลดไม่สำเร็จ: ' + (ASSET_ERR_TH[data.error] || data.error || res.status); return; }
+    $('asset-status').textContent = 'อัปโหลดแล้ว';
+    $('asset-form').reset();
+    await loadAssets();
+  });
+
+  $('preview-form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    $('preview-status').textContent = 'กำลังทำภาพ… (ครั้งแรกอาจใช้เวลาประมาณครึ่งนาที)';
+    const body = { templateId: $('preview-template').value };
+    if ($('preview-asset').value) body.assetId = $('preview-asset').value;
+    const res = await fetch('/admin/api/content/preview', {
+      method: 'POST', credentials: 'same-origin',
+      headers: { 'x-hub-admin': '1', 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      $('preview-status').textContent = 'ทำภาพไม่สำเร็จ: ' + (ASSET_ERR_TH[data.error] || data.error || res.status);
+      return;
+    }
+    const img = $('preview-img');
+    if (img.src) URL.revokeObjectURL(img.src);
+    img.src = URL.createObjectURL(await res.blob());
+    img.hidden = false;
+    $('preview-status').textContent = 'ภาพตัวอย่าง 1080×1080 (คลิกขวาที่ภาพเพื่อบันทึกได้)';
+  });
 
   $('login-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();

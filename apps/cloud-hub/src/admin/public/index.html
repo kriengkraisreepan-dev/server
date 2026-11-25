@@ -100,6 +100,48 @@
         </form>
       </section>
 
+      <section id="assets-section">
+        <div class="row">
+          <h2>คลังรูป (สำหรับทำโพสต์)</h2>
+          <span id="asset-usage" class="hint"></span>
+        </div>
+        <p class="hint">รูป JPG / PNG / WebP ไม่เกินรูปละ 5 MB · ถ้าในรูปมีคน ต้องได้รับอนุญาตจากคนในรูปก่อน ไม่อย่างนั้นรูปจะถูกล็อก เอาไปทำโพสต์ไม่ได้</p>
+        <form id="asset-form" class="stack">
+          <label>เลือกรูป <input type="file" id="asset-file" accept="image/jpeg,image/png,image/webp" required></label>
+          <label>รูปนี้มาจากไหน
+            <select id="asset-source" required>
+              <option value="">— เลือก —</option>
+              <option value="real">รูปถ่ายจริงของร้าน</option>
+              <option value="ai">รูปที่สร้างด้วย AI (เช่น ChatGPT)</option>
+              <option value="template">ภาพตกแต่ง / ลายพื้นหลัง</option>
+            </select>
+          </label>
+          <label>ในรูปมีคนไหม
+            <select id="asset-consent" required>
+              <option value="">— เลือก —</option>
+              <option value="not_needed">ไม่มีคนในรูป</option>
+              <option value="recorded">มีคน และได้รับอนุญาตแล้ว</option>
+              <option value="missing">มีคน แต่ยังไม่ได้รับอนุญาต (รูปจะถูกล็อก)</option>
+            </select>
+          </label>
+          <label>คำค้น (ไม่ใส่ก็ได้ คั่นด้วยจุลภาค เช่น โต๊ะ, กลางคืน, แข่ง) <input id="asset-tags" maxlength="300"></label>
+          <div class="row"><button type="submit">อัปโหลดรูป</button><span id="asset-status" class="hint"></span></div>
+        </form>
+        <div id="assets" class="assets"></div>
+      </section>
+
+      <section id="preview-section">
+        <h2>ตัวอย่างภาพโพสต์</h2>
+        <p class="hint">ดูหน้าตาโพสต์แต่ละแบบด้วยข้อมูลตัวอย่าง (ยังไม่โพสต์ขึ้นเพจ และไม่บันทึกอะไร)</p>
+        <form id="preview-form" class="row">
+          <label>แบบโพสต์ <select id="preview-template"></select></label>
+          <label>รูปพื้นหลัง <select id="preview-asset"><option value="">ไม่ใช้รูป (พื้นสีกรมท่า)</option></select></label>
+          <button type="submit">ดูตัวอย่างภาพ</button>
+        </form>
+        <p id="preview-status" class="hint"></p>
+        <img id="preview-img" class="preview" alt="ตัวอย่างภาพโพสต์" hidden>
+      </section>
+
       <section>
         <h2>บันทึกล่าสุด (audit log)</h2>
         <table>

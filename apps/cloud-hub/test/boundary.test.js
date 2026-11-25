@@ -11,7 +11,8 @@ const crypto = require('node:crypto');
 
 const ROOT = path.join(__dirname, '..');
 // A4 adds @anthropic-ai/sdk (Claude API) and yaml (dev only: evals/chat.yaml).
-const ALLOWED_PACKAGES = new Set(['express', 'ws', 'pg', 'zod', '@electric-sql/pglite', '@88snooker/bridge-protocol', '@anthropic-ai/sdk', 'yaml']);
+// A5 adds playwright-core (post renderer) and pngjs (dev only: image tests).
+const ALLOWED_PACKAGES = new Set(['express', 'ws', 'pg', 'zod', '@electric-sql/pglite', '@88snooker/bridge-protocol', '@anthropic-ai/sdk', 'yaml', 'playwright-core', 'pngjs']);
 
 function* jsFiles(dir) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {

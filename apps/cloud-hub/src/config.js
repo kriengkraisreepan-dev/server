@@ -26,6 +26,8 @@ function loadConfig(env = process.env) {
     aiModel: env.AI_MODEL || null,
     aiEffort: env.AI_EFFORT || 'low',
     chatRetentionDays: Number(env.CHAT_RETENTION_DAYS || 90),
+    // A5 renderer: Chromium binary. Default = the one `playwright-core install` put in PLAYWRIGHT_BROWSERS_PATH.
+    chromiumPath: env.CHROMIUM_PATH || null,
   };
 }
 

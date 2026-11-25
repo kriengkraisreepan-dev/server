@@ -1,4 +1,4 @@
-# @88snooker/cloud-hub — Cloud hub (Task A2 skeleton)
+# @88snooker/cloud-hub — Cloud hub
 
 Cloud side of the 88Snooker AI assistant. A2 scope: Shop PC pairing, the bridge WSS endpoint,
 the snapshot cache with staleness, and the owner Admin web ("เครื่องร้าน" + kill switches).
@@ -28,6 +28,11 @@ npm test                                 # from apps/cloud-hub (or `npm run test
 TEST_DATABASE_URL=postgres://hub:hub-dev-only@localhost:5432/cloud_hub npm run test:postgres
 ```
 
+A5 render tests (`test/content.test.js`) need Chromium: `npx playwright-core install --only-shell chromium`
+once. Without it they are skipped (`REQUIRE_RENDERER=1` makes that a failure). Thai text and the three
+templates are compared with the baseline images in `test/snapshots/`; after a deliberate design change
+run `UPDATE_SNAPSHOTS=1 npm test` and look at every new image before committing it.
+
 `bridge-protocol` is installed as a **copy** (`.npmrc` `install-links=true`) so the Docker image
 works without the rest of the repo. After changing `packages/bridge-protocol`, run `npm install`
 here again; `test/boundary.test.js` fails if the copy is out of date.
@@ -51,6 +56,7 @@ here again; `test/boundary.test.js` fails if the copy is out of date.
 | `AI_PROVIDER` | `claude` or `rules` (default: `claude` when a key is set). |
 | `AI_MODEL`, `AI_EFFORT` | Default `claude-opus-5-5`, effort `low`. |
 | `CHAT_RETENTION_DAYS` | Conversation log retention (default 90, S-6.2). |
+| `CHROMIUM_PATH` | A5: Chromium for the post renderer. Default: the one `npx playwright-core install --only-shell chromium` put in `PLAYWRIGHT_BROWSERS_PATH` (the Docker image does this). |
 
 ## Layout
 
@@ -63,6 +69,10 @@ src/
   bridge/snapshots.js  latest snapshot per device, stale = >90 s old or device offline
   bridge/ws-server.js  /bridge/v1: auth, hello/heartbeat/snapshot/approval.decision, dedupe, close codes
   admin/               owner login (scrypt, in-memory sessions), API routes, static page
+  content/assets.js    A5 asset library (คลังรูป): images in Postgres (≤ 5 MB each, 200 MB total), type read from the bytes, consent gate (S-4.5)
+  content/templates.js A5 templates daily_tables / happy_hour / tournament: data schema, forbidden words, HTML+CSS with brand tokens
+  content/renderer.js  A5 HTML → 1080×1080 PNG with headless Chromium; offline (all requests blocked), one render at a time
+  content/brand.js     colour tokens, embedded fonts (fonts/, SIL OFL) and logo (brand/logo-small.webp, from docs/ai-assistant/brand/logo-master.jpg)
 scripts/               dev.js, hash-password.js, test-postgres.js
 test/                  node --test suites (see below)
 ```
