@@ -72,6 +72,9 @@ src/
   content/assets.js    A5 asset library (คลังรูป): images in Postgres (≤ 5 MB each, 200 MB total), type read from the bytes, consent gate (S-4.5)
   content/templates.js A5 templates daily_tables / happy_hour / tournament: data schema, forbidden words, HTML+CSS with brand tokens
   content/renderer.js  A5 HTML → 1080×1080 PNG with headless Chromium; offline (all requests blocked), one render at a time
+  content/generator.js A6 drafts: caption + hashtags + ChatGPT image prompt + template data from the snapshot / promotions / owner input (free, no AI service)
+  content/checks.js    A6 checks: every number traces to sourceSnapshot (S-4.2), forbidden words, ≤ 3 brand emoji, hashtags
+  content/items.js     A6 ContentItem store + state machine + approval queue (L1 only, expiresAt sweep every minute)
   content/brand.js     colour tokens, embedded fonts (fonts/, SIL OFL) and logo (brand/logo-small.webp, from docs/ai-assistant/brand/logo-master.jpg)
 scripts/               dev.js, hash-password.js, test-postgres.js
 test/                  node --test suites (see below)
@@ -123,6 +126,31 @@ npm run eval -- --verbose  # print every reply
 ```
 
 Pass bar (A4): safety 100%, quality ≥ 90%. `test/agent.test.js` runs it with the rules provider.
+
+## Post drafts + approval (Task A6)
+
+Admin web "โพสต์รออนุมัติ": the owner presses "ร่างโพสต์" (โต๊ะว่างวันนี้ / โปร / การแข่งขัน), checks the
+image and text, edits the caption / hashtags, picks a background from คลังรูป and a time, copies the
+ChatGPT image prompt, then approves or rejects with a reason code (BRIDGE_PROTOCOL §7 list).
+
+- Every draft starts and stays at **L1** (DB `CHECK autonomy_level = 'L1'`, no API field) — S-4.1.
+- `sourceSnapshot` is stored with the draft; `checks.checkNumbers` refuses any number in the caption,
+  hashtags or image text that is not in it (e.g. a wrong price) — S-4.2. Checks run on create,
+  on every edit and on approve.
+- `expiresAt`: daily_tables +60 min, happy_hour end of `validTo`, tournament end of the event day
+  (results: +7 days). Past it the draft becomes `expired` and cannot be approved — S-4.4.
+- daily_tables: only when open, ≥ 2 free tables, fresh data; approve re-checks the live free-table
+  count (`shop_data_changed` → "ร่างใหม่"); at most one approved per day.
+- Nothing is posted: `approved` items wait for the publisher (A7). The 88Snooker Approval tab
+  (`approval.created` / `approval.decision` over the bridge) is a separate change.
+
+| Endpoint (`/admin/api`) | |
+|---|---|
+| `GET /content/sources` | pending count, latest shop data summary, promotions usable for posts, reject reasons |
+| `GET/POST /content/items` | list (`?status=`), create `{ templateId, promotionId?, tournament? }` |
+| `GET/PATCH /content/items/:id` | review (item + current check issues + `dataChanged`), edit `{ caption, hashtags, assetId, scheduledAt }` |
+| `POST /content/items/:id/{regenerate,approve,reject}` | approve `{ scheduledAt? }` (10 min–30 days ahead, before `expiresAt`), reject `{ reasonCode, note? }` |
+| `GET /content/items/:id/image` | the post image (PNG) from the draft's own data |
 
 ## Known limits (Phase A)
 

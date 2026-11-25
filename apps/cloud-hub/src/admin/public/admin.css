@@ -44,4 +44,15 @@ select { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid 
 .asset select { width: 100%; font-size: 13px; }
 #preview-form label { display: flex; gap: 6px; align-items: center; }
 img.preview { display: block; width: 100%; max-width: 540px; margin-top: 8px; border-radius: 8px; }
+/* A6: โพสต์รออนุมัติ */
+.post-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; margin-top: 8px; }
+@media (max-width: 760px) { .post-grid { grid-template-columns: 1fr; } }
+.warnbox { background: #78350f; color: #fde68a; border-radius: 8px; padding: 8px 10px; font-size: 14px; white-space: pre-line; }
+button.okbtn { background: var(--ok); color: #052e16; }
+label.check { display: flex !important; gap: 6px; align-items: center; }
+#posts-section details { background: #0f172a; border-radius: 8px; padding: 8px 12px; }
+#posts-section summary { cursor: pointer; }
+#post-reject-row input { flex: 1; min-width: 160px; }
+#posts-section .stack .row, #post-actions, #post-reject-row { justify-content: flex-start; }
+#post-status, #gen-status { white-space: pre-line; }
 [hidden] { display: none !important; }

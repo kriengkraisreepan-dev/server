@@ -100,6 +100,74 @@
         </form>
       </section>
 
+      <section id="posts-section">
+        <div class="row">
+          <h2>โพสต์รออนุมัติ</h2>
+          <span id="posts-badge" class="badge warn" hidden></span>
+        </div>
+        <p class="hint">ระบบร่างโพสต์จากข้อมูลจริงของร้าน คุณตรวจ แก้ แล้วกดอนุมัติ · ตอนนี้ยังไม่โพสต์ขึ้นเพจจริง (การโพสต์จะมาในขั้นถัดไป)</p>
+        <p id="posts-shop" class="hint"></p>
+        <div class="stack">
+          <div class="row"><button type="button" id="gen-daily">ร่างโพสต์ “โต๊ะว่างวันนี้”</button></div>
+          <div class="row">
+            <label>โปร <select id="gen-promo"></select></label>
+            <button type="button" id="gen-happy">ร่างโพสต์ “โปร”</button>
+          </div>
+          <details>
+            <summary>ร่างโพสต์ “การแข่งขัน”</summary>
+            <form id="gen-tour" class="stack">
+              <label>แบบ <select id="tour-mode"><option value="announce">ประกาศรับสมัคร</option><option value="result">ประกาศผล</option></select></label>
+              <label>ชื่อรายการ <input id="tour-title" maxlength="50" required></label>
+              <label>วันแข่ง <input type="date" id="tour-date" required></label>
+              <label>เวลาเริ่ม (ไม่ใส่ก็ได้) <input type="time" id="tour-time"></label>
+              <label>รายละเอียด (ไม่ใส่ก็ได้) <input id="tour-detail" maxlength="300"></label>
+              <label>ค่าสมัคร บาท (ไม่ใส่ก็ได้) <input type="number" id="tour-fee" min="0" max="100000" step="1"></label>
+              <label>รางวัล (ไม่ใส่ก็ได้) <input id="tour-prize" maxlength="100"></label>
+              <label>ผู้ชนะ (เฉพาะประกาศผล ใส่ชื่อเรียงอันดับ คั่นด้วยจุลภาค) <input id="tour-winners" maxlength="100"></label>
+              <label class="check"><input type="checkbox" id="tour-consent"> ผู้ชนะทุกคนยินยอมให้ลงชื่อในโพสต์แล้ว</label>
+              <div class="row"><button type="submit">ร่างโพสต์</button></div>
+            </form>
+          </details>
+          <p id="gen-status" class="hint" role="status"></p>
+        </div>
+        <div class="row">
+          <label class="hint">แสดง <select id="posts-filter"><option value="pending_approval">รออนุมัติ</option><option value="">ทั้งหมด</option></select></label>
+        </div>
+        <table>
+          <thead><tr><th>โพสต์</th><th>สถานะ</th><th>สร้างเมื่อ</th><th>หมดอายุ</th><th></th></tr></thead>
+          <tbody id="posts"></tbody>
+        </table>
+        <div id="post-detail" class="pairing" hidden>
+          <div class="row"><strong id="post-title"></strong><button type="button" class="ghost" id="post-close">ปิด</button></div>
+          <div class="post-grid">
+            <div>
+              <img id="post-img" class="preview" alt="ภาพโพสต์">
+              <p id="post-img-status" class="hint"></p>
+            </div>
+            <div class="stack">
+              <div id="post-warn" class="warnbox" hidden></div>
+              <label>ข้อความโพสต์ <textarea id="post-caption" rows="9" maxlength="1500"></textarea></label>
+              <label>แฮชแท็ก <input id="post-tags" maxlength="300"></label>
+              <label>รูปพื้นหลัง <select id="post-asset"></select></label>
+              <label>เวลาที่อยากให้โพสต์ (ไม่ใส่ = โพสต์ทันทีหลังอนุมัติ) <input type="datetime-local" id="post-when"></label>
+              <label>คำสั่งสำหรับไปสร้างรูปใน ChatGPT <textarea id="post-prompt" rows="5" readonly></textarea></label>
+              <div class="row"><button type="button" class="ghost" id="post-copy">คัดลอกคำสั่งทำรูป</button><span id="post-copy-status" class="hint"></span></div>
+              <div class="row" id="post-actions">
+                <button type="button" id="post-save">บันทึกที่แก้</button>
+                <button type="button" class="ghost" id="post-regen">ร่างใหม่</button>
+                <button type="button" class="okbtn" id="post-approve">อนุมัติ</button>
+              </div>
+              <div class="row" id="post-reject-row">
+                <select id="post-reason"></select>
+                <input id="post-note" maxlength="300" placeholder="เหตุผลเพิ่มเติม (ไม่ใส่ก็ได้)">
+                <button type="button" class="danger" id="post-reject">ไม่อนุมัติ</button>
+              </div>
+              <p id="post-status" class="hint" role="status"></p>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <section id="assets-section">
         <div class="row">
           <h2>คลังรูป (สำหรับทำโพสต์)</h2>

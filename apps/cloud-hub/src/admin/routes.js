@@ -1,14 +1,15 @@
 'use strict';
 
 // Admin web API for the shop owner: login, "เครื่องร้าน" (pairing code, status, revoke,
-// rotate token), kill switches (S-1.5), recent audit log, A4 chat, A5 asset library + post preview.
+// rotate token), kill switches (S-1.5), recent audit log, A4 chat, A5 asset library + post preview,
+// A6 post drafts + approval queue.
 const path = require('node:path');
 const express = require('express');
 const auth = require('./auth');
 
 const ADMIN_HEADER = 'x-hub-admin';
 
-function adminRouter({ config, clock, devices, snapshots, bridge, killSwitches, audit, loginLimiter, knowledge, conversations, chatTester, assets, renderer, aiInfo = {} }) {
+function adminRouter({ config, clock, devices, snapshots, bridge, killSwitches, audit, loginLimiter, knowledge, conversations, chatTester, assets, renderer, contentItems, aiInfo = {} }) {
   const router = express.Router();
   const sessions = auth.createSessions({ clock });
   const secure = config.secureCookies;
@@ -251,6 +252,93 @@ function adminRouter({ config, clock, devices, snapshots, bridge, killSwitches, 
       res.set('Content-Type', 'image/png').send(out.png);
     } catch (err) {
       contentError(res, err);
+    } finally {
+      pendingPreviews -= 1;
+    }
+  });
+
+  // ---- A6: post drafts + approval queue (โพสต์รออนุมัติ). Nothing is posted from here. ----
+  const { ItemError } = require('../content/items');
+  const { promotionsForPosts } = require('../content/generator');
+  const itemError = (res, err) => {
+    if (err instanceof ItemError) return res.status(err.status).json({ error: err.code, detail: err.detail });
+    return contentError(res, err);
+  };
+
+  api.get('/content/sources', async (req, res) => {
+    const latest = await snapshots.latestActive();
+    const s = latest && latest.snapshot;
+    res.json({
+      pendingCount: await contentItems.pendingCount(),
+      shop: latest ? {
+        asOf: latest.asOf,
+        stale: latest.stale,
+        isOpenNow: s.shop.isOpenNow,
+        available: s.tables.filter((t) => t.status === 'available').length,
+      } : null,
+      promotions: promotionsForPosts(latest, clock.now()),
+      rejectReasons: contentItems.REJECT_REASONS,
+    });
+  });
+
+  api.get('/content/items', async (req, res) => {
+    const status = req.query.status ? String(req.query.status) : undefined;
+    if (status && !contentItems.STATUSES.includes(status)) return res.status(400).json({ error: 'bad_status' });
+    const items = await contentItems.list({ status, limit: Number(req.query.limit) || 50 });
+    res.json({ items: items.map(({ sourceSnapshot, ...rest }) => ({ ...rest, sourceSeq: sourceSnapshot && sourceSnapshot.seq })) });
+  });
+
+  api.post('/content/items', async (req, res) => {
+    try {
+      const { templateId, promotionId, tournament } = req.body || {};
+      res.status(201).json({ item: await contentItems.create({ templateId, promotionId, tournament }, 'owner') });
+    } catch (err) { itemError(res, err); }
+  });
+
+  api.get('/content/items/:id', async (req, res) => {
+    const r = await contentItems.review(req.params.id);
+    if (!r) return res.status(404).json({ error: 'not_found' });
+    res.json(r);
+  });
+
+  api.patch('/content/items/:id', async (req, res) => {
+    try {
+      res.json({ item: await contentItems.update(req.params.id, req.body, 'owner') });
+    } catch (err) { itemError(res, err); }
+  });
+
+  api.post('/content/items/:id/regenerate', async (req, res) => {
+    try {
+      res.json({ item: await contentItems.regenerate(req.params.id, 'owner') });
+    } catch (err) { itemError(res, err); }
+  });
+
+  api.post('/content/items/:id/approve', async (req, res) => {
+    try {
+      const body = req.body || {};
+      res.json({ item: await contentItems.approve(req.params.id, { scheduledAt: body.scheduledAt }, 'owner') });
+    } catch (err) { itemError(res, err); }
+  });
+
+  api.post('/content/items/:id/reject', async (req, res) => {
+    try {
+      const body = req.body || {};
+      res.json({ item: await contentItems.reject(req.params.id, { reasonCode: body.reasonCode, note: body.note }, 'owner') });
+    } catch (err) { itemError(res, err); }
+  });
+
+  // The post image, drawn from the item's own data (+ chosen background). One render at a time.
+  api.get('/content/items/:id/image', async (req, res) => {
+    const item = await contentItems.get(req.params.id);
+    if (!item) return res.status(404).json({ error: 'not_found' });
+    if (pendingPreviews >= 3) return res.status(429).json({ error: 'busy' });
+    pendingPreviews += 1;
+    try {
+      const background = item.assetId ? await assets.loadForTemplate(item.assetId, item.templateId) : undefined;
+      const out = await renderer.render(item.templateId, item.templateData, { background });
+      res.set('Content-Type', 'image/png').send(out.png);
+    } catch (err) {
+      itemError(res, err);
     } finally {
       pendingPreviews -= 1;
     }
