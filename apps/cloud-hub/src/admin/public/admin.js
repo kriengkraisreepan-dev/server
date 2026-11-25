@@ -15,7 +15,7 @@
     });
     const data = await res.json().catch(() => ({}));
     if (res.status === 401 && path !== '/login') showLogin();
-    if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), { status: res.status });
+    if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), { status: res.status, detail: data.detail });
     return data;
   }
 
@@ -40,7 +40,7 @@
     $('login-view').hidden = true;
     $('app-view').hidden = false;
     $('logout').hidden = false;
-    await Promise.all([refresh(), refreshChat(), loadShopInfo(), loadFaq(), loadAssets(), loadTemplates()]);
+    await Promise.all([refresh(), refreshChat(), loadShopInfo(), loadFaq(), loadAssets(), loadTemplates(), loadPosts()]);
   }
 
   function statusBadge(d) {
@@ -247,6 +247,7 @@
     busy: 'กำลังทำภาพอื่นอยู่ รอสักครู่', asset_not_found: 'ไม่พบรูปนี้แล้ว',
   };
   const objectUrls = [];
+  let usableAssets = [];
 
   async function fetchBlobUrl(path) {
     const res = await fetch('/admin/api' + path, { credentials: 'same-origin', headers: { 'x-hub-admin': '1' } });
@@ -258,6 +259,7 @@
 
   async function loadAssets() {
     const { assets, usage } = await api('GET', '/assets');
+    usableAssets = assets.filter((a) => a.usable);
     for (const u of objectUrls.splice(0)) URL.revokeObjectURL(u);
     $('asset-usage').textContent = `${usage.count} รูป · ใช้ไป ${(usage.bytes / 1048576).toFixed(1)} จาก ${Math.round(usage.maxBytes / 1048576)} MB`;
     $('assets').replaceChildren(...(assets.length ? assets.map((a) => {
@@ -332,6 +334,202 @@
     $('preview-status').textContent = 'ภาพตัวอย่าง 1080×1080 (คลิกขวาที่ภาพเพื่อบันทึกได้)';
   });
 
+
+  // ---- A6: โพสต์รออนุมัติ ----
+  const STATUS_TH = {
+    draft: ['ร่าง', 'off'], pending_approval: ['รออนุมัติ', 'warn'], approved: ['อนุมัติแล้ว', 'ok'], scheduled: ['ตั้งเวลาแล้ว', 'ok'],
+    published: ['โพสต์แล้ว', 'ok'], failed: ['โพสต์ไม่สำเร็จ', 'bad'], rejected: ['ไม่อนุมัติ', 'off'], expired: ['หมดอายุ', 'off'],
+  };
+  const REASON_TH = { table_full: 'โต๊ะเต็มแล้ว', closed: 'ร้านปิด', wrong_info: 'ข้อมูลไม่ถูกต้อง', off_brand: 'ไม่ใช่สไตล์ร้าน', wrong_numbers: 'ตัวเลขผิด', other: 'อื่น ๆ' };
+  const POST_ERR_TH = {
+    no_shop_data: 'ยังไม่มีข้อมูลจากเครื่องร้าน', shop_data_stale: 'ข้อมูลจากเครื่องร้านเก่าเกินไป (เครื่องร้านอาจปิดอยู่หรือเน็ตหลุด)',
+    shop_closed: 'ตอนนี้ร้านปิดอยู่', not_enough_tables: 'โต๊ะว่างไม่ถึง 2 โต๊ะ ยังไม่ควรโพสต์',
+    daily_tables_already_today: 'วันนี้อนุมัติโพสต์ “โต๊ะว่างวันนี้” ไปแล้ว (ได้วันละ 1 ครั้ง)',
+    promotion_not_found: 'ไม่พบโปรนี้ในเครื่องร้าน', promotion_ended: 'โปรนี้หมดเขตแล้ว', promotion_title_too_long: 'ชื่อโปรยาวเกิน 40 ตัวอักษร ใส่ในภาพไม่ได้ ช่วยตั้งชื่อให้สั้นลงในโปรแกรมร้าน',
+    bad_tournament: 'ข้อมูลการแข่งยังไม่ครบหรือไม่ถูกต้อง', event_in_past: 'วันแข่งผ่านไปแล้ว', names_need_consent: 'ต้องติ๊กว่าผู้ชนะยินยอมให้ลงชื่อก่อน',
+    unknown_template: 'ไม่รู้จักแบบโพสต์นี้', not_pending: 'โพสต์นี้ไม่ได้อยู่ในสถานะรออนุมัติแล้ว', not_found: 'ไม่พบโพสต์นี้',
+    shop_data_changed: 'จำนวนโต๊ะว่างเปลี่ยนไปแล้ว กด “ร่างใหม่” เพื่อใช้ตัวเลขล่าสุดก่อนอนุมัติ',
+    scheduled_too_soon: 'เวลาโพสต์ต้องห่างจากตอนนี้อย่างน้อย 10 นาที', scheduled_too_far: 'ตั้งเวลาล่วงหน้าได้ไม่เกิน 30 วัน',
+    scheduled_after_expiry: 'เวลาที่เลือกเลยเวลาหมดอายุของโพสต์นี้แล้ว', bad_scheduled_at: 'เวลาไม่ถูกต้อง',
+    bad_reason: 'กรุณาเลือกเหตุผล', consent_missing: 'รูปนี้มีคนแต่ยังไม่ได้รับอนุญาต ใช้ไม่ได้', asset_not_found: 'ไม่พบรูปนี้แล้ว',
+    asset_not_allowed_for_template: 'รูปนี้ไม่ได้ตั้งให้ใช้กับโพสต์แบบนี้', renderer_unavailable: 'ระบบทำภาพยังไม่พร้อม ลองใหม่อีกครั้ง', busy: 'กำลังทำภาพอื่นอยู่ รอสักครู่',
+  };
+  const ISSUE_TH = {
+    wrong_numbers: (i) => `ตัวเลข “${i.number}” ${i.where === 'image' ? 'ในภาพ' : i.where === 'hashtags' ? 'ในแฮชแท็ก' : 'ในข้อความ'} ไม่ตรงกับข้อมูลร้าน`,
+    forbidden_word: (i) => `มีคำต้องห้าม “${i.word}”`,
+    too_many_emoji: (i) => `อีโมจิ ${i.count} ตัว (ใส่ได้ไม่เกิน 3 ตัว)`,
+    emoji_not_allowed: (i) => `อีโมจิ ${i.emoji} ไม่อยู่ในชุดของร้าน (ใช้ได้ 🎱 🏆 ✨ 🕗 📍)`,
+    too_many_hashtags: (i) => `แฮชแท็ก ${i.count} อัน (ไม่เกิน 6)`,
+    bad_hashtag: (i) => `แฮชแท็ก “${i.tag}” เขียนไม่ถูก (ห้ามมีเว้นวรรค)`,
+    caption_empty: () => 'ข้อความโพสต์ว่างอยู่', caption_too_long: () => 'ข้อความยาวเกินไป',
+  };
+  const postErr = (err) => {
+    if (err.message === 'checks_failed' && Array.isArray(err.detail)) return 'ยังบันทึกไม่ได้:\n' + err.detail.map((i) => '• ' + (ISSUE_TH[i.code] ? ISSUE_TH[i.code](i) : i.code)).join('\n');
+    return POST_ERR_TH[err.message] || ('ไม่สำเร็จ: ' + err.message);
+  };
+  let openPostId = null;
+  let postImgUrl = null;
+
+  async function loadPosts() {
+    const status = $('posts-filter').value;
+    const [src, list] = await Promise.all([
+      api('GET', '/content/sources'),
+      api('GET', '/content/items' + (status ? '?status=' + status : '')),
+    ]);
+    $('posts-badge').hidden = !src.pendingCount;
+    $('posts-badge').textContent = `รออนุมัติ ${src.pendingCount}`;
+    $('posts-shop').textContent = src.shop
+      ? `ข้อมูลร้านล่าสุด ${fmt(src.shop.asOf)} · ${src.shop.isOpenNow ? 'ร้านเปิด' : 'ร้านปิด'} · โต๊ะว่าง ${src.shop.available} โต๊ะ${src.shop.stale ? ' · (ข้อมูลเก่า)' : ''}`
+      : 'ยังไม่มีข้อมูลจากเครื่องร้าน';
+    const promoSel = $('gen-promo');
+    const keepPromo = promoSel.value;
+    promoSel.replaceChildren(...(src.promotions.length
+      ? src.promotions.map((p) => el('option', { value: p.id }, `${p.title} (ถึง ${p.validTo})`))
+      : [el('option', { value: '' }, 'ยังไม่มีโปรในเครื่องร้าน')]));
+    if (src.promotions.some((p) => p.id === keepPromo)) promoSel.value = keepPromo;
+    $('gen-happy').disabled = !src.promotions.length;
+    $('post-reason').replaceChildren(el('option', { value: '' }, '— เหตุผลที่ไม่อนุมัติ —'), ...src.rejectReasons.map((r) => el('option', { value: r }, REASON_TH[r] || r)));
+    $('posts').replaceChildren(...(list.items.length ? list.items.map((it) => {
+      const [label, cls] = STATUS_TH[it.status] || [it.status, 'off'];
+      return el('tr', {},
+        el('td', { class: 'wrap' }, it.summary),
+        el('td', {}, el('span', { class: 'badge ' + cls }, label)),
+        el('td', {}, fmt(it.createdAt)),
+        el('td', {}, fmt(it.expiresAt)),
+        el('td', {}, el('button', { class: 'ghost', onclick: () => openPost(it.id) }, it.status === 'pending_approval' ? 'ตรวจ / อนุมัติ' : 'ดู')));
+    }) : [el('tr', {}, el('td', { colspan: '5', class: 'hint' }, status ? 'ไม่มีโพสต์รออนุมัติ' : 'ยังไม่มีโพสต์'))]));
+  }
+
+  function toLocalInput(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+
+  async function loadPostImage(id) {
+    $('post-img-status').textContent = 'กำลังทำภาพ… (ครั้งแรกอาจใช้เวลาประมาณครึ่งนาที)';
+    const res = await fetch(`/admin/api/content/items/${encodeURIComponent(id)}/image`, { credentials: 'same-origin', headers: { 'x-hub-admin': '1' } });
+    if (id !== openPostId) return;
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      $('post-img-status').textContent = 'ทำภาพไม่สำเร็จ: ' + (POST_ERR_TH[data.error] || data.error || res.status);
+      return;
+    }
+    if (postImgUrl) URL.revokeObjectURL(postImgUrl);
+    postImgUrl = URL.createObjectURL(await res.blob());
+    $('post-img').src = postImgUrl;
+    $('post-img-status').textContent = 'ภาพ 1080×1080';
+  }
+
+  async function openPost(id, { keepStatus = false } = {}) {
+    openPostId = id;
+    const { item, issues, dataChanged } = await api('GET', '/content/items/' + encodeURIComponent(id));
+    const pending = item.status === 'pending_approval';
+    const [label] = STATUS_TH[item.status] || [item.status];
+    $('post-detail').hidden = false;
+    $('post-title').textContent = `${item.summary} · ${label}`;
+    $('post-caption').value = item.caption;
+    $('post-tags').value = item.hashtags.join(' ');
+    $('post-prompt').value = item.imagePrompt;
+    $('post-when').value = toLocalInput(item.scheduledAt);
+    const sel = $('post-asset');
+    sel.replaceChildren(el('option', { value: '' }, 'ไม่ใช้รูป (พื้นสีกรมท่า)'),
+      ...usableAssets.map((a) => el('option', { value: a.id }, `${SOURCE_TH[a.source]} ${a.width}×${a.height}${a.tags.length ? ' · ' + a.tags.join(', ') : ''}`)));
+    sel.value = usableAssets.some((a) => a.id === item.assetId) ? item.assetId : '';
+    for (const id2 of ['post-caption', 'post-tags', 'post-asset', 'post-when']) $(id2).disabled = !pending;
+    $('post-actions').hidden = !pending;
+    $('post-reject-row').hidden = !pending;
+    const warn = [];
+    if (dataChanged) warn.push('ข้อมูลร้านเปลี่ยนไปแล้วตั้งแต่ร่างโพสต์นี้ กด “ร่างใหม่” เพื่อใช้ตัวเลขล่าสุด');
+    if (pending && issues.length) warn.push(...issues.map((i) => (ISSUE_TH[i.code] ? ISSUE_TH[i.code](i) : i.code)));
+    if (item.status === 'rejected') warn.push(`ไม่อนุมัติเพราะ: ${REASON_TH[item.rejectReason] || item.rejectReason}${item.rejectNote ? ' · ' + item.rejectNote : ''}`);
+    if (pending) warn.push(`โพสต์นี้หมดอายุ ${fmt(item.expiresAt)} ถ้ายังไม่อนุมัติจะใช้ไม่ได้`);
+    $('post-warn').textContent = warn.join('\n');
+    $('post-warn').hidden = !warn.length;
+    if (!keepStatus) $('post-status').textContent = '';
+    $('post-copy-status').textContent = '';
+    loadPostImage(id).catch(() => { $('post-img-status').textContent = 'ทำภาพไม่สำเร็จ'; });
+    $('post-detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  async function postAction(fn, okText) {
+    $('post-status').textContent = 'กำลังทำ…';
+    try {
+      await fn();
+      await loadPosts();
+      await openPost(openPostId, { keepStatus: true });
+      $('post-status').textContent = okText;
+    } catch (err) {
+      $('post-status').textContent = postErr(err);
+    }
+  }
+
+  async function generatePost(body) {
+    $('gen-status').textContent = 'กำลังร่างโพสต์…';
+    try {
+      const { item } = await api('POST', '/content/items', body);
+      $('gen-status').textContent = 'ร่างเสร็จแล้ว ตรวจแล้วกดอนุมัติได้ด้านล่าง';
+      $('posts-filter').value = 'pending_approval';
+      await loadPosts();
+      await openPost(item.id);
+    } catch (err) {
+      $('gen-status').textContent = 'ยังร่างไม่ได้: ' + postErr(err);
+    }
+  }
+
+  $('gen-daily').addEventListener('click', () => generatePost({ templateId: 'daily_tables' }));
+  $('gen-happy').addEventListener('click', () => generatePost({ templateId: 'happy_hour', promotionId: $('gen-promo').value }));
+  $('gen-tour').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const t = { mode: $('tour-mode').value, title: $('tour-title').value.trim(), eventDate: $('tour-date').value };
+    if ($('tour-time').value) t.startTime = $('tour-time').value;
+    if ($('tour-detail').value.trim()) t.detail = $('tour-detail').value.trim();
+    if ($('tour-fee').value !== '') t.feeTHB = Number($('tour-fee').value);
+    if ($('tour-prize').value.trim()) t.prizeText = $('tour-prize').value.trim();
+    const names = $('tour-winners').value.split(',').map((s) => s.trim()).filter(Boolean).slice(0, 3);
+    if (t.mode === 'result' && names.length) {
+      t.winners = names.map((name, i) => ({ place: i + 1, name }));
+      t.namesConsent = $('tour-consent').checked;
+    }
+    generatePost({ templateId: 'tournament', tournament: t });
+  });
+  $('posts-filter').addEventListener('change', () => loadPosts().catch(() => {}));
+  $('post-close').addEventListener('click', () => { $('post-detail').hidden = true; openPostId = null; });
+  $('post-save').addEventListener('click', () => postAction(() => api('PATCH', '/content/items/' + encodeURIComponent(openPostId), {
+    caption: $('post-caption').value,
+    hashtags: $('post-tags').value,
+    assetId: $('post-asset').value || null,
+    scheduledAt: $('post-when').value ? new Date($('post-when').value).toISOString() : null,
+  }), 'บันทึกแล้ว'));
+  $('post-regen').addEventListener('click', () => postAction(() => api('POST', `/content/items/${encodeURIComponent(openPostId)}/regenerate`), 'ร่างใหม่จากข้อมูลล่าสุดแล้ว'));
+  $('post-approve').addEventListener('click', () => {
+    if (!confirm('อนุมัติโพสต์นี้? (ตอนนี้ยังไม่โพสต์ขึ้นเพจจริง)')) return;
+    postAction(async () => {
+      // Save what is on screen first, so the owner approves exactly what they see.
+      await api('PATCH', '/content/items/' + encodeURIComponent(openPostId), {
+        caption: $('post-caption').value,
+        hashtags: $('post-tags').value,
+        assetId: $('post-asset').value || null,
+        scheduledAt: $('post-when').value ? new Date($('post-when').value).toISOString() : null,
+      });
+      await api('POST', `/content/items/${encodeURIComponent(openPostId)}/approve`, {});
+    }, 'อนุมัติแล้ว');
+  });
+  $('post-reject').addEventListener('click', () => {
+    if (!$('post-reason').value) { $('post-status').textContent = POST_ERR_TH.bad_reason; return; }
+    postAction(() => api('POST', `/content/items/${encodeURIComponent(openPostId)}/reject`, { reasonCode: $('post-reason').value, note: $('post-note').value }), 'บันทึกว่าไม่อนุมัติแล้ว');
+  });
+  $('post-copy').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText($('post-prompt').value);
+      $('post-copy-status').textContent = 'คัดลอกแล้ว เอาไปวางใน ChatGPT ได้เลย';
+    } catch {
+      $('post-prompt').select();
+      $('post-copy-status').textContent = 'กด Ctrl+C เพื่อคัดลอก';
+    }
+  });
+
   $('login-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
     $('login-error').textContent = '';
@@ -362,5 +560,5 @@
   });
 
   api('GET', '/me').then(showApp, showLogin);
-  setInterval(() => { if (!$('app-view').hidden) { refresh().catch(() => {}); refreshChat().catch(() => {}); } }, 10000);
+  setInterval(() => { if (!$('app-view').hidden) { refresh().catch(() => {}); refreshChat().catch(() => {}); loadPosts().catch(() => {}); } }, 10000);
 })();

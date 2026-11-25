@@ -23,6 +23,7 @@ const { createRulesProvider } = require('./agent/llm-rules');
 const { createAssets } = require('./content/assets');
 const { createRenderer } = require('./content/renderer');
 const { TEMPLATE_IDS } = require('./content/templates');
+const { createContentItems } = require('./content/items');
 
 const HOUR = 60 * 60 * 1000;
 
@@ -92,6 +93,11 @@ async function createHub(config, deps = {}) {
   const assets = createAssets({ db, audit, clock, templateIds: TEMPLATE_IDS });
   const renderer = deps.renderer || createRenderer({ executablePath: config.chromiumPath, logger });
 
+  // A6: post drafts + approval queue (nothing is posted here; A7 = publisher).
+  const contentItems = createContentItems({ db, audit, clock, snapshots, assets });
+  const expireTimer = setInterval(() => contentItems.expireDue().catch((e) => logger.error('content.expire_failed', { error: e.message })), 60 * 1000);
+  expireTimer.unref();
+
   // §2.7: 5 pair attempts per hour per IP.
   const pairLimiter = createRateLimiter({ limit: 5, windowMs: HOUR, clock });
   const loginLimiter = createRateLimiter({ limit: 10, windowMs: 15 * 60 * 1000, clock });
@@ -132,7 +138,7 @@ async function createHub(config, deps = {}) {
   const webhookChat = { handleWebhook: (body) => chat.handleWebhook(body, { echoesEnabled: Boolean(config.fbAppId) }) };
   app.use('/webhooks/messenger', messengerWebhookRouter({ adapter, chat: webhookChat, verifyToken: config.fbVerifyToken, logger }));
 
-  app.use('/admin', adminRouter({ config, clock, devices, snapshots, bridge, killSwitches, audit, loginLimiter, knowledge, conversations, chatTester, assets, renderer, aiInfo: { provider: aiProvider.name, model: aiProvider.model, messengerConfigured: adapter.configured } }));
+  app.use('/admin', adminRouter({ config, clock, devices, snapshots, bridge, killSwitches, audit, loginLimiter, knowledge, conversations, chatTester, assets, renderer, contentItems, aiInfo: { provider: aiProvider.name, model: aiProvider.model, messengerConfigured: adapter.configured } }));
   app.get('/', (req, res) => res.redirect('/admin/'));
 
   // Body-parser errors (bad JSON, too large) → 400/413 without echoing input.
@@ -161,11 +167,13 @@ async function createHub(config, deps = {}) {
     adapter,
     assets,
     renderer,
+    contentItems,
     listen(port = config.port, host = config.host) {
       return new Promise((resolve) => server.listen(port, host, () => resolve(server.address())));
     },
     async close() {
       clearInterval(purgeTimer);
+      clearInterval(expireTimer);
       await chat.idle();
       bridge.close();
       await new Promise((resolve) => server.close(() => resolve()));
