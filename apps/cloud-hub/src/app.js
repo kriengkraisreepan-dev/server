@@ -20,13 +20,16 @@ const { messengerWebhookRouter } = require('./channels/webhook-routes');
 const { createToolRunner } = require('./agent/tools');
 const { createAgent } = require('./agent/agent');
 const { createRulesProvider } = require('./agent/llm-rules');
+const { createAssets } = require('./content/assets');
+const { createRenderer } = require('./content/renderer');
+const { TEMPLATE_IDS } = require('./content/templates');
 
 const HOUR = 60 * 60 * 1000;
 
 /**
  * @param {object} config see src/config.js
  * @param {{ db?: object, clock?: { now(): number }, logger?: object, bridgeOptions?: object,
- *           aiProvider?: object, fetchImpl?: typeof fetch }} [deps]
+ *           aiProvider?: object, fetchImpl?: typeof fetch, renderer?: object }} [deps]
  */
 async function createHub(config, deps = {}) {
   const clock = deps.clock || { now: () => Date.now() };
@@ -85,6 +88,10 @@ async function createHub(config, deps = {}) {
   const purgeTimer = setInterval(() => conversations.purgeOld().catch((e) => logger.error('chat.purge_failed', { error: e.message })), 6 * HOUR);
   purgeTimer.unref();
 
+  // A5: asset library + post renderer.
+  const assets = createAssets({ db, audit, clock, templateIds: TEMPLATE_IDS });
+  const renderer = deps.renderer || createRenderer({ executablePath: config.chromiumPath, logger });
+
   // §2.7: 5 pair attempts per hour per IP.
   const pairLimiter = createRateLimiter({ limit: 5, windowMs: HOUR, clock });
   const loginLimiter = createRateLimiter({ limit: 10, windowMs: 15 * 60 * 1000, clock });
@@ -125,7 +132,7 @@ async function createHub(config, deps = {}) {
   const webhookChat = { handleWebhook: (body) => chat.handleWebhook(body, { echoesEnabled: Boolean(config.fbAppId) }) };
   app.use('/webhooks/messenger', messengerWebhookRouter({ adapter, chat: webhookChat, verifyToken: config.fbVerifyToken, logger }));
 
-  app.use('/admin', adminRouter({ config, clock, devices, snapshots, bridge, killSwitches, audit, loginLimiter, knowledge, conversations, chatTester, aiInfo: { provider: aiProvider.name, model: aiProvider.model, messengerConfigured: adapter.configured } }));
+  app.use('/admin', adminRouter({ config, clock, devices, snapshots, bridge, killSwitches, audit, loginLimiter, knowledge, conversations, chatTester, assets, renderer, aiInfo: { provider: aiProvider.name, model: aiProvider.model, messengerConfigured: adapter.configured } }));
   app.get('/', (req, res) => res.redirect('/admin/'));
 
   // Body-parser errors (bad JSON, too large) → 400/413 without echoing input.
@@ -152,6 +159,8 @@ async function createHub(config, deps = {}) {
     conversations,
     chat,
     adapter,
+    assets,
+    renderer,
     listen(port = config.port, host = config.host) {
       return new Promise((resolve) => server.listen(port, host, () => resolve(server.address())));
     },

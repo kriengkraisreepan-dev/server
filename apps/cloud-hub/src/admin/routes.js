@@ -1,14 +1,14 @@
 'use strict';
 
 // Admin web API for the shop owner: login, "เครื่องร้าน" (pairing code, status, revoke,
-// rotate token), kill switches (S-1.5), recent audit log.
+// rotate token), kill switches (S-1.5), recent audit log, A4 chat, A5 asset library + post preview.
 const path = require('node:path');
 const express = require('express');
 const auth = require('./auth');
 
 const ADMIN_HEADER = 'x-hub-admin';
 
-function adminRouter({ config, clock, devices, snapshots, bridge, killSwitches, audit, loginLimiter, knowledge, conversations, chatTester, aiInfo = {} }) {
+function adminRouter({ config, clock, devices, snapshots, bridge, killSwitches, audit, loginLimiter, knowledge, conversations, chatTester, assets, renderer, aiInfo = {} }) {
   const router = express.Router();
   const sessions = auth.createSessions({ clock });
   const secure = config.secureCookies;
@@ -19,7 +19,7 @@ function adminRouter({ config, clock, devices, snapshots, bridge, killSwitches, 
       'X-Frame-Options': 'DENY',
       'X-Content-Type-Options': 'nosniff',
       'Referrer-Policy': 'no-referrer',
-      'Content-Security-Policy': "default-src 'self'; frame-ancestors 'none'; form-action 'self'",
+      'Content-Security-Policy': "default-src 'self'; img-src 'self' blob:; frame-ancestors 'none'; form-action 'self'",
     });
     next();
   });
@@ -186,6 +186,74 @@ function adminRouter({ config, clock, devices, snapshots, bridge, killSwitches, 
   api.post('/chat/try/reset', async (req, res) => {
     await chatTester.reset();
     res.json({ ok: true });
+  });
+
+  // ---- A5: asset library (คลังรูป) + post preview ----
+  const { AssetError } = require('../content/assets');
+  const { TemplateError, TEMPLATES, describe: describeTemplates } = require('../content/templates');
+  const { RenderError } = require('../content/renderer');
+  const contentError = (res, err) => {
+    if (err instanceof AssetError) return res.status(err.status).json({ error: err.code });
+    if (err instanceof TemplateError) return res.status(400).json({ error: err.code, detail: err.detail });
+    if (err instanceof RenderError) return res.status(err.code === 'renderer_unavailable' ? 503 : 500).json({ error: err.code });
+    throw err;
+  };
+
+  api.get('/assets', async (req, res) => res.json({ assets: await assets.list(), usage: await assets.usage(), maxBytes: assets.MAX_BYTES }));
+
+  // The image is the raw request body; its type is read from the bytes, not from the header.
+  api.post('/assets', express.raw({ type: () => true, limit: assets.MAX_BYTES }), async (req, res) => {
+    try {
+      const q = req.query;
+      const a = await assets.upload({
+        data: Buffer.isBuffer(req.body) ? req.body : null,
+        source: q.source,
+        consent: q.consent,
+        tags: q.tags,
+        allowedTemplates: q.allowedTemplates,
+        note: q.note,
+      }, 'owner');
+      res.status(201).json({ asset: a });
+    } catch (err) { contentError(res, err); }
+  });
+
+  api.get('/assets/:id/image', async (req, res) => {
+    const a = await assets.getWithData(req.params.id);
+    if (!a) return res.status(404).json({ error: 'not_found' });
+    res.set({ 'Content-Type': a.mime, 'Content-Disposition': 'inline' }).send(a.data);
+  });
+
+  api.patch('/assets/:id', async (req, res) => {
+    try {
+      const a = await assets.update(req.params.id, req.body, 'owner');
+      if (!a) return res.status(404).json({ error: 'not_found' });
+      res.json({ asset: a });
+    } catch (err) { contentError(res, err); }
+  });
+
+  api.delete('/assets/:id', async (req, res) => {
+    if (!(await assets.remove(req.params.id, 'owner'))) return res.status(404).json({ error: 'not_found' });
+    res.json({ ok: true });
+  });
+
+  api.get('/content/templates', (req, res) => res.json({ templates: describeTemplates() }));
+
+  // Preview only: nothing is saved or posted. One render at a time; refuse a pile-up.
+  let pendingPreviews = 0;
+  api.post('/content/preview', async (req, res) => {
+    const { templateId, data, assetId } = req.body || {};
+    if (!Object.hasOwn(TEMPLATES, String(templateId))) return res.status(400).json({ error: 'unknown_template' });
+    if (pendingPreviews >= 3) return res.status(429).json({ error: 'busy' });
+    pendingPreviews += 1;
+    try {
+      const background = assetId ? await assets.loadForTemplate(assetId, templateId) : undefined;
+      const out = await renderer.render(templateId, data === undefined ? TEMPLATES[templateId].sample : data, { background });
+      res.set('Content-Type', 'image/png').send(out.png);
+    } catch (err) {
+      contentError(res, err);
+    } finally {
+      pendingPreviews -= 1;
+    }
   });
 
   router.use('/api', api);

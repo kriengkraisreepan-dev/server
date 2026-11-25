@@ -2,7 +2,7 @@
   "name": "@88snooker/cloud-hub",
   "version": "0.1.0",
   "private": true,
-  "description": "88Snooker AI assistant Cloud hub (Task A2 skeleton): bridge pairing, WSS endpoint, snapshot cache, owner admin web",
+  "description": "88Snooker AI assistant Cloud hub: bridge pairing, WSS endpoint, snapshot cache, owner admin web, Messenger chat agent, post renderer",
   "main": "src/server.js",
   "type": "commonjs",
   "license": "ISC",
@@ -23,11 +23,13 @@
     "@anthropic-ai/sdk": "1.8.0",
     "express": "5.2.1",
     "pg": "8.23.1",
+    "playwright-core": "1.63.0",
     "ws": "8.23.0",
     "zod": "4.6.7"
   },
   "devDependencies": {
     "@electric-sql/pglite": "0.5.17",
+    "pngjs": "7.0.0",
     "yaml": "2.9.1"
   }
 }
