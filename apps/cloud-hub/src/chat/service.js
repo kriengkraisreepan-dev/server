@@ -31,6 +31,7 @@ function createChatService({ adapter, agent, conversations, killSwitches, audit,
 
   async function send(conv, text, meta) {
     const r = await adapter.sendReply({ customerRef: conv.customerRef, text });
+    logger.info('chat.reply_sent', { conversationId: conv.id, ok: r.ok, ...(r.ok ? {} : { error: r.error }) });
     await conversations.addMessage(conv.id, {
       role: 'ai',
       text,
@@ -99,7 +100,13 @@ function createChatService({ adapter, agent, conversations, killSwitches, audit,
       const { messages, echoes } = adapter.parse(body);
       const jobs = [];
       if (echoesEnabled) for (const e of echoes) jobs.push(enqueue(`${e.channel}:${e.customerRef}`, () => handleEcho(e)));
-      for (const m of messages) jobs.push(enqueue(`${m.channel}:${m.customerRef}`, () => handleInbound(m)));
+      for (const m of messages) {
+        jobs.push(enqueue(`${m.channel}:${m.customerRef}`, async () => {
+          const r = await handleInbound(m);
+          logger.info('chat.inbound', { outcome: r.outcome, handoff: r.handoff || null });
+          return r;
+        }));
+      }
       return Promise.all(jobs);
     },
     handleInbound,
