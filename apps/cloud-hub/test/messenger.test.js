@@ -93,6 +93,32 @@ test('messenger webhook', async (t) => {
     assert.match(text, /ว่าง 1 โต๊ะ/);
   });
 
+  await t.test('"changes" format (entry[].changes, field messages) is understood too', async (t) => {
+    const { graph, deliver, h } = await setup(t);
+    const ts = h.clock.now();
+    const body = {
+      object: 'page',
+      entry: [{ id: 'PAGE', time: ts, changes: [{ field: 'messages', value: { sender: { id: PSID }, recipient: { id: 'PAGE' }, timestamp: String(Math.floor(ts / 1000)), message: { mid: 'm_changes_1', text: 'มีโต๊ะว่างไหมครับ' } } }] }],
+    };
+    assert.equal((await deliver(body)).status, 200);
+    assert.equal(graph.calls.length, 1);
+    assert.match(graph.texts()[0], /ว่าง 1 โต๊ะ/);
+    const log = h.logger.events.find((e) => e.event === 'fb.webhook_received');
+    assert.equal(log.events, 1);
+    assert.deepEqual(log.fields, ['messages']);
+  });
+
+  await t.test('"changes" format: staff echo via field message_echoes → handoff', async (t) => {
+    const { graph, event, deliver, h } = await setup(t);
+    await deliver(event('ราคาเท่าไหร่'));
+    const ts = h.clock.now();
+    await deliver({ object: 'page', entry: [{ id: 'PAGE', time: ts, changes: [{ field: 'message_echoes', value: { sender: { id: 'PAGE' }, recipient: { id: PSID }, timestamp: ts, message: { mid: 'm_staff_c1', text: 'เดี๋ยวพนักงานดูให้ครับ' } } }] }] });
+    const [conv] = await h.hub.conversations.list();
+    assert.equal(conv.handoff, true);
+    await deliver(event('ราคาเท่าไหร่'));
+    assert.equal(graph.calls.length, 1, 'AI stays quiet after staff replied');
+  });
+
   await t.test('duplicate webhook (same mid) is answered once', async (t) => {
     const { graph, event, deliver } = await setup(t);
     const ev = event('ราคาเท่าไหร่', { id: 'm_dup' });
