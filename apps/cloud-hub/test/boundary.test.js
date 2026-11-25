@@ -10,7 +10,8 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const ROOT = path.join(__dirname, '..');
-const ALLOWED_PACKAGES = new Set(['express', 'ws', 'pg', 'zod', '@electric-sql/pglite', '@88snooker/bridge-protocol']);
+// A4 adds @anthropic-ai/sdk (Claude API) and yaml (dev only: evals/chat.yaml).
+const ALLOWED_PACKAGES = new Set(['express', 'ws', 'pg', 'zod', '@electric-sql/pglite', '@88snooker/bridge-protocol', '@anthropic-ai/sdk', 'yaml']);
 
 function* jsFiles(dir) {
   for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {

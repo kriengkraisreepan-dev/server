@@ -54,6 +54,18 @@ function createSnapshots({ db, clock, isOnline }) {
         snapshot: r.snapshot,
       };
     },
+
+    /**
+     * A4: the snapshot the chat agent answers from = the most recently received one from any
+     * device that is not revoked (Phase A has one Shop PC). null if there is none.
+     */
+    async latestActive() {
+      const { rows } = await db.query(
+        `SELECT s.device_id FROM snapshots_latest s JOIN devices d ON d.device_id = s.device_id
+         WHERE d.revoked_at IS NULL ORDER BY s.received_at DESC LIMIT 1`,
+      );
+      return rows.length ? this.latest(rows[0].device_id) : null;
+    },
   };
 }
 
