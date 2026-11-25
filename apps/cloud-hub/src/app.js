@@ -12,12 +12,21 @@ const { createSnapshots } = require('./bridge/snapshots');
 const { createBridgeServer, CLOSE } = require('./bridge/ws-server');
 const { adminRouter } = require('./admin/routes');
 const { createLogger } = require('./logger');
+const { createKnowledge } = require('./chat/knowledge');
+const { createConversations } = require('./chat/conversations');
+const { createChatService } = require('./chat/service');
+const { createMessengerAdapter } = require('./channels/fb-messenger');
+const { messengerWebhookRouter } = require('./channels/webhook-routes');
+const { createToolRunner } = require('./agent/tools');
+const { createAgent } = require('./agent/agent');
+const { createRulesProvider } = require('./agent/llm-rules');
 
 const HOUR = 60 * 60 * 1000;
 
 /**
  * @param {object} config see src/config.js
- * @param {{ db?: object, clock?: { now(): number }, logger?: object, bridgeOptions?: object }} [deps]
+ * @param {{ db?: object, clock?: { now(): number }, logger?: object, bridgeOptions?: object,
+ *           aiProvider?: object, fetchImpl?: typeof fetch }} [deps]
  */
 async function createHub(config, deps = {}) {
   const clock = deps.clock || { now: () => Date.now() };
@@ -53,6 +62,28 @@ async function createHub(config, deps = {}) {
       }),
     ...(deps.bridgeOptions || {}),
   });
+
+  // A4: Messenger + chat agent.
+  const knowledge = createKnowledge({ db, audit, clock });
+  const conversations = createConversations({ db, audit, clock, retentionDays: config.chatRetentionDays || 90 });
+  const adapter = createMessengerAdapter({
+    pageAccessToken: config.fbPageAccessToken,
+    appSecret: config.fbAppSecret,
+    pageAppId: config.fbAppId,
+    clock,
+    logger,
+    fetchImpl: deps.fetchImpl,
+    lastInboundAt: async (customerRef) => {
+      const c = await conversations.getOrCreate(adapter.channel, customerRef);
+      return c.lastInboundAt;
+    },
+  });
+  const aiProvider = deps.aiProvider || makeProvider(config, logger);
+  const agent = createAgent({ provider: aiProvider, runTool: createToolRunner({ snapshots, knowledge, clock }), conversations, clock, logger });
+  const chat = createChatService({ adapter, agent, conversations, killSwitches, audit, clock, logger });
+  const chatTester = createChatTester({ agent, conversations, killSwitches });
+  const purgeTimer = setInterval(() => conversations.purgeOld().catch((e) => logger.error('chat.purge_failed', { error: e.message })), 6 * HOUR);
+  purgeTimer.unref();
 
   // §2.7: 5 pair attempts per hour per IP.
   const pairLimiter = createRateLimiter({ limit: 5, windowMs: HOUR, clock });
@@ -90,7 +121,11 @@ async function createHub(config, deps = {}) {
     res.json({ ok: true });
   });
 
-  app.use('/admin', adminRouter({ config, clock, devices, snapshots, bridge, killSwitches, audit, loginLimiter }));
+  // Echoes need FB_APP_ID to tell our own replies from staff replies; without it they are ignored.
+  const webhookChat = { handleWebhook: (body) => chat.handleWebhook(body, { echoesEnabled: Boolean(config.fbAppId) }) };
+  app.use('/webhooks/messenger', messengerWebhookRouter({ adapter, chat: webhookChat, verifyToken: config.fbVerifyToken, logger }));
+
+  app.use('/admin', adminRouter({ config, clock, devices, snapshots, bridge, killSwitches, audit, loginLimiter, knowledge, conversations, chatTester, aiInfo: { provider: aiProvider.name, model: aiProvider.model, messengerConfigured: adapter.configured } }));
   app.get('/', (req, res) => res.redirect('/admin/'));
 
   // Body-parser errors (bad JSON, too large) → 400/413 without echoing input.
@@ -113,15 +148,54 @@ async function createHub(config, deps = {}) {
     snapshots,
     killSwitches,
     audit,
+    knowledge,
+    conversations,
+    chat,
+    adapter,
     listen(port = config.port, host = config.host) {
       return new Promise((resolve) => server.listen(port, host, () => resolve(server.address())));
     },
     async close() {
+      clearInterval(purgeTimer);
+      await chat.idle();
       bridge.close();
       await new Promise((resolve) => server.close(() => resolve()));
       if (!deps.db) await db.close();
     },
   };
+}
+
+/** Admin web "ลองถาม AI": the same agent and guards, in a private test conversation. */
+function createChatTester({ agent, conversations, killSwitches }) {
+  const CH = 'admin_test';
+  return {
+    async ask(text) {
+      const conv = await conversations.getOrCreate(CH, 'owner');
+      await conversations.addMessage(conv.id, { role: 'customer', text });
+      if (conv.handoff) return { reply: null, handoff: conv.handoffReason, kind: 'staff_handling' };
+      if (!(await killSwitches.isEnabled('ai_chat'))) {
+        const reply = agent.TEXT.th.killSwitch;
+        await conversations.addMessage(conv.id, { role: 'ai', text: reply, meta: { kind: 'kill_switch' } });
+        return { reply, handoff: null, kind: 'kill_switch' };
+      }
+      const r = await agent.respond(conv, { text });
+      if (r.handoff) await conversations.setHandoff(conv.id, r.handoff, 'owner_test');
+      if (r.reply) await conversations.addMessage(conv.id, { role: 'ai', text: r.reply, meta: { kind: r.kind, handoff: r.handoff } });
+      return { reply: r.reply, handoff: r.handoff, kind: r.kind, tools: (r.meta && r.meta.tools) || [] };
+    },
+    async reset() {
+      const conv = await conversations.getOrCreate(CH, 'owner');
+      await conversations.remove(conv.id, 'owner');
+    },
+  };
+}
+
+function makeProvider(config, logger) {
+  if (config.aiProvider === 'claude' && config.anthropicApiKey) {
+    const { createClaudeProvider, DEFAULT_MODEL } = require('./agent/llm-claude');
+    return createClaudeProvider({ apiKey: config.anthropicApiKey, model: config.aiModel || DEFAULT_MODEL, effort: config.aiEffort, logger });
+  }
+  return createRulesProvider();
 }
 
 module.exports = { createHub };

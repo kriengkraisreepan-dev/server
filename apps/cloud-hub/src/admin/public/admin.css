@@ -21,3 +21,18 @@ th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid #1f2a44; w
 .switch { display: flex; justify-content: space-between; align-items: center; background: #0f172a; border-radius: 8px; padding: 10px 12px; }
 .pairing { background: #0f172a; border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
 .pairing code { font-size: 22px; letter-spacing: 3px; color: var(--accent); }
+/* A4: AI chat */
+textarea { font: inherit; padding: 6px 8px; border-radius: 6px; border: 1px solid #334155; background: #0f172a; color: var(--text); width: 100%; }
+.stack { display: grid; gap: 8px; margin-top: 8px; }
+.stack label { display: grid; gap: 4px; }
+.stack input { width: 100%; }
+#try-form input { flex: 1; min-width: 180px; }
+.chatlog { display: grid; gap: 6px; max-height: 360px; overflow-y: auto; margin: 8px 0; }
+.msg { padding: 6px 10px; border-radius: 10px; max-width: 85%; white-space: pre-wrap; }
+.msg.customer { background: #1e293b; justify-self: end; }
+.msg.ai { background: #0c4a6e; }
+.msg.staff { background: #14532d; }
+.msg.system { background: transparent; color: var(--muted); font-size: 13px; }
+.msg small { display: block; color: var(--muted); font-size: 11px; }
+td.wrap { white-space: normal; min-width: 160px; }
+[hidden] { display: none !important; }

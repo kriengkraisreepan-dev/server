@@ -45,6 +45,61 @@
         </table>
       </section>
 
+      <section id="chat-section">
+        <div class="row">
+          <h2>AI ตอบแชท Facebook</h2>
+          <span id="handoff-badge" class="badge warn" hidden></span>
+        </div>
+        <p class="hint" id="ai-info"></p>
+      </section>
+
+      <section>
+        <h2>ลองถาม AI</h2>
+        <p class="hint">พิมพ์เหมือนลูกค้าทักเพจ AI จะตอบจากข้อมูลจริงของร้าน (ไม่ส่งไป Facebook)</p>
+        <div id="try-log" class="chatlog"></div>
+        <form id="try-form" class="row">
+          <input id="try-text" maxlength="1000" placeholder="เช่น มีโต๊ะว่างไหมครับ" autocomplete="off" required>
+          <button type="submit">ส่ง</button>
+          <button type="button" class="ghost" id="try-reset">เริ่มใหม่</button>
+        </form>
+      </section>
+
+      <section>
+        <div class="row">
+          <h2>แชทลูกค้า</h2>
+          <label class="hint"><input type="checkbox" id="conv-handoff-only"> เฉพาะที่รอพนักงานตอบ</label>
+        </div>
+        <table>
+          <thead><tr><th>ลูกค้า</th><th>สถานะ</th><th>ข้อความล่าสุด</th><th>เวลา</th><th></th></tr></thead>
+          <tbody id="conversations"></tbody>
+        </table>
+        <div id="conv-detail" class="pairing" hidden>
+          <div class="row"><strong id="conv-title"></strong><span id="conv-actions"></span></div>
+          <div id="conv-messages" class="chatlog"></div>
+        </div>
+      </section>
+
+      <section>
+        <h2>ข้อมูลร้าน (ให้ AI ใช้ตอบ)</h2>
+        <form id="shop-info-form" class="stack"></form>
+      </section>
+
+      <section>
+        <h2>คำถามที่พบบ่อย (FAQ)</h2>
+        <p class="hint">AI จะใช้คำตอบตรงนี้เท่านั้น ใส่ "คำค้น" คั่นด้วยจุลภาค เช่น ที่จอดรถ, จอดรถ, parking</p>
+        <table>
+          <thead><tr><th>คำถาม</th><th>คำตอบ</th><th>คำค้น</th><th></th></tr></thead>
+          <tbody id="faq"></tbody>
+        </table>
+        <form id="faq-form" class="stack">
+          <input type="hidden" id="faq-id">
+          <label>คำถาม <input id="faq-q" maxlength="300" required></label>
+          <label>คำตอบ <textarea id="faq-a" maxlength="1500" rows="3" required></textarea></label>
+          <label>คำค้น <input id="faq-kw" maxlength="300"></label>
+          <div class="row"><button type="submit" id="faq-submit">เพิ่มคำถาม</button><button type="button" class="ghost" id="faq-cancel" hidden>ยกเลิกแก้ไข</button></div>
+        </form>
+      </section>
+
       <section>
         <h2>บันทึกล่าสุด (audit log)</h2>
         <table>

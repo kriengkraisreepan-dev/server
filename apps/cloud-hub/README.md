@@ -43,6 +43,14 @@ here again; `test/boundary.test.js` fails if the copy is out of date.
 | `TRUST_PROXY` | Number of reverse proxies in front, for client IP / rate limits (default `0`). |
 | `SECURE_COOKIES` | Default `true` except in development. |
 | `PGLITE_DIR` | Dev only: where PGlite keeps its data. |
+| `FB_APP_SECRET` | A4: Meta app secret, checks `X-Hub-Signature-256` (S-5.1). Without it every webhook POST is 401. |
+| `FB_VERIFY_TOKEN` | A4: any random string; the same value goes in the Meta app's webhook settings. |
+| `FB_PAGE_ACCESS_TOKEN` | A4: Page token for the Send API. Sent only in the `Authorization` header (S-5.3). |
+| `FB_APP_ID` | A4: lets the hub tell its own echoed replies from staff replies in the Page inbox (staff reply → AI stops for that chat). Without it echoes are ignored. |
+| `ANTHROPIC_API_KEY` | A4: Claude API key. If unset the hub uses the free `rules` answerer. |
+| `AI_PROVIDER` | `claude` or `rules` (default: `claude` when a key is set). |
+| `AI_MODEL`, `AI_EFFORT` | Default `claude-opus-5-5`, effort `low`. |
+| `CHAT_RETENTION_DAYS` | Conversation log retention (default 90, S-6.2). |
 
 ## Layout
 
@@ -71,7 +79,46 @@ WebSocket close codes the Shop PC should handle: `4401` revoked (delete token, d
 `4403` deviceId ≠ token, `4408` heartbeat timeout (60 s), `4409` replaced by a newer connection,
 `4503` bridge kill switch off, `1009` frame too large.
 
+## AI chat (Task A4)
+
+```
+Meta webhook ──► /webhooks/messenger  (signature on raw body, 200 at once, process in background)
+                   └► chat/service      dedupe by mid · per-customer queue · handoff? · S-3.8 rate limit
+                                         · S-3.7 24 h window · ai_chat kill switch → fixed text
+                        └► agent/agent  deterministic handoff (booking, complaint, money, lost item,
+                                         accident, threat, "talk to a person") → provider (claude | rules)
+                                         with the 7 tools → output guards → stale time / intro
+                             └► channels/fb-messenger  Send API
+```
+
+- `src/agent/tools.js` — `get_table_status`, `get_wait_estimate`, `get_price_list`, `get_shop_info`,
+  `get_promotions`, `search_faq`, `handoff_to_staff`. Data: snapshot cache (latest non-revoked device)
+  + shop info / FAQ from the Admin web.
+- `src/agent/safety.js` — guards that run for every provider: a reply is replaced by "staff will
+  answer" if it has a number not found in this turn's tool results (S-3.1; the customer's own
+  message is *not* a source), a booking/discount/payment promise (S-3.2) or a copy of the system
+  prompt (S-3.3). Stale data → data time appended (S-3.5). New conversation → intro (S-3.6).
+- `src/agent/llm-rules.js` — free answerer (no AI service): keyword intents → same tools → fixed
+  templates. Used when there is no API key, and as the deterministic provider for tests/evals.
+- `src/agent/llm-claude.js` — Messages API manual tool loop, static cached system prompt,
+  server-side refusal fallback. Errors/refusals → handoff with a fixed message.
+- Admin web: "AI ตอบแชท Facebook" status, "ลองถาม AI" (same agent, no Facebook), customer chats
+  (handoff / release / delete for S-6.3), shop info, FAQ.
+
+### Eval
+
+```bash
+npm run eval               # evals/chat.yaml, free rules provider (Claude if ANTHROPIC_API_KEY is set — costs money)
+npm run eval -- --verbose  # print every reply
+```
+
+Pass bar (A4): safety 100%, quality ≥ 90%. `test/agent.test.js` runs it with the rules provider.
+
 ## Known limits (Phase A)
+
+- Staff "notification" for a handoff is the Admin web badge + audit log; there is no push yet.
+- Render free plan sleeps after 15 min idle, so the first Messenger reply after a quiet period can
+  take ~1 min (Meta retries; duplicates are dropped). Upgrade before G2/G3.
 
 - Sessions, rate limits, the online map and message dedupe are in memory → one hub instance.
 - Protocol v1 has no Shop → Cloud `ack`, so `token.rotate` is resent 3× (same id, 10 s apart)

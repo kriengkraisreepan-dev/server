@@ -52,7 +52,7 @@ async function testDatabase() {
   return db;
 }
 
-async function startHub({ bridgeOptions = {}, clock = makeClock() } = {}) {
+async function startHub({ bridgeOptions = {}, clock = makeClock(), config: configOverrides = {}, deps = {} } = {}) {
   const db = await testDatabase();
   const logger = captureLogger();
   const config = {
@@ -62,8 +62,9 @@ async function startHub({ bridgeOptions = {}, clock = makeClock() } = {}) {
     publicWsUrl: 'ws://127.0.0.1/bridge/v1',
     trustProxy: 0,
     secureCookies: false,
+    ...configOverrides,
   };
-  const hub = await createHub(config, { db, clock, logger, bridgeOptions: { heartbeatTimeoutMs: 60000, ackTimeoutMs: 10000, ...bridgeOptions } });
+  const hub = await createHub(config, { ...deps, db, clock, logger, bridgeOptions: { heartbeatTimeoutMs: 60000, ackTimeoutMs: 10000, ...bridgeOptions } });
   const addr = await hub.listen(0, '127.0.0.1');
   const base = `http://127.0.0.1:${addr.port}`;
   const wsUrl = `ws://127.0.0.1:${addr.port}/bridge/v1`;

@@ -8,7 +8,7 @@ const auth = require('./auth');
 
 const ADMIN_HEADER = 'x-hub-admin';
 
-function adminRouter({ config, clock, devices, snapshots, bridge, killSwitches, audit, loginLimiter }) {
+function adminRouter({ config, clock, devices, snapshots, bridge, killSwitches, audit, loginLimiter, knowledge, conversations, chatTester, aiInfo = {} }) {
   const router = express.Router();
   const sessions = auth.createSessions({ clock });
   const secure = config.secureCookies;
@@ -107,6 +107,86 @@ function adminRouter({ config, clock, devices, snapshots, bridge, killSwitches, 
   });
 
   api.get('/audit', async (req, res) => res.json({ entries: await audit.recent(Number(req.query.limit) || 50) }));
+
+  // ---- A4: AI chat (shop info, FAQ, conversations, handoff, try-it box) ----
+  const { KnowledgeError } = require('../chat/knowledge');
+  const knowledgeError = (res, err) => {
+    if (err instanceof KnowledgeError) return res.status(400).json({ error: err.code });
+    throw err;
+  };
+
+  api.get('/chat/summary', async (req, res) => {
+    res.json({
+      ai: aiInfo,
+      handoffCount: await conversations.countHandoff(),
+      aiChatEnabled: await killSwitches.isEnabled('ai_chat'),
+    });
+  });
+
+  api.get('/shop-info', async (req, res) => res.json({ fields: knowledge.SHOP_INFO_KEYS, values: await knowledge.getShopInfo() }));
+  api.put('/shop-info', async (req, res) => {
+    try {
+      res.json({ values: await knowledge.setShopInfo(req.body, 'owner') });
+    } catch (err) { knowledgeError(res, err); }
+  });
+
+  api.get('/faq', async (req, res) => res.json({ faq: await knowledge.listFaq() }));
+  api.post('/faq', async (req, res) => {
+    try {
+      const { question, answer, keywords, enabled } = req.body || {};
+      res.status(201).json({ id: await knowledge.upsertFaq({ question, answer, keywords, enabled }, 'owner') });
+    } catch (err) { knowledgeError(res, err); }
+  });
+  api.put('/faq/:id', async (req, res) => {
+    try {
+      const existing = (await knowledge.listFaq()).find((f) => f.id === req.params.id);
+      if (!existing) return res.status(404).json({ error: 'not_found' });
+      const { question, answer, keywords, enabled } = { ...existing, ...(req.body || {}) };
+      res.json({ id: await knowledge.upsertFaq({ id: existing.id, question, answer, keywords, enabled }, 'owner') });
+    } catch (err) { knowledgeError(res, err); }
+  });
+  api.delete('/faq/:id', async (req, res) => {
+    if (!(await knowledge.deleteFaq(req.params.id, 'owner'))) return res.status(404).json({ error: 'not_found' });
+    res.json({ ok: true });
+  });
+
+  api.get('/conversations', async (req, res) => {
+    res.json({ conversations: await conversations.list({ limit: Number(req.query.limit) || 50, handoffOnly: req.query.handoff === '1' }) });
+  });
+  api.get('/conversations/:id', async (req, res) => {
+    const c = await conversations.get(req.params.id);
+    if (!c) return res.status(404).json({ error: 'not_found' });
+    const messages = await conversations.recentMessages(c.id, 200);
+    res.json({
+      conversation: { ...c, customerRef: undefined },
+      messages: messages.map((m) => ({ at: m.at, role: m.role, text: m.text, kind: m.meta && m.meta.kind, sent: m.meta && m.meta.sent })),
+    });
+  });
+  api.post('/conversations/:id/handoff', async (req, res) => {
+    if (!(await conversations.get(req.params.id))) return res.status(404).json({ error: 'not_found' });
+    await conversations.setHandoff(req.params.id, 'owner', 'owner');
+    res.json({ ok: true });
+  });
+  api.post('/conversations/:id/release', async (req, res) => {
+    if (!(await conversations.release(req.params.id, 'owner'))) return res.status(404).json({ error: 'not_found' });
+    res.json({ ok: true });
+  });
+  // S-6.3: a customer asked for their data to be deleted.
+  api.delete('/conversations/:id', async (req, res) => {
+    if (!(await conversations.remove(req.params.id, 'owner'))) return res.status(404).json({ error: 'not_found' });
+    res.json({ ok: true });
+  });
+
+  // "ลองถาม AI": the owner chats with the agent here, without Facebook. Same agent + guards.
+  api.post('/chat/try', async (req, res) => {
+    const text = req.body && typeof req.body.text === 'string' ? req.body.text.trim().slice(0, 1000) : '';
+    if (!text) return res.status(400).json({ error: 'text_required' });
+    res.json(await chatTester.ask(text));
+  });
+  api.post('/chat/try/reset', async (req, res) => {
+    await chatTester.reset();
+    res.json({ ok: true });
+  });
 
   router.use('/api', api);
   return router;
